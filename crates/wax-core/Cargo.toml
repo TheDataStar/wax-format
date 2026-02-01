@@ -1,0 +1,11 @@
+[package]
+name = "wax-core"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+zerocopy = { version = "0.7", features = ["derive"] }
+rusqlite = { version = "0.30", features = ["bundled"] }
+zstd = "0.13"
+tempfile = "3.8"
+thiserror = "1.0"

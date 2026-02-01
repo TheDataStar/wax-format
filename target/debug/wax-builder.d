@@ -1,0 +1,1 @@
+C:\Users\theda\PROJECTS\wax-format\target\debug\wax-builder.exe: C:\Users\theda\PROJECTS\wax-format\crates\wax-builder\src\main.rs C:\Users\theda\PROJECTS\wax-format\crates\wax-core\src\lib.rs C:\Users\theda\PROJECTS\wax-format\crates\wax-core\src\reader.rs

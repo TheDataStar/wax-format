@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "crates/wax-core",
+    "crates/wax-builder",
+]
+resolver = "2"
