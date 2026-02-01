@@ -1,4 +1,4 @@
-# WAX (Web Archive eXtended)
+# WAX (Web Archive eXtended) [.wax]
 
 > **A high-performance, random-access container format for the offline web.**
 
