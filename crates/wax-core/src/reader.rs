@@ -11,15 +11,20 @@ use zerocopy::FromBytes;
 pub enum WaxError {
     #[error("IO/Compression Error: {0}")]
     Io(#[from] std::io::Error),
-    
     #[error("Index Error: {0}")]
     Sql(#[from] rusqlite::Error),
-    
     #[error("Invalid Archive: Magic bytes mismatch")]
     InvalidMagic,
-    
     #[error("File not found: {0}")]
     FileNotFound(String),
+}
+
+// A simple struct to return file metadata
+#[derive(Debug)]
+pub struct WaxEntry {
+    pub path: String,
+    pub mime_type: String,
+    pub size: u64,
 }
 
 pub struct WaxReader {
@@ -98,5 +103,26 @@ impl WaxReader {
         let mime = mime_result.flatten().unwrap_or_else(|| "application/octet-stream".to_string());
         
         Ok(mime)
+    }
+
+    // NEW: Function to list all files
+    pub fn list_files(&self) -> Result<Vec<WaxEntry>, WaxError> {
+        let mut stmt = self.index_conn.prepare(
+            "SELECT path, mime_type, original_size FROM files ORDER BY path ASC"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok(WaxEntry {
+                path: row.get(0)?,
+                mime_type: row.get::<_, Option<String>>(1)?.unwrap_or("unknown".to_string()),
+                size: row.get(2)?,
+            })
+        })?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
     }
 }

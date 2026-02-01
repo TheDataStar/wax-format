@@ -10,7 +10,7 @@ use zerocopy::AsBytes;
 use indicatif::{ProgressBar, ProgressStyle};
 
 #[derive(Parser, Debug)]
-#[command(author = "Neon Digital Systems", version = "1.0.0", about = "High-performance WAX Archive Builder")]
+#[command(author = "Neon Digital Systems", version = "1.1.0", about = "High-performance WAX Archive Builder")]
 struct Args {
     #[command(subcommand)]
     cmd: Commands,
@@ -32,6 +32,11 @@ enum Commands {
         #[arg(short, long)]
         file: String,
     },
+    /// List all files inside an archive
+    Ls {
+        #[arg(short, long)]
+        archive: PathBuf,
+    },
     /// Inspect archive metadata
     Inspect {
         #[arg(short, long)]
@@ -45,6 +50,7 @@ fn main() -> Result<()> {
     match args.cmd {
         Commands::Build { input, output } => build_archive(input, output),
         Commands::Read { archive, file } => read_file(archive, file),
+        Commands::Ls { archive } => list_archive(archive),
         Commands::Inspect { archive } => inspect_archive(archive),
     }
 }
@@ -160,6 +166,19 @@ fn read_file(archive: PathBuf, file_path: String) -> Result<()> {
             }
         }
         Err(e) => println!("Error: {}", e),
+    }
+    Ok(())
+}
+
+fn list_archive(archive: PathBuf) -> Result<()> {
+    let reader = WaxReader::open(&archive)?;
+    let files = reader.list_files()?;
+    
+    println!("{:<50} | {:<20} | {:<10}", "PATH", "MIME", "SIZE");
+    println!("{:-<50}-|-{:-<20}-|-{:-<10}", "", "", "");
+    
+    for file in files {
+        println!("{:<50} | {:<20} | {:<10}", file.path, file.mime_type, file.size);
     }
     Ok(())
 }
