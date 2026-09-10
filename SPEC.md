@@ -30,10 +30,10 @@ A2 (`wax-builder` CLI), A4 (conformance suite & fuzzers), A7 (pack signing).
 
 * All multi-byte integer fields in the **fixed header** are **little-endian**,
   unsigned, unless stated otherwise.
-  *(Rationale: all current and planned target platforms — ARมv7/ARM64/x86-64 —
-  are little-endian (targets: ARMv7, ARM64, x86-64); this lets the reader map the
-  header with zero byte-swapping. See §12 "Implementation notes / assumptions" —
-  this choice is not stated verbatim in the Refinement doc and is flagged there.)*
+  *(Rationale: all current and planned target platforms — ARMv7, ARM64, x86-64 —
+  are little-endian; this lets the reader map the header with zero byte-swapping.
+  See §12 "Implementation notes / assumptions" — this choice is not stated
+  verbatim in the Refinement doc and is flagged there.)*
 * Integer columns inside index segments use SQLite's native storage
   (`INTEGER`, up to 8 bytes, two's-complement). Values defined in this spec
   are non-negative and fit in 63 bits.
@@ -68,9 +68,10 @@ Body, general form (after N appends → N+1 segments):
   index_offset+index_length: EOF
 ```
 
-* **v0.9 emits exactly one segment** (`segment count = 1`, no `is_multi_volume`,
-  no appends performed by any v0.9 writer). For a v0.9 single-segment archive
-  the layout collapses to:
+* **A fresh v0.9 build emits exactly one segment** (`segment count = 1`, no
+  `is_multi_volume`). `wax-builder append` (A2) adds further segments via §7;
+  a single-segment archive is therefore the *initial* state, not the only legal
+  one. For a single-segment archive the layout collapses to:
 
   ```
   0                     : header (128 bytes)
@@ -82,9 +83,8 @@ Body, general form (after N appends → N+1 segments):
   and the invariant `index_offset == 128 + blob_section_length` MUST hold
   (§4.3, checked by the reader).
 
-* The **general segment-chain shape MUST still be implemented by every reader**
-  (merge logic, §5) and exercised by the conformance suite, even though no v0.9
-  writer produces more than one segment.
+* The **general segment-chain shape MUST be implemented by every reader**
+  (merge logic, §5) and exercised by the conformance suite.
 
 * Index segment bytes are a **raw, uncompressed SQLite database file** (SQLite's
   own on-disk format, page size chosen by the writer). The reader copies or maps
@@ -563,12 +563,31 @@ signed_message := SHA-256(
 ### 8.2 Sidecar file
 
 * Algorithm: **minisign** (Ed25519), signing `signed_message` in **prehashed
-  mode** (minisign `-H`; the 32-byte SHA-256 above is the message minisign
-  itself signs, and minisign additionally prehashes with BLAKE2b per its format).
+  mode** — the 32-byte SHA-256 above is the message minisign itself signs, and
+  minisign additionally prehashes it with BLAKE2b, producing an `ED`-algorithm
+  signature.
+* Concrete CLI mapping (minisign 0.12):
+  * **sign** — `minisign -S -s <seckey> -m <digest-file> -x <archive>.minisig -t <trusted comment>`.
+    Prehashed `ED` is minisign's *default* for `-S`; `-l` (legacy, non-prehashed)
+    MUST NOT be used. There is no `-H` flag on `-S`.
+  * **verify** — `minisign -V -H -p <pubkey> -m <digest-file> -x <archive>.minisig`.
+    Here `-H` *requires* the signature to be prehashed, rejecting a legacy-format
+    signature.
+
+  > Earlier revisions of this section said to sign with `-H`. That flag is
+  > verify-side only; the corrected mapping above produces the same prehashed
+  > signature the design intends. See §12.18.
 * File name: `<archive-filename>.minisig`, in the same directory.
 * The minisign *trusted comment* SHOULD carry `archive_uuid` (hex) and the
   header's `created_at`, so a verifier can bind the sidecar to a specific
-  archive state.
+  archive state. `wax-builder` writes exactly:
+
+  ```
+  trusted comment: wax archive_uuid=<32 lowercase hex chars> created_at=<decimal seconds>
+  ```
+
+  A verifier that finds an `archive_uuid=` token MUST compare it with the
+  header's `archive_uuid` and reject a mismatch (§8.3 step 3).
 * `flags.is_signed` SHOULD be set when a sidecar is expected.
 
 ### 8.3 Verification (reader)
@@ -756,7 +775,34 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
     real content (`zim2wax` output) exists.
 16. **No real-world corpus yet.** `zim2wax` does not exist; all fixtures are
     hand-built and small. Broad fuzzing against realistic archives is deferred.
-17. **SQLite index has a per-segment size floor.** With the writer's default
+17. **`wax-builder append` exists, so "v0.9 never appends" is retired.**
+    Earlier revisions said no v0.9 writer produces more than one segment. The A2
+    brief requires an `append` subcommand, so §1 now describes a single segment
+    as the *initial* state. Nothing about the on-disk shape changed — §7's
+    protocol was already normative — but readers can now meet multi-segment
+    archives in the field, not just in the conformance suite.
+18. **Signing CLI mapping corrected (`-H` is verify-side).** §8.2 previously said
+    to sign "in prehashed mode (minisign `-H`)". In minisign 0.12 `-H` is an
+    option of `-V`, not `-S`: signing produces the prehashed `ED` format by
+    default and `-l` selects the legacy form. §8.2 now spells out
+    `minisign -S …` for signing and `minisign -V -H …` for verification, which
+    yields exactly the prehashed signature the design intended. Implemented in
+    `wax-builder`'s `sign` module.
+19. **A fresh UUIDv4 makes builds non-reproducible; the identity is pinnable.**
+    §2 wants `archive_uuid` to be a stable per-pack identity and A2 mints a v4
+    (random) UUID at first build — which by itself means two builds of an
+    identical source tree can never be byte-identical. `wax-builder` therefore
+    accepts `--archive-uuid` (and `--created-at` / `$SOURCE_DATE_EPOCH`);
+    with both pinned, rebuilds *are* byte-identical. Default behaviour is
+    unchanged (fresh random identity per new pack). Whether release tooling
+    should pin the identity from a pack's own version metadata is a Track B
+    policy question, not settled here.
+20. **`created_at` is stored twice.** It appears in the header (§2) *and* in each
+    segment's `segment_meta.created_at` (§4.2). A "byte-identical except
+    created_at" comparison therefore has to account for a value inside the
+    SQLite segment, not just header bytes 24..32. Pinning `created_at` is the
+    practical way to compare builds.
+21. **SQLite index has a per-segment size floor.** With the writer's default
     `PRAGMA page_size = 4096`, an index segment is ≥ ~20–32 KiB even when it
     describes a single entry, so the "minimum-size archive" fixture is ~33 KiB,
     almost all index overhead. This is acceptable for real packs (thousands to
@@ -772,3 +818,4 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
 | Format version | Date | Change |
 |----------------|------|--------|
 | 0.9 | 2026-09-09 | Initial frozen specification (A3). Header 128 B; SQLite segment chain; `entries` / `manifest` / `segment_meta` / `signatures` / optional `search_index`; append-commit protocol; detached minisign sidecar signing model. |
+| 0.9 | 2026-09-10 | A2 pass — no byte-layout or schema change. §8.2 signing CLI mapping corrected (`-H` is verify-side, §12.18); trusted-comment format pinned; §1 no longer claims v0.9 writers never append (§12.17); §12.19–21 record the UUID/reproducibility interaction and the duplicated `created_at`. |

@@ -3,8 +3,8 @@
 //! `build` writes a single-segment v0.9 archive. `append` adds a further
 //! `(blob region, index segment)` pair following the append-commit protocol
 //! (SPEC §7): append blobs + segment, fsync, then overwrite the 128-byte header
-//! in place as the final step. No v0.9 *builder* calls `append`, but the format
-//! and the A4 suite require the general shape, so it lives here.
+//! in place as the final step. `wax-builder append` (A2) drives this path; the
+//! A4 conformance suite drives it directly.
 
 use crate::header::WaxHeader;
 use crate::model::{Compression, EntryContent, EntryInput};
@@ -33,6 +33,7 @@ struct Prepared {
 pub struct WaxWriter {
     archive_uuid: [u8; 16],
     created_at: u64,
+    flags: u16,
 }
 
 impl WaxWriter {
@@ -40,11 +41,24 @@ impl WaxWriter {
         WaxWriter {
             archive_uuid,
             created_at: now(),
+            flags: 0,
         }
     }
 
     pub fn created_at(mut self, t: u64) -> Self {
         self.created_at = t;
+        self
+    }
+
+    /// Header `flags` for a fresh [`WaxWriter::build`] (SPEC §2.1). Unknown bits
+    /// are cleared on serialization. `append` preserves the existing archive's
+    /// flags instead of using this value.
+    ///
+    /// This matters for signing: `is_signed` lives in the header, and the header
+    /// is inside the signed digest (SPEC §8.1), so the flag must be set *before*
+    /// the digest is computed.
+    pub fn flags(mut self, flags: u16) -> Self {
+        self.flags = flags;
         self
     }
 
@@ -102,7 +116,7 @@ impl WaxWriter {
         let header = WaxHeader {
             version_major: FORMAT_VERSION_MAJOR,
             version_minor: FORMAT_VERSION_MINOR,
-            flags: 0,
+            flags: self.flags,
             archive_uuid: self.archive_uuid,
             created_at: self.created_at,
             index_offset,
@@ -118,8 +132,7 @@ impl WaxWriter {
     }
 
     /// Append a `(blob region, index segment)` pair to an existing archive,
-    /// following SPEC §7.1. Used by the conformance suite; not part of the v0.9
-    /// builder flow.
+    /// following SPEC §7.1. Drives `wax-builder append` (A2).
     pub fn append(&self, archive: impl AsRef<Path>, entries: Vec<EntryInput>) -> Result<()> {
         // Redirect targets in an append may point at entries carried by earlier
         // segments, so those paths count as valid targets during flattening.

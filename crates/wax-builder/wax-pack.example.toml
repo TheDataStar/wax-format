@@ -1,0 +1,66 @@
+# Example wax-pack.toml — build-time configuration for `wax-builder build`.
+#
+# Place this at the root of your source tree as `wax-pack.toml` and it is picked
+# up automatically (and excluded from the archive), or point at it with
+# `--config`. Every section is optional.
+
+# ---------------------------------------------------------------------------
+# [manifest] — rows written into the archive's segment-0 `manifest` table.
+#
+# IMPORTANT: manifest *content* is Track B's schema (SPEC.md §5.6, §6.4).
+# wax-builder writes these values verbatim as TEXT and validates NOTHING:
+# it does not require any field, does not check value domains, and passes
+# unknown keys straight through so Track B can add fields without a code change.
+# The six fields below are the B3 set; `inspect` reports which are absent.
+# ---------------------------------------------------------------------------
+[manifest]
+name = "Community Science Library"
+icon = "img/logo.png"
+category = "reference"
+license = "CC-BY-SA-4.0"
+version = "2026.09"
+min_hw_tier = "1"
+
+# Unknown keys are allowed and passed through untouched:
+# publisher = "Nairobi Community Trust"
+# source_url = "https://example.org/dump"
+#
+# Arrays and tables are rejected rather than encoded by guesswork — the manifest
+# column is TEXT and Track B has not defined a nesting convention.
+
+# ---------------------------------------------------------------------------
+# [build] — how entries are stored.
+# ---------------------------------------------------------------------------
+[build]
+# Default codec. SPEC.md §3 defines exactly "zstd" and "none" for v0.9.
+compression = "zstd"
+
+# Extensions stored verbatim regardless of the default above. These formats are
+# already entropy-coded, so zstd costs CPU and usually grows the blob. Setting
+# this key replaces the built-in list rather than adding to it.
+# store_uncompressed = ["png", "jpg", "webp", "mp4", "woff2", "pdf"]
+
+# Path prefixes (matched against the normalized entry path) to leave out.
+# exclude = ["drafts/", ".git/"]
+
+# ---------------------------------------------------------------------------
+# [titles] — optional human-readable `entries.title` per path.
+# ---------------------------------------------------------------------------
+[titles]
+"index.html" = "Home"
+"articles/photosynthesis.html" = "Photosynthesis"
+
+# ---------------------------------------------------------------------------
+# [aliases] — redirect entries: "alias path" = "target path".
+#
+# Declared chains are flattened at build time so the on-disk graph is exactly
+# one hop (SPEC.md §5.3, §6.2) — a reader never follows more than one
+# indirection. Below, old-photo.html is written pointing straight at
+# photosynthesis.html, not at photo.html.
+#
+# A cycle, or an alias whose ultimate target does not exist, is a build error.
+# ---------------------------------------------------------------------------
+[aliases]
+"start.html" = "index.html"
+"articles/photo.html" = "articles/photosynthesis.html"
+"articles/old-photo.html" = "articles/photo.html"
