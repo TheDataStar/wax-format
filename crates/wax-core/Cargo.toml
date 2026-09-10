@@ -2,10 +2,17 @@
 name = "wax-core"
 version = "1.1.0"
 edition = "2021"
+description = "Reader/writer library for the WAX offline-web archive format (spec: SPEC.md, format v0.9)"
+license = "MIT"
 
 [dependencies]
-zerocopy = { version = "0.7", features = ["derive"] }
 rusqlite = { version = "0.30", features = ["bundled"] }
 zstd = "0.13"
 tempfile = "3.8"
 thiserror = "1.0"
+sha2 = "0.10"
+
+[dev-dependencies]
+rusqlite = { version = "0.30", features = ["bundled"] }
+tempfile = "3.8"
+sha2 = "0.10"

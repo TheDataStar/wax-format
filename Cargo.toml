@@ -3,4 +3,5 @@ members = [
     "crates/wax-core",
     "crates/wax-builder",
 ]
+exclude = ["fuzz"]
 resolver = "2"

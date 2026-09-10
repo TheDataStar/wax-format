@@ -1,0 +1,12 @@
+# Rust build artifacts
+/target
+/crates/*/target
+/fuzz/target
+
+# cargo-fuzz working state (seed corpora ARE committed, see fuzz/corpus/)
+/fuzz/artifacts
+/fuzz/coverage
+
+# editor / OS
+*.swp
+.DS_Store

@@ -1,0 +1,4 @@
+untrusted comment: signature from a WAX fixture (DELIBERATELY INVALID)
+RWTinvalidbase64signaturedatadefinitelynotrealAAAA==
+trusted comment: uuid=5741584649585455 corrupted=yes
+AAAAinvalidglobalsigAAAA==

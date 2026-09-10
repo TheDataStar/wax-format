@@ -1,0 +1,41 @@
+[package]
+name = "wax-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.wax-core]
+path = "../crates/wax-core"
+
+# Keep this crate out of the parent workspace; `cargo fuzz` drives it directly.
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "header-parse"
+path = "fuzz_targets/header_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "index-loader"
+path = "fuzz_targets/index_loader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "segment-merge"
+path = "fuzz_targets/segment_merge.rs"
+test = false
+doc = false
+bench = false

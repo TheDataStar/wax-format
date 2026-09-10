@@ -1,105 +1,77 @@
-# WAX (Web Archive eXtended) [.wax]
+# WAX — Web Archive eXtended (`.wax`)
 
-> **A high-performance, random-access container format for the offline web.**
+> A random-access container for the offline web — entire sites (an encyclopedia,
+> a documentation set, a library) in one signed, individually-compressed file
+> that a server can stream pages and media straight out of.
 
-WAX is a specialized file format designed to store entire websites (Wikipedia, Documentation, E-Libraries) in a single, highly compressed binary file. Unlike `.zip` or `.tar.gz`, WAX is optimized for **milliseconds-latency random access**, allowing web servers to stream video and load pages directly from the archive without decompressing the whole file.
+Part of **DeltOS Track A**. The on-disk format is defined, byte for byte, in
+**[`SPEC.md`](SPEC.md)** — WAX format **v0.9**. Code implements the spec; if they
+disagree, the spec wins.
 
-## 🏗 Architecture
+## Layout in one paragraph
 
-A `.wax` file acts as a **Read-Only File System**. It is composed of three distinct sections:
+`[ 128-byte header ][ blob region ][ SQLite index segment ]` — repeated
+`(blob region, index segment)` for each append; v0.9 writers emit exactly one
+pair. The header carries the magic, version, `archive_uuid`, and pointers to the
+newest index segment. Each entry's bytes are one contiguous span, stored raw or
+as a single zstd frame. The index is an embedded SQLite database: an `entries`
+table (`path`, `title`, `offset`, `length`, `sha256`, `redirect_to`, …), a
+segment-0-only `manifest`, `segment_meta` chain linkage, and a `signatures`
+table reserved for the v2 trust model. Appends never rewrite existing bytes —
+only the fixed header is overwritten, as the final atomic step
+([SPEC §7](SPEC.md#7-append-commit-protocol-normative)).
 
-1.  **The Header (64 bytes)**
-    * Contains Magic Bytes (`WAX1`), Versioning, and UUIDs.
-    * Pads to exactly 64 bytes to align with CPU cache lines for parsing speed.
-2.  **The Blob Storage (Body)**
-    * Contains the raw file data (HTML, Images, CSS).
-    * Each file is compressed individually using **Zstandard (zstd)**.
-    * *Why Zstd?* It offers decompression speeds 3-5x faster than Deflate (Zip) with better compression ratios.
-3.  **The Index (Footer)**
-    * An embedded **SQLite** database appended to the end of the file.
-    * Contains the file map: `path -> (byte_offset, length, mime_type)`.
-    * *Why SQLite?* It allows for complex queries (e.g., "Find all PDFs in the /science folder") instantly, without parsing a proprietary tree structure.
+## Crates
 
-## 📦 Key Dependencies
+| Crate | Role | Status |
+|-------|------|--------|
+| [`wax-core`](crates/wax-core) | reader + writer library (components A1) | reader path, writer path, segment-chain merge, one-hop redirects, checksum verification |
+| [`wax-builder`](crates/wax-builder) | CLI: directory tree → `.wax` (A2) | minimal `build` / `read` / `ls` / `inspect`; full manifest + signing surface is the next Track A prompt |
+| [`fuzz`](fuzz) | `cargo-fuzz` targets against the reader (A4) | 3 targets, build & run clean |
 
-We rely on a minimal but robust set of Rust crates to ensure stability and performance:
+Signing (A7) is **specified** in [SPEC §8](SPEC.md#8-signing-detached-sidecar--normative-for-v09v1x)
+(detached minisign sidecar over `SHA-256(header ‖ index-chain)`); the
+implementation is a later phase.
 
-* **`rusqlite`**: Used to interface with the embedded SQLite index.
-* **`zstd`**: The compression engine used by Facebook and the Linux Kernel.
-* **`zerocopy`**: Allows us to read headers directly from raw memory without expensive data cloning.
-* **`walkdir`**: Efficiently traverses directory trees during the build process.
+## Build & test
 
-## 🚀 Installation
-
-### Prerequisites
-* [Rust & Cargo](https://rustup.rs/) (Latest Stable)
-
-### Building from Source
-
-```bash
-git clone [https://github.com/TheDataStar/wax-format.git](https://github.com/TheDataStar/wax-format.git)
-cd wax-format
-cargo build --release
-```
-
-The executable will be located in `./target/release/wax-builder`.
-
-## 📖 Usage
-
-The `wax-builder` CLI handles both the creation and verification of archives.
-
-### 1. Creating an Archive (Build)
-Turn a folder of static HTML files into a WAX archive.
+Needs Rust (stable) with a C toolchain for the bundled SQLite + zstd.
 
 ```bash
-# Syntax: wax-builder build --input <SOURCE_FOLDER> --output <DESTINATION_FILE>
-
-cargo run -p wax-builder -- build --input ./wiki-dump --output ./wiki.wax
+cargo build --workspace
+cargo test  --workspace      # conformance corpus + round-trip + fuzz smoke
 ```
 
-> **Note:** The builder automatically detects MIME types (e.g., `.html` -> `text/html`) and normalizes file paths for cross-platform compatibility.
-
-### 2. Verifying an Archive (Read)
-You can inspect the contents of an archive to ensure integrity.
+Fuzzing (nightly + `cargo install cargo-fuzz`):
 
 ```bash
-# Syntax: wax-builder read --archive <WAX_FILE> --file <INTERNAL_PATH>
-
-cargo run -p wax-builder -- read --archive ./wiki.wax --file "index.html"
+cargo +nightly fuzz run header-parse
+cargo +nightly fuzz run index-loader
+cargo +nightly fuzz run segment-merge
 ```
 
-## ⚠️ Important Considerations
+Regenerate the checked-in fixtures / fuzz seeds:
 
-### Static vs. Dynamic Content
-WAX is a **static** file container.
-* **Works for:** Static HTML, CSS, JS, Images, Videos, SPA (Single Page Apps like React/Vue).
-* **Does NOT work for:** PHP, Python, Ruby, or Node.js backend logic.
-    * *Example:* If you want to archive a WordPress site, you must first "flatten" it into static HTML using a tool like `HTTrack` or `wget`.
-
-### Search
-While WAX stores the files, it does not inherently "execute" search logic. However, the embedded SQLite index **can** be used by the host OS (like CosmOS) to implement instant full-text search across filenames.
-
-## 🛠 Integrating WAX into Your Rust App
-
-You can use the `wax-core` library to add WAX support to your own web server or tools.
-
-```toml
-# Cargo.toml
-[dependencies]
-wax-core = { path = "../wax-core" } # Or git url
+```bash
+cargo run -p wax-core --example gen_fixtures
 ```
 
-```rust
-use wax_core::reader::WaxReader;
+## CLI
 
-fn serve_request(path: &str) {
-    let mut reader = WaxReader::open("library.wax").unwrap();
-    
-    if let Ok(data) = reader.get_file_data(path) {
-        println!("Sending {} bytes...", data.len());
-    }
-}
+```bash
+wax-builder build   --input ./site --output ./site.wax
+wax-builder inspect --archive ./site.wax
+wax-builder ls      --archive ./site.wax
+wax-builder read    --archive ./site.wax --file index.html    # bytes to stdout
 ```
 
-## 📄 License
-MIT License. Free for personal and commercial use.
+## Scope
+
+WAX is a **static, read-only** container: HTML/CSS/JS/images/video/SPAs, not
+server code. It does not run search — the optional FTS5 `search_index` / the
+reserved stand-off search segment is for the host OS to populate and query
+(component A9, v2).
+
+## License
+
+MIT.
