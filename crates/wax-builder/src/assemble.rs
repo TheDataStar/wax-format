@@ -119,3 +119,15 @@ fn choose_compression(path: &str, cfg: &PackConfig) -> Compression {
         Compression::Zstd
     }
 }
+
+/// Best-effort normalization of a manifest-declared path (`icon`, `entry_point`)
+/// into the form entries are stored under, so it can be looked up.
+///
+/// Deliberately lenient about a leading `./` or `/` — those are natural things
+/// to write in a config — but it does not case-fold, because entry lookup is
+/// exact-match (SPEC §6.1).
+pub fn normalize_for_lookup(value: &str) -> String {
+    let v = value.replace('\\', "/");
+    let v = v.strip_prefix("./").unwrap_or(&v);
+    v.trim_start_matches('/').to_string()
+}

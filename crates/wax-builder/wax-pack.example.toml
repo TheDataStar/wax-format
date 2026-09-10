@@ -2,31 +2,58 @@
 #
 # Place this at the root of your source tree as `wax-pack.toml` and it is picked
 # up automatically (and excluded from the archive), or point at it with
-# `--config`. Every section is optional.
+# `--config`.
 
 # ---------------------------------------------------------------------------
-# [manifest] — rows written into the archive's segment-0 `manifest` table.
+# [manifest] — Track B's B3 pack manifest, written into segment 0.
 #
-# IMPORTANT: manifest *content* is Track B's schema (SPEC.md §5.6, §6.4).
-# wax-builder writes these values verbatim as TEXT and validates NOTHING:
-# it does not require any field, does not check value domains, and passes
-# unknown keys straight through so Track B can add fields without a code change.
-# The six fields below are the B3 set; `inspect` reports which are absent.
+# ENFORCED against the B3 field table in docs/track-a-refinement.md §16. That
+# table is exhaustive, not a sample: an unknown key is a build error, not a
+# pass-through. All eight fields below are REQUIRED — a build fails if any is
+# missing or empty.
 # ---------------------------------------------------------------------------
 [manifest]
 name = "Community Science Library"
-icon = "img/logo.png"
-category = "reference"
-license = "CC-BY-SA-4.0"
-version = "2026.09"
-min_hw_tier = "1"
 
-# Unknown keys are allowed and passed through untouched:
-# publisher = "Nairobi Community Trust"
-# source_url = "https://example.org/dump"
+# Path to an icon entry INSIDE this archive — not a bare external filename and
+# not a data: URI. The build fails if it does not name a real entry.
+icon = "img/icon.svg"
+
+# One of exactly: reference | education | media | tools | civic | health
+category = "reference"
+
+# SPDX identifier, or a short free-text description.
+license = "CC-BY-SA-4.0"
+
+attribution = "Nairobi Community Trust"
+
+# Human-facing version. Distinct from archive_uuid and from the WAX format
+# version — this is what a person reads in a pack list.
+version = "2026.09.1"
+
+# One of Track E's E6 hardware-tier names, exactly:
+#   pi_zero_2w | pi_4 | pi_5 | mini_pc
+# NOT a Deployment Profile name (Kiosk / Classroom / Community Hub / Field Ops)
+# — those are a different axis and are rejected with a specific error.
+min_hw_tier = "pi_zero_2w"
+
+# Path to the launch target inside this archive. Same rules as `icon`.
+entry_point = "index.html"
+
+# --- Optional B3 fields ----------------------------------------------------
+# Omitted entirely from the manifest when unset — never written as 0 or "".
+# Uncomment only what actually applies to the pack.
 #
-# Arrays and tables are rejected rather than encoded by guesswork — the manifest
-# column is TEXT and Track B has not defined a nesting convention.
+# runtime_ram_bytes = 268435456          # only if the pack has a companion runtime service
+# runtime_storage_bytes = 1073741824     # only if it needs writable storage beyond unpacking
+# languages = "en,sw,fr"                 # comma-separated language codes
+# depends_on = "base-fonts,mathjax"      # comma-separated pack references
+
+# --- Fields you must NOT set ----------------------------------------------
+# total_size_bytes — computed by wax-builder from the finished archive.
+#                    Setting it here is a build error.
+# id              — removed from the schema. archive_uuid (the header field) is
+#                    the only identity a pack carries. Setting it is an error.
 
 # ---------------------------------------------------------------------------
 # [build] — how entries are stored.
@@ -37,7 +64,7 @@ compression = "zstd"
 
 # Extensions stored verbatim regardless of the default above. These formats are
 # already entropy-coded, so zstd costs CPU and usually grows the blob. Setting
-# this key replaces the built-in list rather than adding to it.
+# this key REPLACES the built-in list rather than adding to it.
 # store_uncompressed = ["png", "jpg", "webp", "mp4", "woff2", "pdf"]
 
 # Path prefixes (matched against the normalized entry path) to leave out.

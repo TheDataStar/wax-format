@@ -18,6 +18,7 @@ pub mod config;
 pub mod sign;
 
 use anyhow::{bail, Context, Result};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use wax_core::header::flag;
 use wax_core::{WaxReader, WaxWriter};
@@ -92,6 +93,11 @@ pub struct WriteReport {
 /// A new UUIDv4 `archive_uuid` is minted here (SPEC §2) unless
 /// [`WriteOptions::archive_uuid`] pins one; appends reuse whatever is already
 /// in the archive.
+///
+/// The manifest is validated against the B3 schema first (§16), including that
+/// `icon` and `entry_point` name entries that actually exist in this pack, and
+/// `total_size_bytes` is measured from the finished archive — see
+/// [`MAX_SIZE_PASSES`] for why that takes more than one write.
 pub fn build_pack(
     input: &Path,
     output: &Path,
@@ -99,9 +105,20 @@ pub fn build_pack(
     opts: &WriteOptions,
 ) -> Result<WriteReport> {
     let (entries, stats) = assemble::collect_entries(input, cfg)?;
-    let manifest = cfg.manifest.to_rows()?;
     let uuid = opts.mint_uuid();
     let n = entries.len();
+
+    // Validate the manifest before writing anything. `icon`/`entry_point` are
+    // checked against the paths this build will actually contain.
+    let declares_manifest = !cfg.manifest.is_empty();
+    if declares_manifest {
+        let paths: BTreeSet<String> = entries.iter().map(|e| {
+            wax_core::writer::normalize_path(&e.path).unwrap_or_else(|_| e.path.clone())
+        }).collect();
+        cfg.manifest
+            .validate(Some(&paths))
+            .context("invalid [manifest] in pack config")?;
+    }
 
     // `is_signed` lives in the header and the header is inside the signed digest
     // (SPEC §8.1), so the flag has to be set before the archive is written —
@@ -111,13 +128,22 @@ pub fn build_pack(
         flags |= flag::IS_SIGNED;
     }
 
-    let mut writer = WaxWriter::new(uuid).flags(flags);
-    if let Some(t) = opts.effective_created_at() {
-        writer = writer.created_at(t);
+    let make_writer = || {
+        let mut w = WaxWriter::new(uuid).flags(flags);
+        if let Some(t) = opts.effective_created_at() {
+            w = w.created_at(t);
+        }
+        w
+    };
+
+    if !declares_manifest {
+        // No manifest to carry a size, so a single write is enough.
+        make_writer()
+            .build(output, entries, &BTreeMap::new())
+            .with_context(|| format!("writing {}", output.display()))?;
+    } else {
+        write_until_size_is_stable(output, entries, cfg, &make_writer)?;
     }
-    writer
-        .build(output, entries, &manifest)
-        .with_context(|| format!("writing {}", output.display()))?;
 
     let sidecar = maybe_sign(output, opts)?;
     let segments = WaxReader::open(output)?.segment_count();
@@ -130,6 +156,47 @@ pub fn build_pack(
         stats,
         sidecar,
     })
+}
+
+/// Cap on write passes when settling `total_size_bytes`.
+///
+/// `manifest.total_size_bytes` records the finished archive's own size, so the
+/// value is self-referential: writing a longer number can grow the index
+/// segment, which grows the file, which changes the number. The fix is to write,
+/// measure, and rewrite until the size stops moving. SQLite's 4 KiB page
+/// granularity absorbs the handful of bytes a longer decimal costs, so this
+/// settles on pass 2 in practice; the cap exists so a pathological case fails
+/// loudly instead of looping.
+pub const MAX_SIZE_PASSES: usize = 6;
+
+fn write_until_size_is_stable(
+    output: &Path,
+    entries: Vec<wax_core::EntryInput>,
+    cfg: &PackConfig,
+    make_writer: &dyn Fn() -> WaxWriter,
+) -> Result<u64> {
+    let mut claimed: u64 = 0;
+    for pass in 1..=MAX_SIZE_PASSES {
+        let manifest = cfg.manifest.to_rows(claimed);
+        make_writer()
+            .build(output, entries.clone(), &manifest)
+            .with_context(|| format!("writing {}", output.display()))?;
+        let actual = std::fs::metadata(output)
+            .with_context(|| format!("measuring {}", output.display()))?
+            .len();
+        if actual == claimed {
+            return Ok(actual);
+        }
+        if pass == MAX_SIZE_PASSES {
+            bail!(
+                "manifest total_size_bytes did not settle after {MAX_SIZE_PASSES} passes \
+                 (last claimed {claimed}, actual {actual}). This should not happen; please \
+                 report it with the pack config."
+            );
+        }
+        claimed = actual;
+    }
+    unreachable!("loop returns or bails")
 }
 
 /// Append a new `(blob region, index segment)` pair to an existing archive
@@ -150,10 +217,16 @@ pub fn append_pack(
         bail!("archive {} does not exist", archive.display());
     }
     // `manifest` is segment-0-only and immutable across appends (SPEC §5.6): a
-    // manifest change is a new pack version, not an append.
-    let declared = cfg.manifest.to_rows()?;
-    if !declared.is_empty() {
+    // manifest change is a new pack version, not an append. `total_size_bytes`
+    // is excluded from the comparison because the builder computes it — a
+    // config never carries one, so it is re-derived from the archive.
+    if !cfg.manifest.is_empty() {
         let existing = WaxReader::open(archive)?.manifest().clone();
+        let existing_size = existing
+            .get("total_size_bytes")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        let declared = cfg.manifest.to_rows(existing_size);
         if declared != existing {
             bail!(
                 "this config's [manifest] differs from the archive's. The manifest lives \

@@ -150,7 +150,11 @@ fn cmd_build(
         Some(p) => println!("  signed       : {}", p.display()),
         None => println!("  signed       : no (pass --sign-key to sign)"),
     }
-    report_manifest_gaps(&cfg);
+    if let Ok(r) = WaxReader::open(&report.archive) {
+        if let Some(sz) = r.manifest().get("total_size_bytes") {
+            println!("  total_size   : {sz} bytes (computed)");
+        }
+    }
     Ok(())
 }
 
@@ -180,6 +184,21 @@ fn cmd_append(
         "  archive_uuid : {} (preserved)",
         sign::hex16(&report.archive_uuid)
     );
+    // The manifest is segment-0-only and immutable (SPEC 5.6), so an append
+    // cannot update total_size_bytes — the recorded value now understates the
+    // file. Surfaced rather than silently left wrong.
+    if let Ok(r) = WaxReader::open(&archive) {
+        if let Some(claimed) = r.manifest().get("total_size_bytes") {
+            let actual = std::fs::metadata(&archive).map(|m| m.len()).unwrap_or(0);
+            if claimed.parse::<u64>().ok() != Some(actual) {
+                println!(
+                    "  NOTE         : manifest total_size_bytes = {claimed} but the file is \
+                     now {actual} bytes. The manifest is immutable across appends \
+                     (SPEC 5.6), so this value describes the pack as first built."
+                );
+            }
+        }
+    }
     match &report.sidecar {
         Some(p) => println!("  re-signed    : {}", p.display()),
         None => {
@@ -238,16 +257,19 @@ fn cmd_inspect(archive: PathBuf, list_entries: bool) -> Result<()> {
             println!("  {k} = {v}");
         }
     }
-    let missing: Vec<&str> = wax_builder::config::ManifestConfig::B3_FIELDS
-        .iter()
-        .copied()
-        .filter(|k| !manifest.contains_key(*k))
-        .collect();
-    if !missing.is_empty() {
-        println!(
-            "  (B3 fields absent, not validated by A2: {})",
-            missing.join(", ")
-        );
+    if !manifest.is_empty() {
+        let missing: Vec<&str> = wax_builder::config::REQUIRED_FIELDS
+            .iter()
+            .copied()
+            .filter(|k| !manifest.contains_key(*k))
+            .collect();
+        if !missing.is_empty() {
+            println!(
+                "  WARNING: required B3 field(s) absent: {} \
+                 (pack predates schema enforcement, or was not built by wax-builder)",
+                missing.join(", ")
+            );
+        }
     }
 
     if list_entries {
@@ -341,16 +363,5 @@ fn describe_flags(flags: u16) -> String {
         String::new()
     } else {
         format!(" [{}]", set.join(" "))
-    }
-}
-
-fn report_manifest_gaps(cfg: &PackConfig) {
-    let missing = cfg.manifest.missing_b3();
-    if !missing.is_empty() {
-        println!(
-            "  note         : no [manifest] value for {} — A2 does not require or \
-             validate these (manifest schema is Track B, SPEC 5.6/6.4)",
-            missing.join(", ")
-        );
     }
 }

@@ -3,23 +3,38 @@
 //! Supplies everything the directory walk cannot infer: the `manifest` rows, the
 //! alias (redirect) map, per-entry titles, and the compression policy.
 //!
-//! # Manifest and the Track B boundary
+//! # Manifest = Track B's B3 schema, enforced
 //!
-//! SPEC.md §5.6 / §6.4 deliberately leave `manifest` *content* to Track B: A3
-//! fixes only the table shape (`key TEXT PRIMARY KEY, value TEXT`), its
-//! segment-0-only location, and its immutability across appends. This module
-//! therefore treats manifest rows as **opaque strings** and performs **no
-//! validation**: it does not enforce which keys are required, does not check
-//! value domains (e.g. what `min_hw_tier` may be), and passes unknown keys
-//! straight through so Track B can add fields without a code change.
+//! [`docs/track-a-refinement.md`](../../../docs/track-a-refinement.md) §16
+//! reproduces Track B's B3 field table and states it is **exhaustive, not
+//! illustrative** — `wax-builder` validates against it rather than passing keys
+//! through. That is the change from the previous pass, where any key (and any
+//! value) was accepted verbatim.
 //!
-//! [`ManifestConfig::B3_FIELDS`] names the six fields called out for Track B's
-//! B3 field set; they are reported by `inspect` but never enforced here.
+//! * Required: `name`, `icon`, `category`, `license`, `attribution`, `version`,
+//!   `min_hw_tier`, `entry_point`.
+//! * Closed enums: [`CATEGORIES`], [`MIN_HW_TIERS`].
+//! * `total_size_bytes` is computed at build time and rejected from config.
+//! * Optional and omitted-when-unset: `runtime_ram_bytes`,
+//!   `runtime_storage_bytes`, `languages`, `depends_on`.
+//! * There is no `id` field — `archive_uuid` is the only identity a pack
+//!   carries (§16). A config supplying one is an error, not a silent drop.
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+
+/// `category` domain (§16). Closed set.
+pub const CATEGORIES: [&str; 6] = ["reference", "education", "media", "tools", "civic", "health"];
+
+/// `min_hw_tier` domain — Track E's E6 hardware-tier names (§16). Closed set.
+pub const MIN_HW_TIERS: [&str; 4] = ["pi_zero_2w", "pi_4", "pi_5", "mini_pc"];
+
+/// Deployment Profile names. A different axis entirely from the hardware tier;
+/// an earlier draft used these for `min_hw_tier`, so they get a targeted error
+/// rather than a generic "not in the list".
+const DEPLOYMENT_PROFILES: [&str; 4] = ["kiosk", "classroom", "communityhub", "fieldops"];
 
 /// Parsed `wax-pack.toml`.
 #[derive(Debug, Default, Deserialize)]
@@ -38,79 +53,231 @@ pub struct PackConfig {
     pub titles: BTreeMap<String, String>,
 }
 
-/// Manifest rows. Known B3 fields are named for discoverability only — every
-/// value is written verbatim as a string and nothing is validated here.
+/// The B3 manifest fields (§16). Unknown keys land in `unknown` and are rejected
+/// by [`ManifestConfig::validate`] rather than silently written.
 #[derive(Debug, Default, Deserialize)]
 pub struct ManifestConfig {
+    // --- required ---
     pub name: Option<String>,
     pub icon: Option<String>,
     pub category: Option<String>,
     pub license: Option<String>,
+    pub attribution: Option<String>,
     pub version: Option<String>,
     pub min_hw_tier: Option<String>,
-    /// Any other key/value pair, passed through untouched.
+    pub entry_point: Option<String>,
+
+    // --- computed by the builder; must NOT come from config ---
+    pub total_size_bytes: Option<toml::Value>,
+
+    // --- optional; omitted entirely when unset, never defaulted to 0/"" ---
+    pub runtime_ram_bytes: Option<i64>,
+    pub runtime_storage_bytes: Option<i64>,
+    pub languages: Option<String>,
+    pub depends_on: Option<String>,
+
+    // --- explicitly removed from the schema ---
+    pub id: Option<toml::Value>,
+
+    /// Anything not in the B3 table.
     #[serde(flatten)]
-    pub extra: BTreeMap<String, toml::Value>,
+    pub unknown: BTreeMap<String, toml::Value>,
 }
 
-impl ManifestConfig {
-    /// The six fields named as Track B's B3 set. Presence is *reported*, never
-    /// required — see the module docs.
-    pub const B3_FIELDS: [&'static str; 6] =
-        ["name", "icon", "category", "license", "version", "min_hw_tier"];
+/// The eight required B3 fields, in table order.
+pub const REQUIRED_FIELDS: [&str; 8] = [
+    "name",
+    "icon",
+    "category",
+    "license",
+    "attribution",
+    "version",
+    "min_hw_tier",
+    "entry_point",
+];
 
-    /// Flatten to the `manifest` rows written into segment 0.
-    ///
-    /// Scalars become their natural string form; arrays/tables are rejected
-    /// rather than guessing an encoding, because SPEC §5.6 types the column as
-    /// `TEXT` and Track B has not defined a nesting convention.
-    pub fn to_rows(&self) -> Result<BTreeMap<String, String>> {
-        let mut rows = BTreeMap::new();
-        let named: [(&str, &Option<String>); 6] = [
+impl ManifestConfig {
+    fn required_pairs(&self) -> [(&'static str, &Option<String>); 8] {
+        [
             ("name", &self.name),
             ("icon", &self.icon),
             ("category", &self.category),
             ("license", &self.license),
+            ("attribution", &self.attribution),
             ("version", &self.version),
             ("min_hw_tier", &self.min_hw_tier),
-        ];
-        for (k, v) in named {
+            ("entry_point", &self.entry_point),
+        ]
+    }
+
+    /// True when no manifest key was supplied at all. An empty `manifest` table
+    /// is valid at the `wax-core` layer (§15) — enforcement applies to a pack
+    /// that declares a manifest.
+    pub fn is_empty(&self) -> bool {
+        self.required_pairs().iter().all(|(_, v)| v.is_none())
+            && self.total_size_bytes.is_none()
+            && self.runtime_ram_bytes.is_none()
+            && self.runtime_storage_bytes.is_none()
+            && self.languages.is_none()
+            && self.depends_on.is_none()
+            && self.id.is_none()
+            && self.unknown.is_empty()
+    }
+
+    /// Enforce §16. `archive_paths`, when supplied, additionally checks that
+    /// `icon` and `entry_point` name entries that actually exist in the pack.
+    pub fn validate(&self, archive_paths: Option<&BTreeSet<String>>) -> Result<()> {
+        // Rejected keys first — they produce the most specific advice.
+        if self.id.is_some() {
+            bail!(
+                "manifest key `id` was removed from the B3 schema: it duplicated \
+                 `archive_uuid` without adding meaning, and `archive_uuid` (the header \
+                 field) is the only identity a pack carries. Remove it from wax-pack.toml \
+                 (see docs/track-a-refinement.md §16)."
+            );
+        }
+        if self.total_size_bytes.is_some() {
+            bail!(
+                "manifest key `total_size_bytes` is computed by wax-builder at build \
+                 time and must not be set in wax-pack.toml. Remove it — the value \
+                 written into the pack is measured from the finished archive \
+                 (see docs/track-a-refinement.md §16)."
+            );
+        }
+        if !self.unknown.is_empty() {
+            let mut keys: Vec<&str> = self.unknown.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            bail!(
+                "unknown manifest key(s): {}. The B3 field table is exhaustive, not a \
+                 sample (docs/track-a-refinement.md §16); permitted keys are: {}",
+                keys.join(", "),
+                allowed_keys().join(", ")
+            );
+        }
+
+        // Required presence.
+        let missing: Vec<&str> = self
+            .required_pairs()
+            .iter()
+            .filter(|(_, v)| v.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true))
+            .map(|(k, _)| *k)
+            .collect();
+        if !missing.is_empty() {
+            bail!(
+                "manifest is missing required field(s): {}. All eight of {} are required \
+                 by the B3 schema (docs/track-a-refinement.md §16)",
+                missing.join(", "),
+                REQUIRED_FIELDS.join(", ")
+            );
+        }
+
+        // Closed enums.
+        let category = self.category.as_deref().unwrap_or_default();
+        if !CATEGORIES.contains(&category) {
+            bail!(
+                "manifest category {category:?} is not permitted; must be one of: {}",
+                CATEGORIES.join(", ")
+            );
+        }
+        let tier = self.min_hw_tier.as_deref().unwrap_or_default();
+        if !MIN_HW_TIERS.contains(&tier) {
+            let squashed: String = tier
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .map(|c| c.to_ascii_lowercase())
+                .collect();
+            if DEPLOYMENT_PROFILES.contains(&squashed.as_str()) {
+                bail!(
+                    "manifest min_hw_tier {tier:?} is a Deployment Profile name, not a \
+                     hardware tier — they are different axes. Use one of Track E's E6 \
+                     tier names: {}",
+                    MIN_HW_TIERS.join(", ")
+                );
+            }
+            bail!(
+                "manifest min_hw_tier {tier:?} is not permitted; must be one of: {}",
+                MIN_HW_TIERS.join(", ")
+            );
+        }
+
+        // icon / entry_point name entries inside the pack.
+        if let Some(paths) = archive_paths {
+            for (key, value) in [
+                ("icon", self.icon.as_deref().unwrap_or_default()),
+                ("entry_point", self.entry_point.as_deref().unwrap_or_default()),
+            ] {
+                if let Some(scheme) = uri_scheme(value) {
+                    bail!(
+                        "manifest {key} {value:?} looks like a {scheme} URI; it must be a \
+                         path to an entry inside the archive"
+                    );
+                }
+                let normalized = crate::assemble::normalize_for_lookup(value);
+                if !paths.contains(&normalized) {
+                    bail!(
+                        "manifest {key} {value:?} does not name an entry in this pack. It \
+                         must be a path within the archive (docs/track-a-refinement.md §16)"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Flatten to the `manifest` rows written into segment 0.
+    ///
+    /// `total_size_bytes` is supplied by the caller, measured from the finished
+    /// archive — it is never read from config. Optional fields that are unset
+    /// are **omitted**, not written as `0` / `""` (§16).
+    pub fn to_rows(&self, total_size_bytes: u64) -> BTreeMap<String, String> {
+        let mut rows = BTreeMap::new();
+        for (k, v) in self.required_pairs() {
             if let Some(v) = v {
                 rows.insert(k.to_string(), v.clone());
             }
         }
-        for (k, v) in &self.extra {
-            let s = match v {
-                toml::Value::String(s) => s.clone(),
-                toml::Value::Integer(i) => i.to_string(),
-                toml::Value::Float(f) => f.to_string(),
-                toml::Value::Boolean(b) => b.to_string(),
-                toml::Value::Datetime(d) => d.to_string(),
-                other => bail!(
-                    "manifest key `{k}` has type {} — the manifest column is TEXT and \
-                     Track B has not defined a nesting convention, so arrays/tables are \
-                     rejected rather than encoded by guesswork (SPEC §5.6)",
-                    other.type_str()
-                ),
-            };
-            rows.insert(k.clone(), s);
+        rows.insert("total_size_bytes".to_string(), total_size_bytes.to_string());
+        if let Some(v) = self.runtime_ram_bytes {
+            rows.insert("runtime_ram_bytes".to_string(), v.to_string());
         }
-        Ok(rows)
+        if let Some(v) = self.runtime_storage_bytes {
+            rows.insert("runtime_storage_bytes".to_string(), v.to_string());
+        }
+        if let Some(v) = &self.languages {
+            rows.insert("languages".to_string(), v.clone());
+        }
+        if let Some(v) = &self.depends_on {
+            rows.insert("depends_on".to_string(), v.clone());
+        }
+        rows
     }
+}
 
-    /// B3 fields that are absent. Informational only.
-    pub fn missing_b3(&self) -> Vec<&'static str> {
-        let present = |k: &str| match k {
-            "name" => self.name.is_some(),
-            "icon" => self.icon.is_some(),
-            "category" => self.category.is_some(),
-            "license" => self.license.is_some(),
-            "version" => self.version.is_some(),
-            "min_hw_tier" => self.min_hw_tier.is_some(),
-            _ => false,
-        };
-        Self::B3_FIELDS.iter().copied().filter(|k| !present(k)).collect()
+/// Every key the B3 table permits, for error messages.
+pub fn allowed_keys() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = REQUIRED_FIELDS.to_vec();
+    v.extend([
+        "runtime_ram_bytes",
+        "runtime_storage_bytes",
+        "languages",
+        "depends_on",
+    ]);
+    v.sort_unstable();
+    v
+}
+
+fn uri_scheme(value: &str) -> Option<&'static str> {
+    let lower = value.to_ascii_lowercase();
+    for scheme in ["data:", "http://", "https://", "file://"] {
+        if lower.starts_with(scheme) {
+            return Some(match scheme {
+                "data:" => "data",
+                "file://" => "file",
+                _ => "http",
+            });
+        }
     }
+    None
 }
 
 #[derive(Debug, Deserialize)]
@@ -123,7 +290,7 @@ pub struct BuildConfig {
     /// already entropy-coded, where zstd costs CPU and usually grows the blob.
     #[serde(default = "default_store_uncompressed")]
     pub store_uncompressed: Vec<String>,
-    /// Glob-free prefix excludes, matched against the normalized entry path.
+    /// Path prefixes, matched against the normalized entry path, to exclude.
     #[serde(default)]
     pub exclude: Vec<String>,
 }
@@ -160,7 +327,7 @@ impl PackConfig {
             .with_context(|| format!("reading pack config {}", path.display()))?;
         let cfg: PackConfig = toml::from_str(&text)
             .with_context(|| format!("parsing pack config {}", path.display()))?;
-        cfg.validate()?;
+        cfg.validate_build()?;
         Ok(cfg)
     }
 
@@ -176,7 +343,7 @@ impl PackConfig {
         Ok(PackConfig::default())
     }
 
-    fn validate(&self) -> Result<()> {
+    fn validate_build(&self) -> Result<()> {
         match self.build.compression.as_str() {
             "zstd" | "none" => {}
             other => bail!(

@@ -82,9 +82,37 @@ Build configuration lives in `wax-pack.toml` — manifest rows, redirect aliases
 per-entry titles, and compression policy. See
 [`wax-pack.example.toml`](crates/wax-builder/wax-pack.example.toml).
 
-**Manifest content is not validated here.** SPEC §5.6/§6.4 assign the manifest
-schema to Track B; `wax-builder` writes the configured rows verbatim and passes
-unknown keys through.
+### Pack manifest (Track B's B3 schema)
+
+The `[manifest]` block is **validated at build time** against the B3 field table
+in [`docs/track-a-refinement.md`](docs/track-a-refinement.md) §16. That table is
+exhaustive — an unknown key is a build error, not a pass-through.
+
+| Field | Required | Domain |
+|-------|----------|--------|
+| `name` | yes | string |
+| `icon` | yes | path to an entry **inside** the archive |
+| `category` | yes | `reference` · `education` · `media` · `tools` · `civic` · `health` |
+| `license` | yes | SPDX id or short free text |
+| `attribution` | yes | string |
+| `version` | yes | human-facing version, e.g. `2026.09.1` |
+| `min_hw_tier` | yes | `pi_zero_2w` · `pi_4` · `pi_5` · `mini_pc` |
+| `entry_point` | yes | path to the launch target inside the archive |
+| `total_size_bytes` | computed | measured from the finished archive — **rejected** if set in config |
+| `runtime_ram_bytes` | no | integer; omitted when unset, never written as `0` |
+| `runtime_storage_bytes` | no | integer; omitted when unset |
+| `languages` | no | comma-separated language codes |
+| `depends_on` | no | comma-separated pack references |
+
+There is **no `id` field**: `archive_uuid` in the header is the only identity a
+pack carries, and a config supplying `id` is rejected rather than dropped.
+
+`min_hw_tier` takes Track E's E6 *hardware tier* names. Deployment Profile names
+(Kiosk / Classroom / Community Hub / Field Ops) are a different axis and are
+rejected with a message saying so.
+
+An omitted `[manifest]` block is still legal — `wax-core` treats an empty
+manifest as valid and opaque. Enforcement applies to a pack that declares one.
 
 ### Signing
 

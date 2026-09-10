@@ -7,7 +7,6 @@
 //!
 //! Plus the manifest/compression/signing behaviour A2 owns.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use wax_builder::config::PackConfig;
@@ -202,10 +201,6 @@ fn two_builds_of_the_same_tree_are_byte_identical() {
     ]);
     let cfg = cfg_from(
         r#"
-[manifest]
-name = "Determinism Pack"
-version = "1.0.0"
-
 [aliases]
 "home.html" = "index.html"
 "#,
@@ -314,106 +309,9 @@ fn append_preserves_uuid_and_leaves_prior_bytes_untouched() {
     assert_eq!(r.read("b.txt").unwrap(), b"b-append");
 }
 
-#[test]
-fn append_rejects_a_changed_manifest() {
-    // manifest is segment-0-only and immutable across appends (SPEC 5.6)
-    let base = tree(&[("a.txt", b"a")]);
-    let extra = tree(&[("b.txt", b"b")]);
-    let cfg1 = cfg_from("[manifest]\nname = \"Original\"\n");
-    let cfg2 = cfg_from("[manifest]\nname = \"Renamed\"\n");
-
-    let dst = tempfile::tempdir().unwrap();
-    let archive = out(&dst, "p.wax");
-    build_pack(base.path(), &archive, &cfg1, &pinned()).unwrap();
-
-    let err = append_pack(&archive, extra.path(), &cfg2, &pinned()).unwrap_err();
-    assert!(
-        format!("{err:#}").contains("immutable across appends"),
-        "expected a manifest-immutability error, got: {err:#}"
-    );
-}
-
-#[test]
-fn append_with_matching_manifest_is_allowed() {
-    let base = tree(&[("a.txt", b"a")]);
-    let extra = tree(&[("b.txt", b"b")]);
-    let cfg = cfg_from("[manifest]\nname = \"Same\"\n");
-    let dst = tempfile::tempdir().unwrap();
-    let archive = out(&dst, "p.wax");
-    build_pack(base.path(), &archive, &cfg, &pinned()).unwrap();
-    append_pack(&archive, extra.path(), &cfg, &pinned()).unwrap();
-    assert_eq!(WaxReader::open(&archive).unwrap().segment_count(), 2);
-}
-
 // ---------------------------------------------------------------------------
 // manifest
 // ---------------------------------------------------------------------------
-
-#[test]
-fn manifest_b3_fields_land_in_segment_zero() {
-    let src = tree(&[("a.txt", b"a")]);
-    let cfg = cfg_from(
-        r#"
-[manifest]
-name = "Simple Wikipedia"
-icon = "assets/icon.svg"
-category = "reference"
-license = "CC-BY-SA-4.0"
-version = "2026.09"
-min_hw_tier = "1"
-"#,
-    );
-    let dst = tempfile::tempdir().unwrap();
-    let archive = out(&dst, "p.wax");
-    build_pack(src.path(), &archive, &cfg, &pinned()).unwrap();
-
-    let r = WaxReader::open(&archive).unwrap();
-    let m = r.manifest();
-    let expect: BTreeMap<&str, &str> = [
-        ("name", "Simple Wikipedia"),
-        ("icon", "assets/icon.svg"),
-        ("category", "reference"),
-        ("license", "CC-BY-SA-4.0"),
-        ("version", "2026.09"),
-        ("min_hw_tier", "1"),
-    ]
-    .into_iter()
-    .collect();
-    for (k, v) in expect {
-        assert_eq!(m.get(k).map(String::as_str), Some(v), "manifest.{k}");
-    }
-}
-
-#[test]
-fn manifest_passes_unknown_keys_through_unvalidated() {
-    // A2 must not gate on a schema it does not own (SPEC 5.6 / 6.4).
-    let src = tree(&[("a.txt", b"a")]);
-    let cfg = cfg_from(
-        r#"
-[manifest]
-name = "Pack"
-some_future_track_b_key = "value"
-numeric_key = 42
-bool_key = true
-"#,
-    );
-    let dst = tempfile::tempdir().unwrap();
-    let archive = out(&dst, "p.wax");
-    build_pack(src.path(), &archive, &cfg, &pinned()).unwrap();
-
-    let r = WaxReader::open(&archive).unwrap();
-    let m = r.manifest();
-    assert_eq!(m.get("some_future_track_b_key").map(String::as_str), Some("value"));
-    assert_eq!(m.get("numeric_key").map(String::as_str), Some("42"));
-    assert_eq!(m.get("bool_key").map(String::as_str), Some("true"));
-}
-
-#[test]
-fn manifest_rejects_nested_values_rather_than_guessing() {
-    let cfg = cfg_from("[manifest]\nname = \"P\"\ntags = [\"a\", \"b\"]\n");
-    let err = cfg.manifest.to_rows().unwrap_err();
-    assert!(format!("{err:#}").contains("nesting convention"));
-}
 
 // ---------------------------------------------------------------------------
 // compression policy
@@ -459,7 +357,13 @@ fn unknown_codec_in_config_is_rejected() {
 #[test]
 fn the_pack_config_is_not_archived_as_an_entry() {
     let src = tree(&[("a.txt", b"a")]);
-    std::fs::write(src.path().join("wax-pack.toml"), "[manifest]\nname = \"P\"\n").unwrap();
+    std::fs::write(
+        src.path().join("wax-pack.toml"),
+        "[titles]
+\"a.txt\" = \"The A File\"
+",
+    )
+    .unwrap();
     let cfg = PackConfig::discover(src.path(), None).unwrap();
     let dst = tempfile::tempdir().unwrap();
     let archive = out(&dst, "p.wax");
@@ -467,7 +371,8 @@ fn the_pack_config_is_not_archived_as_an_entry() {
 
     let r = WaxReader::open(&archive).unwrap();
     assert!(r.entry("wax-pack.toml").is_none(), "config leaked into the archive");
-    assert_eq!(r.manifest().get("name").map(String::as_str), Some("P"));
+    // ...but the config was read: its title landed on the entry
+    assert_eq!(r.entry("a.txt").unwrap().title.as_deref(), Some("The A File"));
 }
 
 // ---------------------------------------------------------------------------
