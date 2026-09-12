@@ -85,8 +85,9 @@ per-entry titles, and compression policy. See
 ### Pack manifest (Track B's B3 schema)
 
 The `[manifest]` block is **validated at build time** against the B3 field table
-in [`docs/track-a-refinement.md`](docs/track-a-refinement.md) §16. That table is
-exhaustive — an unknown key is a build error, not a pass-through.
+in [`docs/track-a-refinement.md`](docs/track-a-refinement.md) §16, as amended by
+§17. That table is exhaustive — an unknown key is a build error, not a
+pass-through.
 
 | Field | Required | Domain |
 |-------|----------|--------|
@@ -98,14 +99,24 @@ exhaustive — an unknown key is a build error, not a pass-through.
 | `version` | yes | human-facing version, e.g. `2026.09.1` |
 | `min_hw_tier` | yes | `pi_zero_2w` · `pi_4` · `pi_5` · `mini_pc` |
 | `entry_point` | yes | path to the launch target inside the archive |
-| `total_size_bytes` | computed | measured from the finished archive — **rejected** if set in config |
 | `runtime_ram_bytes` | no | integer; omitted when unset, never written as `0` |
 | `runtime_storage_bytes` | no | integer; omitted when unset |
 | `languages` | no | comma-separated language codes |
-| `depends_on` | no | comma-separated pack references |
+| `depends_on` | no | comma-separated `archive_uuid` values; each must parse as a UUID |
 
-There is **no `id` field**: `archive_uuid` in the header is the only identity a
-pack carries, and a config supplying `id` is rejected rather than dropped.
+Two keys are **removed from the schema** and rejected with a dedicated message
+rather than silently dropped:
+
+- `id` — `archive_uuid` in the header is the only identity a pack carries.
+- `total_size_bytes` — a pack's size is measurable by anyone holding the file,
+  and a copy inside the archive is both self-referential and stale after any
+  append. Archive size lives in the on-device catalog (`packs.size`). See
+  [`docs/track-a-refinement.md`](docs/track-a-refinement.md) §17.
+
+`depends_on` is validated for shape only (each element is a UUID, in either the
+hyphenated or 32-hex spelling). Whether the referenced pack exists is resolved
+by the catalog at install time, not by the build. The value is written through
+exactly as configured.
 
 `min_hw_tier` takes Track E's E6 *hardware tier* names. Deployment Profile names
 (Kiosk / Classroom / Community Hub / Field Ops) are a different axis and are

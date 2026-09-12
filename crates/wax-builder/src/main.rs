@@ -150,11 +150,6 @@ fn cmd_build(
         Some(p) => println!("  signed       : {}", p.display()),
         None => println!("  signed       : no (pass --sign-key to sign)"),
     }
-    if let Ok(r) = WaxReader::open(&report.archive) {
-        if let Some(sz) = r.manifest().get("total_size_bytes") {
-            println!("  total_size   : {sz} bytes (computed)");
-        }
-    }
     Ok(())
 }
 
@@ -184,21 +179,6 @@ fn cmd_append(
         "  archive_uuid : {} (preserved)",
         sign::hex16(&report.archive_uuid)
     );
-    // The manifest is segment-0-only and immutable (SPEC 5.6), so an append
-    // cannot update total_size_bytes — the recorded value now understates the
-    // file. Surfaced rather than silently left wrong.
-    if let Ok(r) = WaxReader::open(&archive) {
-        if let Some(claimed) = r.manifest().get("total_size_bytes") {
-            let actual = std::fs::metadata(&archive).map(|m| m.len()).unwrap_or(0);
-            if claimed.parse::<u64>().ok() != Some(actual) {
-                println!(
-                    "  NOTE         : manifest total_size_bytes = {claimed} but the file is \
-                     now {actual} bytes. The manifest is immutable across appends \
-                     (SPEC 5.6), so this value describes the pack as first built."
-                );
-            }
-        }
-    }
     match &report.sidecar {
         Some(p) => println!("  re-signed    : {}", p.display()),
         None => {

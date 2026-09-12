@@ -12,13 +12,19 @@
 //! value) was accepted verbatim.
 //!
 //! * Required: `name`, `icon`, `category`, `license`, `attribution`, `version`,
-//!   `min_hw_tier`, `entry_point`.
-//! * Closed enums: [`CATEGORIES`], [`MIN_HW_TIERS`].
-//! * `total_size_bytes` is computed at build time and rejected from config.
+//!   `min_hw_tier`, `entry_point`. `icon` and `entry_point` must name entries
+//!   that exist in the pack (§17).
+//! * Closed enums: [`CATEGORIES`], [`MIN_HW_TIERS`] — the latter is the
+//!   Cross-Track Contract §2 tier axis.
 //! * Optional and omitted-when-unset: `runtime_ram_bytes`,
-//!   `runtime_storage_bytes`, `languages`, `depends_on`.
-//! * There is no `id` field — `archive_uuid` is the only identity a pack
-//!   carries (§16). A config supplying one is an error, not a silent drop.
+//!   `runtime_storage_bytes`, `languages`, `depends_on`. `depends_on` is
+//!   comma-separated `archive_uuid` values, each of which must parse as a UUID
+//!   (§17; Track B §19) — whether the referenced pack exists is the catalog's
+//!   question, not the builder's.
+//! * Two keys are **removed from the schema** and rejected with a dedicated
+//!   message: `id` (`archive_uuid` is the only identity a pack carries, §16)
+//!   and `total_size_bytes` (self-referential and stale-on-append; the
+//!   catalog's `packs.size` carries archive size instead, §17 / Track B §19).
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -67,17 +73,17 @@ pub struct ManifestConfig {
     pub min_hw_tier: Option<String>,
     pub entry_point: Option<String>,
 
-    // --- computed by the builder; must NOT come from config ---
-    pub total_size_bytes: Option<toml::Value>,
-
     // --- optional; omitted entirely when unset, never defaulted to 0/"" ---
     pub runtime_ram_bytes: Option<i64>,
     pub runtime_storage_bytes: Option<i64>,
     pub languages: Option<String>,
+    /// Comma-separated `archive_uuid` values. Validated for shape only.
     pub depends_on: Option<String>,
 
-    // --- explicitly removed from the schema ---
+    // --- explicitly removed from the schema; captured so they can be
+    //     rejected with a specific message rather than a generic "unknown" ---
     pub id: Option<toml::Value>,
+    pub total_size_bytes: Option<toml::Value>,
 
     /// Anything not in the B3 table.
     #[serde(flatten)]
@@ -138,10 +144,12 @@ impl ManifestConfig {
         }
         if self.total_size_bytes.is_some() {
             bail!(
-                "manifest key `total_size_bytes` is computed by wax-builder at build \
-                 time and must not be set in wax-pack.toml. Remove it — the value \
-                 written into the pack is measured from the finished archive \
-                 (see docs/track-a-refinement.md §16)."
+                "manifest key `total_size_bytes` was removed from the B3 schema: a pack's \
+                 size is measurable by anyone holding the file and is not the author's to \
+                 declare, and a copy inside the archive is both self-referential and \
+                 permanently stale after an append. Archive size lives in the on-device \
+                 catalog (`packs.size`, populated at publish time). Remove it from \
+                 wax-pack.toml (see docs/track-a-refinement.md §17, track-b-refinement.md §19)."
             );
         }
         if !self.unknown.is_empty() {
@@ -200,6 +208,29 @@ impl ManifestConfig {
             );
         }
 
+        // depends_on: each element is an archive_uuid (§17). Shape only — the
+        // referenced pack's existence is resolved catalog-side, not here.
+        if let Some(raw) = &self.depends_on {
+            for (i, element) in raw.split(',').enumerate() {
+                let element = element.trim();
+                if element.is_empty() {
+                    bail!(
+                        "manifest depends_on has an empty element at position {} — it must be \
+                         a comma-separated list of archive_uuid values with no blanks",
+                        i + 1
+                    );
+                }
+                if uuid::Uuid::parse_str(element).is_err() {
+                    bail!(
+                        "manifest depends_on element {element:?} is not an archive_uuid. Each \
+                         comma-separated element must be a UUID (the depended-on pack's \
+                         archive_uuid, as shown by `wax-builder inspect`); pack names and \
+                         other identifiers are not accepted (docs/track-a-refinement.md §17)"
+                    );
+                }
+            }
+        }
+
         // icon / entry_point name entries inside the pack.
         if let Some(paths) = archive_paths {
             for (key, value) in [
@@ -226,17 +257,17 @@ impl ManifestConfig {
 
     /// Flatten to the `manifest` rows written into segment 0.
     ///
-    /// `total_size_bytes` is supplied by the caller, measured from the finished
-    /// archive — it is never read from config. Optional fields that are unset
-    /// are **omitted**, not written as `0` / `""` (§16).
-    pub fn to_rows(&self, total_size_bytes: u64) -> BTreeMap<String, String> {
+    /// Optional fields that are unset are **omitted**, not written as `0` / `""`
+    /// (§16). Values are written exactly as configured — `depends_on` in
+    /// particular is not re-serialized; see the note on UUID spelling in the
+    /// README.
+    pub fn to_rows(&self) -> BTreeMap<String, String> {
         let mut rows = BTreeMap::new();
         for (k, v) in self.required_pairs() {
             if let Some(v) = v {
                 rows.insert(k.to_string(), v.clone());
             }
         }
-        rows.insert("total_size_bytes".to_string(), total_size_bytes.to_string());
         if let Some(v) = self.runtime_ram_bytes {
             rows.insert("runtime_ram_bytes".to_string(), v.to_string());
         }

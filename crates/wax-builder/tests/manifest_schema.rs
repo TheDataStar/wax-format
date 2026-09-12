@@ -221,45 +221,34 @@ fn deployment_profile_names_are_rejected_with_a_targeted_message() {
 }
 
 // ---------------------------------------------------------------------------
-// total_size_bytes — computed, never configured
+// total_size_bytes — removed from the schema (§17 / Track B §19)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn total_size_bytes_in_config_is_rejected() {
+fn total_size_bytes_in_config_is_rejected_as_removed() {
     let cfg = format!("{VALID_MANIFEST}total_size_bytes = 12345\n");
     let msg = build_err(&cfg);
     assert!(msg.contains("total_size_bytes"), "{msg}");
     assert!(
-        msg.contains("computed by wax-builder"),
-        "error should say it is computed: {msg}"
+        msg.contains("removed from the B3 schema"),
+        "error should say the field was removed, not computed: {msg}"
+    );
+    assert!(
+        msg.contains("packs.size"),
+        "error should point at the catalog as where size lives: {msg}"
     );
 }
 
 #[test]
-fn total_size_bytes_is_computed_and_matches_the_archive() {
+fn total_size_bytes_is_never_written() {
+    // the field does not exist; no archive built from a valid manifest carries it
     let (_dir, archive) = build_ok(VALID_MANIFEST);
-    let actual = std::fs::metadata(&archive).unwrap().len();
     let r = WaxReader::open(&archive).unwrap();
-    let claimed: u64 = r
-        .manifest()
-        .get("total_size_bytes")
-        .expect("total_size_bytes must be present")
-        .parse()
-        .expect("must be an integer");
-    assert_eq!(
-        claimed, actual,
-        "manifest total_size_bytes ({claimed}) must equal the archive's real size ({actual})"
+    assert!(
+        r.manifest().get("total_size_bytes").is_none(),
+        "total_size_bytes must not appear in a manifest (got {:?})",
+        r.manifest().get("total_size_bytes")
     );
-}
-
-#[test]
-fn total_size_bytes_is_stable_across_identical_builds() {
-    // the fixed-point loop must converge to the same answer every time
-    let (_d1, a1) = build_ok(VALID_MANIFEST);
-    let (_d2, a2) = build_ok(VALID_MANIFEST);
-    let s1 = std::fs::read(&a1).unwrap();
-    let s2 = std::fs::read(&a2).unwrap();
-    assert_eq!(s1, s2, "builds with a settled total_size_bytes must still be byte-identical");
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +316,23 @@ fn a_data_uri_icon_is_rejected() {
 }
 
 #[test]
+fn a_root_level_icon_is_valid() {
+    // §17 corrects §16's "not a filename alone": a root-level icon.svg is both a
+    // bare filename and a perfectly valid archive path. The check is existence,
+    // not depth.
+    let src = tree(&[
+        ("index.html", b"<h1>Home</h1>"),
+        ("icon.svg", b"<svg/>"),
+    ]);
+    let dst = tempfile::tempdir().unwrap();
+    let archive = out(&dst, "p.wax");
+    let cfg = cfg_from(&manifest_with("icon", r#"icon = "icon.svg""#));
+    build_pack(src.path(), &archive, &cfg, &pinned()).expect("root-level icon must build");
+    let r = WaxReader::open(&archive).unwrap();
+    assert_eq!(r.manifest().get("icon").map(String::as_str), Some("icon.svg"));
+}
+
+#[test]
 fn a_leading_slash_or_dot_slash_is_tolerated() {
     // natural things to write in a config; both resolve to the same entry
     for spelling in ["/index.html", "./index.html"] {
@@ -370,7 +376,7 @@ fn set_optional_fields_round_trip() {
         "{VALID_MANIFEST}runtime_ram_bytes = 268435456\n\
          runtime_storage_bytes = 1073741824\n\
          languages = \"en,sw,fr\"\n\
-         depends_on = \"base-fonts,mathjax\"\n"
+         depends_on = \"{UUID_A},{UUID_B}\"\n"
     );
     let (_dir, archive) = build_ok(&cfg);
     let r = WaxReader::open(&archive).unwrap();
@@ -378,7 +384,96 @@ fn set_optional_fields_round_trip() {
     assert_eq!(m.get("runtime_ram_bytes").map(String::as_str), Some("268435456"));
     assert_eq!(m.get("runtime_storage_bytes").map(String::as_str), Some("1073741824"));
     assert_eq!(m.get("languages").map(String::as_str), Some("en,sw,fr"));
-    assert_eq!(m.get("depends_on").map(String::as_str), Some("base-fonts,mathjax"));
+    assert_eq!(
+        m.get("depends_on").map(String::as_str),
+        Some(format!("{UUID_A},{UUID_B}").as_str())
+    );
+}
+
+// ---------------------------------------------------------------------------
+// depends_on — comma-separated archive_uuid values (§17 / Track B §19)
+// ---------------------------------------------------------------------------
+
+const UUID_A: &str = "4a1b2c3d-4e5f-4607-8a99-aabbccddeeff";
+const UUID_B: &str = "0f1e2d3c-4b5a-4968-8776-655443322110";
+
+#[test]
+fn depends_on_accepts_hyphenated_uuids() {
+    let cfg = format!("{VALID_MANIFEST}depends_on = \"{UUID_A},{UUID_B}\"\n");
+    let (_dir, archive) = build_ok(&cfg);
+    let r = WaxReader::open(&archive).unwrap();
+    assert_eq!(
+        r.manifest().get("depends_on").map(String::as_str),
+        Some(format!("{UUID_A},{UUID_B}").as_str()),
+        "the configured spelling is written through verbatim"
+    );
+}
+
+#[test]
+fn depends_on_accepts_a_single_uuid() {
+    let cfg = format!("{VALID_MANIFEST}depends_on = \"{UUID_A}\"\n");
+    let (_dir, archive) = build_ok(&cfg);
+    assert_eq!(
+        WaxReader::open(&archive).unwrap().manifest().get("depends_on").map(String::as_str),
+        Some(UUID_A)
+    );
+}
+
+#[test]
+fn depends_on_accepts_the_32_hex_spelling_inspect_prints() {
+    // `wax-builder inspect` shows archive_uuid as bare hex; that must be usable
+    let bare = UUID_A.replace('-', "");
+    let cfg = format!("{VALID_MANIFEST}depends_on = \"{bare}\"\n");
+    let (_dir, archive) = build_ok(&cfg);
+    assert_eq!(
+        WaxReader::open(&archive).unwrap().manifest().get("depends_on").map(String::as_str),
+        Some(bare.as_str())
+    );
+}
+
+#[test]
+fn depends_on_tolerates_whitespace_around_commas() {
+    let cfg = format!("{VALID_MANIFEST}depends_on = \"{UUID_A} , {UUID_B}\"\n");
+    let (_dir, _archive) = build_ok(&cfg);
+}
+
+#[test]
+fn depends_on_rejects_a_pack_name() {
+    // the old "pack ids" wording; a name is not an identity (§16)
+    let cfg = format!("{VALID_MANIFEST}depends_on = \"base-fonts\"\n");
+    let msg = build_err(&cfg);
+    assert!(msg.contains("depends_on"), "{msg}");
+    assert!(msg.contains("not an archive_uuid"), "{msg}");
+    assert!(msg.contains("base-fonts"), "should name the offending element: {msg}");
+}
+
+#[test]
+fn depends_on_rejects_one_bad_element_among_good_ones() {
+    let cfg = format!("{VALID_MANIFEST}depends_on = \"{UUID_A},not-a-uuid,{UUID_B}\"\n");
+    let msg = build_err(&cfg);
+    assert!(msg.contains("not-a-uuid"), "{msg}");
+}
+
+#[test]
+fn depends_on_rejects_an_empty_element() {
+    for raw in [
+        format!("{UUID_A},,{UUID_B}"),
+        format!("{UUID_A},"),
+        format!(",{UUID_A}"),
+        String::new(),
+    ] {
+        let cfg = format!("{VALID_MANIFEST}depends_on = \"{raw}\"\n");
+        let msg = build_err(&cfg);
+        assert!(msg.contains("empty element"), "{raw:?} -> {msg}");
+    }
+}
+
+#[test]
+fn depends_on_does_not_check_that_the_pack_exists() {
+    // a well-formed UUID that no pack has ever carried must still build:
+    // resolution is the catalog's job (§17)
+    let cfg = format!("{VALID_MANIFEST}depends_on = \"00000000-0000-4000-8000-000000000000\"\n");
+    let (_dir, _archive) = build_ok(&cfg);
 }
 
 // ---------------------------------------------------------------------------
@@ -404,12 +499,11 @@ fn a_valid_manifest_round_trips_unchanged() {
     for (k, v) in expected {
         assert_eq!(m.get(k).map(String::as_str), Some(v), "manifest.{k}");
     }
-    // plus the computed field, and nothing else
-    assert!(m.contains_key("total_size_bytes"));
+    // and nothing else: no computed fields, no defaults for unset optionals
     assert_eq!(
         m.len(),
-        expected.len() + 1,
-        "manifest should hold exactly the 8 required fields + total_size_bytes, got {:?}",
+        expected.len(),
+        "manifest should hold exactly the 8 required fields, got {:?}",
         m.keys().collect::<Vec<_>>()
     );
 }
@@ -430,9 +524,7 @@ fn an_absent_manifest_section_still_builds() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn append_accepts_an_unchanged_manifest_despite_the_computed_size() {
-    // total_size_bytes is not in the config, so the immutability comparison has
-    // to re-derive it from the archive rather than seeing a spurious difference.
+fn append_accepts_an_unchanged_manifest() {
     let src = manifest_tree();
     let extra = tree(&[("articles/b.html", b"<p>b</p>")]);
     let dst = tempfile::tempdir().unwrap();

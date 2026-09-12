@@ -47,13 +47,17 @@ entry_point = "index.html"
 # runtime_ram_bytes = 268435456          # only if the pack has a companion runtime service
 # runtime_storage_bytes = 1073741824     # only if it needs writable storage beyond unpacking
 # languages = "en,sw,fr"                 # comma-separated language codes
-# depends_on = "base-fonts,mathjax"      # comma-separated pack references
+# depends_on = "4a1b2c3d-4e5f-4607-8a99-aabbccddeeff,0f1e2d3c-4b5a-4968-8776-655443322110"
+#   Comma-separated archive_uuid values of packs this one expects installed
+#   (find them with `wax-builder inspect`). Each element must be a UUID; the
+#   build does not check that the pack exists - that is the catalog's job.
 
-# --- Fields you must NOT set ----------------------------------------------
-# total_size_bytes — computed by wax-builder from the finished archive.
-#                    Setting it here is a build error.
-# id              — removed from the schema. archive_uuid (the header field) is
-#                    the only identity a pack carries. Setting it is an error.
+# --- Fields removed from the schema; setting either is a build error --------
+# id               - archive_uuid (the header field) is the only identity a
+#                    pack carries.
+# total_size_bytes - a pack's size is measurable by anyone holding the file,
+#                    so it lives in the on-device catalog (packs.size), not in
+#                    the archive. See docs/track-a-refinement.md §17.
 
 # ---------------------------------------------------------------------------
 # [build] — how entries are stored.
