@@ -44,12 +44,9 @@ pub fn sidecar_path(archive: &Path) -> PathBuf {
 }
 
 /// Trusted comment carried in the sidecar (SPEC §8.2: `archive_uuid` + `created_at`).
+/// The uuid is written in its canonical lowercase-hyphenated form (Contract §11).
 pub fn trusted_comment(uuid: &[u8; 16], created_at: u64) -> String {
-    format!("wax archive_uuid={} created_at={created_at}", hex16(uuid))
-}
-
-pub fn hex16(b: &[u8; 16]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
+    format!("wax archive_uuid={} created_at={created_at}", crate::uuid_text(uuid))
 }
 
 /// Recompute the signable digest for an archive on disk (SPEC §8.1).
@@ -195,14 +192,19 @@ pub fn verify(archive: &Path, pubkey: &PubKey) -> Result<SignatureReport> {
     }
 
     let comment = read_trusted_comment(&sidecar)?;
-    let header_uuid = hex16(&uuid);
+    let header_uuid = crate::uuid_text(&uuid);
     let comment_uuid = comment
         .split_whitespace()
         .find_map(|tok| tok.strip_prefix("archive_uuid=").map(|v| v.to_string()));
 
-    // SPEC §8.3 step 3: bind the sidecar to this specific archive.
+    // SPEC §8.3 step 3: bind the sidecar to this specific archive. Compare as
+    // parsed UUIDs, not strings, so a sidecar written before the canonical
+    // hyphenated form was pinned (bare 32-hex) still binds correctly.
     if let Some(cu) = &comment_uuid {
-        if !cu.eq_ignore_ascii_case(&header_uuid) {
+        let same = uuid::Uuid::parse_str(cu)
+            .map(|u| *u.as_bytes() == uuid)
+            .unwrap_or(false);
+        if !same {
             bail!(
                 "signature is for a different archive: trusted comment says \
                  archive_uuid={cu}, header says {header_uuid}"

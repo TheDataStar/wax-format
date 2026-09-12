@@ -65,16 +65,15 @@ impl WriteOptions {
 /// Parse an `archive_uuid` from either hyphenated UUID form or 32 bare hex
 /// characters.
 pub fn parse_uuid(s: &str) -> Result<[u8; 16]> {
-    let cleaned: String = s.chars().filter(|c| *c != '-').collect();
-    if cleaned.len() != 32 || !cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
-        bail!("archive_uuid must be 32 hex digits (hyphens optional), got {s:?}");
+    // Both the canonical hyphenated form and the bare 32-hex form are accepted
+    // on input (Contract §11); only the canonical form is ever emitted.
+    match uuid::Uuid::parse_str(s.trim()) {
+        Ok(u) => Ok(*u.as_bytes()),
+        Err(_) => bail!(
+            "archive_uuid must be a UUID (canonical lowercase hyphenated, or bare 32 hex \
+             digits), got {s:?}"
+        ),
     }
-    let mut out = [0u8; 16];
-    for (i, b) in out.iter_mut().enumerate() {
-        *b = u8::from_str_radix(&cleaned[i * 2..i * 2 + 2], 16)
-            .expect("validated as hex above");
-    }
-    Ok(out)
 }
 
 /// What a build or append produced.
@@ -86,6 +85,27 @@ pub struct WriteReport {
     pub segments: usize,
     pub stats: WalkStats,
     pub sidecar: Option<PathBuf>,
+    /// Licensing outcome (Contract §11). `None` when the pack declares no
+    /// manifest. `license_review_required` is a build-report fact, never a
+    /// manifest key — the catalog's intake reads it from here.
+    pub license: Option<config::LicenseOutcome>,
+}
+
+impl WriteReport {
+    pub fn license_review_required(&self) -> bool {
+        self.license.as_ref().is_some_and(|l| l.review_required())
+    }
+
+    /// Canonical text form of `archive_uuid`: lowercase hyphenated (§11).
+    pub fn archive_uuid_text(&self) -> String {
+        uuid_text(&self.archive_uuid)
+    }
+}
+
+/// Canonical text form of an `archive_uuid` (Contract §11): lowercase
+/// hyphenated 8-4-4-4-12. This is the only form any tool emits.
+pub fn uuid_text(b: &[u8; 16]) -> String {
+    uuid::Uuid::from_bytes(*b).hyphenated().to_string()
 }
 
 /// Fresh single-segment build: `input` tree + `cfg` → `output` archive.
@@ -109,14 +129,19 @@ pub fn build_pack(
     // Validate the manifest before writing anything. `icon`/`entry_point` are
     // checked against the paths this build will actually contain.
     let declares_manifest = !cfg.manifest.is_empty();
-    if declares_manifest {
-        let paths: BTreeSet<String> = entries.iter().map(|e| {
-            wax_core::writer::normalize_path(&e.path).unwrap_or_else(|_| e.path.clone())
-        }).collect();
-        cfg.manifest
-            .validate(Some(&paths))
-            .context("invalid [manifest] in pack config")?;
-    }
+    let license = if declares_manifest {
+        let paths: BTreeSet<String> = entries
+            .iter()
+            .map(|e| wax_core::writer::normalize_path(&e.path).unwrap_or_else(|_| e.path.clone()))
+            .collect();
+        Some(
+            cfg.manifest
+                .validate(Some(&paths))
+                .context("invalid [manifest] in pack config")?,
+        )
+    } else {
+        None
+    };
 
     // `is_signed` lives in the header and the header is inside the signed digest
     // (SPEC §8.1), so the flag has to be set before the archive is written —
@@ -149,6 +174,7 @@ pub fn build_pack(
         segments,
         stats,
         sidecar,
+        license,
     })
 }
 
@@ -197,6 +223,16 @@ pub fn append_pack(
     let reader = WaxReader::open(archive)?;
     debug_assert_eq!(reader.header().archive_uuid, uuid);
 
+    // The manifest is immutable across appends, so the licensing outcome is
+    // whatever the archive already carries.
+    let license = reader.manifest().get("license").map(|l| {
+        if config::LICENSE_ALLOWLIST.contains(&l.as_str()) {
+            config::LicenseOutcome::Clean { license: l.clone() }
+        } else {
+            config::LicenseOutcome::ReviewRequired { license: l.clone() }
+        }
+    });
+
     Ok(WriteReport {
         archive: archive.to_path_buf(),
         archive_uuid: uuid,
@@ -204,6 +240,7 @@ pub fn append_pack(
         segments: reader.segment_count(),
         stats,
         sidecar,
+        license,
     })
 }
 

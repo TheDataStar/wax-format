@@ -63,8 +63,10 @@ cargo run -p wax-core --example gen_fixtures
 ## CLI
 
 ```bash
-# Assemble a tree. Picks up ./site/wax-pack.toml if present.
-wax-builder build --input ./site --output ./site.wax --sign-key ~/.minisign/pack.key
+# Assemble a tree. Picks up ./site/wax-pack.toml if present. --report-json
+# also writes the build report (incl. the licensing outcome) for catalog intake.
+wax-builder build --input ./site --output ./site.wax --sign-key ~/.minisign/pack.key \
+                  --report-json ./site.wax.report.json
 
 # Add a new segment to an existing pack and re-sign it.
 wax-builder append --archive ./site.wax --input ./update --sign-key ~/.minisign/pack.key
@@ -82,48 +84,64 @@ Build configuration lives in `wax-pack.toml` — manifest rows, redirect aliases
 per-entry titles, and compression policy. See
 [`wax-pack.example.toml`](crates/wax-builder/wax-pack.example.toml).
 
-### Pack manifest (Track B's B3 schema)
+### Pack manifest (Contract §11)
 
-The `[manifest]` block is **validated at build time** against the B3 field table
-in [`docs/track-a-refinement.md`](docs/track-a-refinement.md) §16, as amended by
-§17. That table is exhaustive — an unknown key is a build error, not a
-pass-through.
+The `[manifest]` block is **validated at build time** against the one normative
+field list, [`docs/cross-track-contract.md`](docs/cross-track-contract.md) §11
+— eight required, five optional, nothing else. An unknown key is a build
+error, not a pass-through.
 
 | Field | Required | Domain |
 |-------|----------|--------|
 | `name` | yes | string |
-| `icon` | yes | path to an entry **inside** the archive |
+| `icon` | yes | path to an entry **inside** the archive (root-level is fine; URIs are not) |
 | `category` | yes | `reference` · `education` · `media` · `tools` · `civic` · `health` |
-| `license` | yes | SPDX id or short free text |
+| `license` | yes | SPDX id or free text — see *Licensing* below |
 | `attribution` | yes | string |
-| `version` | yes | human-facing version, e.g. `2026.09.1` |
+| `version` | yes | CalVer `YYYY.MM.N`, e.g. `2026.09.1` — not semver |
 | `min_hw_tier` | yes | `pi_zero_2w` · `pi_4` · `pi_5` · `mini_pc` |
 | `entry_point` | yes | path to the launch target inside the archive |
+| `guest_accessible` | no | boolean; the author's default for Guest visibility (admin override is catalog-side) |
 | `runtime_ram_bytes` | no | integer; omitted when unset, never written as `0` |
 | `runtime_storage_bytes` | no | integer; omitted when unset |
-| `languages` | no | comma-separated language codes |
+| `languages` | no | comma-separated BCP-47 tags, each validated against the IANA registry |
 | `depends_on` | no | comma-separated `archive_uuid` values; each must parse as a UUID |
 
 Two keys are **removed from the schema** and rejected with a dedicated message
-rather than silently dropped:
+rather than silently dropped: `id` (`archive_uuid` is the only identity a pack
+carries) and `total_size_bytes` (archive size lives in the catalog's
+`packs.size`; see [`docs/track-a-refinement.md`](docs/track-a-refinement.md) §17).
 
-- `id` — `archive_uuid` in the header is the only identity a pack carries.
-- `total_size_bytes` — a pack's size is measurable by anyone holding the file,
-  and a copy inside the archive is both self-referential and stale after any
-  append. Archive size lives in the on-device catalog (`packs.size`). See
-  [`docs/track-a-refinement.md`](docs/track-a-refinement.md) §17.
+`min_hw_tier` is a board tier. `generic` is rejected — it is a value a box
+reports about itself, never one a pack declares (Contract §2). Deployment
+Profile names (Kiosk / Classroom / Community Hub / Field Ops) are a different
+axis and are rejected with a message saying so.
 
-`depends_on` is validated for shape only (each element is a UUID, in either the
-hyphenated or 32-hex spelling). Whether the referenced pack exists is resolved
-by the catalog at install time, not by the build. The value is written through
-exactly as configured.
-
-`min_hw_tier` takes Track E's E6 *hardware tier* names. Deployment Profile names
-(Kiosk / Classroom / Community Hub / Field Ops) are a different axis and are
-rejected with a message saying so.
+`depends_on` is validated for shape only; whether the referenced pack exists is
+the catalog's question at install time.
 
 An omitted `[manifest]` block is still legal — `wax-core` treats an empty
 manifest as valid and opaque. Enforcement applies to a pack that declares one.
+
+#### Licensing has three outcomes
+
+| `license` value | Result |
+|---|---|
+| blank / missing | **build fails** |
+| on the Contract §11 allowlist (literal match: `CC0-1.0`, `CC-BY-4.0`, `CC-BY-SA-3.0`, `CC-BY-SA-4.0`, `GFDL-1.3-or-later`, `MIT`, `Apache-2.0`, `GPL-2.0-only`, `GPL-3.0-only`, `GPL-3.0-or-later`) | builds clean |
+| anything else — free text, or an SPDX id not on the allowlist | builds, with **`license_review_required`** in the build report |
+
+`license_review_required` is a **build-report outcome, not a manifest key** —
+it must be able to change once a reviewer approves the pack, and nothing sealed
+inside the signed archive can. `build` prints it and, with `--report-json
+<path>`, writes the report as JSON for the catalog's intake to read.
+
+#### `archive_uuid` text form
+
+Canonical is lowercase hyphenated (`4c0cfba1-3e77-4b1e-9a02-1f9b3c5d7e01`).
+Every input that takes one — `--archive-uuid`, `depends_on` elements — also
+accepts the bare 32-hex form; every output (`inspect`, the build report, the
+sidecar's trusted comment, `depends_on` as written) emits only the canonical form.
 
 ### Signing
 

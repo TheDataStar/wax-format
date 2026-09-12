@@ -578,16 +578,25 @@ signed_message := SHA-256(
   > verify-side only; the corrected mapping above produces the same prehashed
   > signature the design intends. See §12.18.
 * File name: `<archive-filename>.minisig`, in the same directory.
-* The minisign *trusted comment* SHOULD carry `archive_uuid` (hex) and the
-  header's `created_at`, so a verifier can bind the sidecar to a specific
-  archive state. `wax-builder` writes exactly:
+* The minisign *trusted comment* SHOULD carry `archive_uuid` and the header's
+  `created_at`, so a verifier can bind the sidecar to a specific archive state.
+  `archive_uuid` is written in its **canonical text form** — lowercase
+  hyphenated `8-4-4-4-12` (Cross-Track Contract §11; the only form any tool
+  emits). `wax-builder` writes exactly:
 
   ```
-  trusted comment: wax archive_uuid=<32 lowercase hex chars> created_at=<decimal seconds>
+  trusted comment: wax archive_uuid=<xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx> created_at=<decimal seconds>
   ```
 
-  A verifier that finds an `archive_uuid=` token MUST compare it with the
-  header's `archive_uuid` and reject a mismatch (§8.3 step 3).
+  A verifier that finds an `archive_uuid=` token MUST parse it as a UUID and
+  compare it with the header's `archive_uuid` **as a value, not as a string**,
+  rejecting a mismatch (§8.3 step 3). Comparing parsed values keeps sidecars
+  written before the canonical form was pinned (bare 32-hex) verifiable.
+
+  > **Corrected 2026-09-12.** This line previously specified `<32 lowercase hex
+  > chars>`. The Contract §11 later pinned the canonical text form and ruled
+  > that nothing ever emits the bare form; per `docs/INDEX.md`, the Contract
+  > wins and the earlier wording here was the defect. See §12.22.
 * `flags.is_signed` SHOULD be set when a sidecar is expected.
 
 ### 8.3 Verification (reader)
@@ -810,6 +819,13 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
     use case needs small archives, `page_size = 512` drops the floor ~8×. Not a
     spec conflict — flagged because it is a real consequence of the
     "SQLite footer" decision that the Refinement doc may want to record.
+22. **`archive_uuid` text form in the sidecar comment is canonical hyphenated,
+    not bare hex.** §8.2 originally pinned `<32 lowercase hex chars>`; the
+    Cross-Track Contract §11 subsequently made lowercase-hyphenated
+    `8-4-4-4-12` the one emitted form across all tracks (four tracks serialize
+    the value and the repo already held two spellings). The Contract wins over
+    this document, so §8.2 is corrected rather than the Contract amended.
+    Verifiers compare parsed UUIDs, so pre-correction sidecars still bind.
 
 ---
 
@@ -817,5 +833,6 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
 
 | Format version | Date | Change |
 |----------------|------|--------|
+| 0.9 | 2026-09-12 | §8.2: sidecar trusted-comment `archive_uuid` is canonical lowercase-hyphenated per Contract §11 (was bare hex); verifiers compare parsed values. No byte-layout change. |
 | 0.9 | 2026-09-09 | Initial frozen specification (A3). Header 128 B; SQLite segment chain; `entries` / `manifest` / `segment_meta` / `signatures` / optional `search_index`; append-commit protocol; detached minisign sidecar signing model. |
 | 0.9 | 2026-09-10 | A2 pass — no byte-layout or schema change. §8.2 signing CLI mapping corrected (`-H` is verify-side, §12.18); trusted-comment format pinned; §1 no longer claims v0.9 writers never append (§12.17); §12.19–21 record the UUID/reproducibility interaction and the duplicated `created_at`. |

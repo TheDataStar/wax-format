@@ -357,6 +357,7 @@ fn unset_optional_fields_are_omitted_not_zeroed() {
     let r = WaxReader::open(&archive).unwrap();
     let m = r.manifest();
     for k in [
+        "guest_accessible",
         "runtime_ram_bytes",
         "runtime_storage_bytes",
         "languages",
@@ -364,7 +365,7 @@ fn unset_optional_fields_are_omitted_not_zeroed() {
     ] {
         assert!(
             m.get(k).is_none(),
-            "{k} is unset and must be omitted, not written as 0/empty (got {:?})",
+            "{k} is unset and must be omitted, not written as 0/false/empty (got {:?})",
             m.get(k)
         );
     }
@@ -405,7 +406,7 @@ fn depends_on_accepts_hyphenated_uuids() {
     assert_eq!(
         r.manifest().get("depends_on").map(String::as_str),
         Some(format!("{UUID_A},{UUID_B}").as_str()),
-        "the configured spelling is written through verbatim"
+        "canonical input is written unchanged"
     );
 }
 
@@ -420,14 +421,28 @@ fn depends_on_accepts_a_single_uuid() {
 }
 
 #[test]
-fn depends_on_accepts_the_32_hex_spelling_inspect_prints() {
-    // `wax-builder inspect` shows archive_uuid as bare hex; that must be usable
+fn depends_on_accepts_bare_hex_but_writes_the_canonical_form() {
+    // Contract 11: bare 32-hex is accepted on input, normalized on write,
+    // never emitted.
     let bare = UUID_A.replace('-', "");
     let cfg = format!("{VALID_MANIFEST}depends_on = \"{bare}\"\n");
     let (_dir, archive) = build_ok(&cfg);
     assert_eq!(
         WaxReader::open(&archive).unwrap().manifest().get("depends_on").map(String::as_str),
-        Some(bare.as_str())
+        Some(UUID_A),
+        "bare input must be written in canonical hyphenated form"
+    );
+}
+
+#[test]
+fn depends_on_normalizes_case_and_whitespace_on_write() {
+    let upper = UUID_A.to_uppercase();
+    let cfg = format!("{VALID_MANIFEST}depends_on = \" {upper} ,{UUID_B}\"\n");
+    let (_dir, archive) = build_ok(&cfg);
+    assert_eq!(
+        WaxReader::open(&archive).unwrap().manifest().get("depends_on").map(String::as_str),
+        Some(format!("{UUID_A},{UUID_B}").as_str()),
+        "written form is lowercase, hyphenated, no padding"
     );
 }
 
@@ -477,6 +492,231 @@ fn depends_on_does_not_check_that_the_pack_exists() {
 }
 
 // ---------------------------------------------------------------------------
+// guest_accessible — optional boolean, default false (Contract §11)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn guest_accessible_true_is_written() {
+    let cfg = format!("{VALID_MANIFEST}guest_accessible = true\n");
+    let (_dir, archive) = build_ok(&cfg);
+    let r = WaxReader::open(&archive).unwrap();
+    assert_eq!(r.manifest().get("guest_accessible").map(String::as_str), Some("true"));
+}
+
+#[test]
+fn guest_accessible_explicit_false_is_written() {
+    // an explicit false is an authored statement and is preserved; only an
+    // *unset* value is omitted
+    let cfg = format!("{VALID_MANIFEST}guest_accessible = false\n");
+    let (_dir, archive) = build_ok(&cfg);
+    let r = WaxReader::open(&archive).unwrap();
+    assert_eq!(r.manifest().get("guest_accessible").map(String::as_str), Some("false"));
+}
+
+#[test]
+fn guest_accessible_must_be_a_boolean() {
+    // TOML typing: a string "yes" is not a bool and fails at parse
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("wax-pack.toml");
+    std::fs::write(&p, format!("{VALID_MANIFEST}guest_accessible = \"yes\"\n")).unwrap();
+    let err = PackConfig::load(&p).unwrap_err();
+    assert!(format!("{err:#}").contains("guest_accessible"), "{err:#}");
+}
+
+// ---------------------------------------------------------------------------
+// version — CalVer YYYY.MM.N (Contract §11)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn version_accepts_calver() {
+    for v in ["2026.09.1", "2026.01.0", "2026.12.42", "1999.06.7"] {
+        let cfg = manifest_with("version", &format!(r#"version = "{v}""#));
+        let (_dir, archive) = build_ok(&cfg);
+        assert_eq!(
+            WaxReader::open(&archive).unwrap().manifest().get("version").map(String::as_str),
+            Some(v)
+        );
+    }
+}
+
+#[test]
+fn version_rejects_semver_and_other_shapes() {
+    for (v, why) in [
+        ("1.0.0", "semver"),
+        ("2026.9.1", "month not zero-padded"),
+        ("2026.13.1", "month out of range"),
+        ("2026.00.1", "month zero"),
+        ("2026.09", "two components"),
+        ("2026.09.1.2", "four components"),
+        ("26.09.1", "two-digit year"),
+        ("2026.09.01", "leading zero on release"),
+        ("2026.09.x", "non-numeric release"),
+        ("v2026.09.1", "prefix"),
+    ] {
+        let msg = build_err(&manifest_with("version", &format!(r#"version = "{v}""#)));
+        assert!(
+            msg.contains("not CalVer") && msg.contains("YYYY.MM.N"),
+            "{v:?} ({why}) should be rejected as not CalVer, got: {msg}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// languages — BCP-47 per element (Contract §11)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn languages_accepts_well_formed_bcp47() {
+    let cfg = format!("{VALID_MANIFEST}languages = \"en, pt-BR ,zh-Hans,sw,fr-CA,es-419\"\n");
+    let (_dir, archive) = build_ok(&cfg);
+    assert_eq!(
+        WaxReader::open(&archive).unwrap().manifest().get("languages").map(String::as_str),
+        Some("en,pt-BR,zh-Hans,sw,fr-CA,es-419"),
+        "elements are trimmed; tags are written as given"
+    );
+}
+
+#[test]
+fn languages_rejects_malformed_tags() {
+    for bad in [
+        "english",       // well-formed 7-letter subtag, but not a registered language
+        "zz",            // well-formed, not in the registry
+        "en_US",         // underscore is not a subtag separator
+        "e",             // one-letter primary subtag
+        "en-",
+        "-en",
+        "en--US",
+        "zh-Hans-",
+        "toolongsubtag",
+    ] {
+        let cfg = format!("{VALID_MANIFEST}languages = \"en,{bad}\"\n");
+        let msg = build_err(&cfg);
+        assert!(
+            msg.contains("BCP-47") && msg.contains(bad),
+            "{bad:?} should be rejected as malformed BCP-47, got: {msg}"
+        );
+    }
+}
+
+#[test]
+fn languages_rejects_an_empty_element() {
+    for raw in ["en,,fr", "en,", ",en", ""] {
+        let cfg = format!("{VALID_MANIFEST}languages = \"{raw}\"\n");
+        let msg = build_err(&cfg);
+        assert!(msg.contains("empty element"), "{raw:?} -> {msg}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// license — three outcomes (Contract §11)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn blank_license_is_a_hard_failure() {
+    for blank in [r#"license = """#, r#"license = "   ""#] {
+        let msg = build_err(&manifest_with("license", blank));
+        assert!(msg.contains("missing required field") && msg.contains("license"), "{msg}");
+    }
+    let msg = build_err(&manifest_without("license"));
+    assert!(msg.contains("license"), "{msg}");
+}
+
+#[test]
+fn every_allowlisted_license_builds_clean() {
+    let src = manifest_tree();
+    let dst = tempfile::tempdir().unwrap();
+    for id in wax_builder::config::LICENSE_ALLOWLIST {
+        let cfg = cfg_from(&manifest_with("license", &format!(r#"license = "{id}""#)));
+        let archive = out(&dst, &format!("{}.wax", id.replace(['.', '+'], "_")));
+        let report = build_pack(src.path(), &archive, &cfg, &pinned()).unwrap();
+        assert!(
+            !report.license_review_required(),
+            "{id} is allowlisted and must build clean"
+        );
+        assert_eq!(report.license.as_ref().unwrap().license(), id);
+    }
+}
+
+#[test]
+fn free_text_license_builds_with_review_required() {
+    let src = manifest_tree();
+    let dst = tempfile::tempdir().unwrap();
+    for text in [
+        "All rights reserved, see COPYING",
+        "Creative Commons Attribution-ShareAlike",
+        "public domain",
+    ] {
+        let cfg = cfg_from(&manifest_with("license", &format!(r#"license = "{text}""#)));
+        let archive = out(&dst, "p.wax");
+        let report = build_pack(src.path(), &archive, &cfg, &pinned())
+            .expect("free-text license must still build");
+        assert!(report.license_review_required(), "{text:?} must route to review");
+        // and the manifest carries the text verbatim, with no review flag inside it
+        let r = WaxReader::open(&archive).unwrap();
+        assert_eq!(r.manifest().get("license").map(String::as_str), Some(text));
+        assert!(r.manifest().get("license_review_required").is_none());
+    }
+}
+
+#[test]
+fn recognized_but_not_allowlisted_spdx_id_routes_to_review() {
+    // valid SPDX ids that Contract 11 deliberately leaves off the allowlist
+    let src = manifest_tree();
+    let dst = tempfile::tempdir().unwrap();
+    for id in ["GPL-2.0-or-later", "BSD-3-Clause", "CC-BY-NC-4.0", "LGPL-3.0-only", "MPL-2.0"] {
+        let cfg = cfg_from(&manifest_with("license", &format!(r#"license = "{id}""#)));
+        let report = build_pack(src.path(), &out(&dst, "p.wax"), &cfg, &pinned()).unwrap();
+        assert!(report.license_review_required(), "{id} is not allowlisted");
+    }
+}
+
+#[test]
+fn allowlist_match_is_literal() {
+    // "Literal SPDX identifiers" (Contract 11): case and spelling must match
+    let src = manifest_tree();
+    let dst = tempfile::tempdir().unwrap();
+    for near_miss in ["mit", "Mit", "CC-BY-SA", "cc-by-sa-4.0", "Apache 2.0", "GPL-3.0"] {
+        let cfg = cfg_from(&manifest_with("license", &format!(r#"license = "{near_miss}""#)));
+        let report = build_pack(src.path(), &out(&dst, "p.wax"), &cfg, &pinned()).unwrap();
+        assert!(
+            report.license_review_required(),
+            "{near_miss:?} is not a literal allowlist match and must route to review"
+        );
+    }
+}
+
+#[test]
+fn append_report_carries_the_archives_licensing_outcome() {
+    let src = manifest_tree();
+    let extra = tree(&[("articles/b.html", b"<p>b</p>")]);
+    let dst = tempfile::tempdir().unwrap();
+    let archive = out(&dst, "p.wax");
+    let cfg = cfg_from(&manifest_with("license", r#"license = "see COPYING""#));
+    build_pack(src.path(), &archive, &cfg, &pinned()).unwrap();
+    let report = append_pack(&archive, extra.path(), &cfg, &pinned()).unwrap();
+    assert!(report.license_review_required());
+}
+
+// ---------------------------------------------------------------------------
+// min_hw_tier — generic is box-reported, never declared (Contract §2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn generic_tier_is_rejected_with_a_targeted_message() {
+    for spelling in ["generic", "Generic", "GENERIC"] {
+        let msg = build_err(&manifest_with(
+            "min_hw_tier",
+            &format!(r#"min_hw_tier = "{spelling}""#),
+        ));
+        assert!(
+            msg.contains("a box reports") && msg.contains("never one a pack declares"),
+            "{spelling:?} should be diagnosed as the box-only tier, got: {msg}"
+        );
+        assert!(msg.contains("pi_zero_2w"), "should point at the board tiers: {msg}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // full round-trip
 // ---------------------------------------------------------------------------
 
@@ -500,6 +740,8 @@ fn a_valid_manifest_round_trips_unchanged() {
         assert_eq!(m.get(k).map(String::as_str), Some(v), "manifest.{k}");
     }
     // and nothing else: no computed fields, no defaults for unset optionals
+    // (guest_accessible included - "default false" is the reader's default,
+    // not a row the builder writes)
     assert_eq!(
         m.len(),
         expected.len(),

@@ -485,6 +485,7 @@ fn sign_then_verify_roundtrip() {
     )
     .unwrap();
 
+    let canonical = report.archive_uuid_text();
     let sidecar = report.sidecar.expect("a sidecar should have been written");
     assert_eq!(sidecar, sign::sidecar_path(&archive));
     assert!(sidecar.is_file());
@@ -493,11 +494,18 @@ fn sign_then_verify_roundtrip() {
     let r = WaxReader::open(&archive).unwrap();
     assert!(r.header().has_flag(flag::IS_SIGNED), "is_signed flag not set");
 
-    // trusted comment binds the sidecar to this archive
+    // trusted comment binds the sidecar to this archive, in the canonical
+    // lowercase-hyphenated form (Contract 11) - never bare 32-hex
     let text = std::fs::read_to_string(&sidecar).unwrap();
     assert!(
-        text.contains(&format!("archive_uuid={}", sign::hex16(&report.archive_uuid))),
-        "trusted comment must carry the archive_uuid: {text}"
+        text.contains(&format!("archive_uuid={canonical}")),
+        "trusted comment must carry the canonical archive_uuid: {text}"
+    );
+    assert!(canonical.len() == 36 && canonical.matches('-').count() == 4);
+    let bare: String = canonical.chars().filter(|c| *c != '-').collect();
+    assert!(
+        !text.contains(&format!("archive_uuid={bare}")),
+        "the bare 32-hex form must never be emitted: {text}"
     );
     assert!(text.contains(&format!("created_at={PINNED}")));
 

@@ -5,6 +5,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use wax_builder::{
+    WriteReport,
     append_pack, build_pack, config::PackConfig, sign, verify_pack, WriteOptions,
 };
 use wax_core::header::flag;
@@ -38,10 +39,15 @@ enum Commands {
         /// Pin header created_at for reproducible builds; also $SOURCE_DATE_EPOCH
         #[arg(long)]
         created_at: Option<u64>,
-        /// Pin archive_uuid (32 hex digits, hyphens optional) instead of
-        /// minting a fresh UUIDv4. Required for byte-identical rebuilds.
+        /// Pin archive_uuid instead of minting a fresh UUIDv4 (canonical
+        /// hyphenated or bare 32-hex accepted). Required for byte-identical rebuilds.
         #[arg(long)]
         archive_uuid: Option<String>,
+        /// Also write the build report (archive_uuid, entry counts, licensing
+        /// outcome incl. license_review_required) as JSON to this path, for the
+        /// catalog's intake to read.
+        #[arg(long)]
+        report_json: Option<PathBuf>,
     },
     /// Append a new segment (new tree) to an existing archive, then re-sign
     Append {
@@ -101,7 +107,8 @@ fn main() -> Result<()> {
             sign_key,
             created_at,
             archive_uuid,
-        } => cmd_build(input, output, config, sign_key, created_at, archive_uuid),
+            report_json,
+        } => cmd_build(input, output, config, sign_key, created_at, archive_uuid, report_json),
         Commands::Append {
             archive,
             input,
@@ -121,6 +128,7 @@ fn main() -> Result<()> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_build(
     input: PathBuf,
     output: PathBuf,
@@ -128,6 +136,7 @@ fn cmd_build(
     sign_key: Option<PathBuf>,
     created_at: Option<u64>,
     archive_uuid: Option<String>,
+    report_json: Option<PathBuf>,
 ) -> Result<()> {
     let cfg = PackConfig::discover(&input, config.as_deref())?;
     let opts = WriteOptions {
@@ -145,10 +154,15 @@ fn cmd_build(
         report.stats.aliases,
         report.segments
     );
-    println!("  archive_uuid : {}", sign::hex16(&report.archive_uuid));
+    println!("  archive_uuid : {}", report.archive_uuid_text());
     match &report.sidecar {
         Some(p) => println!("  signed       : {}", p.display()),
         None => println!("  signed       : no (pass --sign-key to sign)"),
+    }
+    print_license(&report);
+    if let Some(p) = report_json {
+        write_report_json(&report, &p)?;
+        println!("  build report : {}", p.display());
     }
     Ok(())
 }
@@ -177,8 +191,9 @@ fn cmd_append(
     );
     println!(
         "  archive_uuid : {} (preserved)",
-        sign::hex16(&report.archive_uuid)
+        report.archive_uuid_text()
     );
+    print_license(&report);
     match &report.sidecar {
         Some(p) => println!("  re-signed    : {}", p.display()),
         None => {
@@ -203,7 +218,7 @@ fn cmd_inspect(archive: PathBuf, list_entries: bool) -> Result<()> {
     let h = reader.header();
 
     println!("format version : {}.{}", h.version_major, h.version_minor);
-    println!("archive_uuid   : {}", sign::hex16(&h.archive_uuid));
+    println!("archive_uuid   : {}", wax_builder::uuid_text(&h.archive_uuid));
     println!("created_at     : {}", h.created_at);
     println!(
         "flags          : 0x{:04x}{}",
@@ -344,4 +359,53 @@ fn describe_flags(flags: u16) -> String {
     } else {
         format!(" [{}]", set.join(" "))
     }
+}
+
+/// One line per build/append stating the Contract §11 licensing outcome.
+fn print_license(report: &WriteReport) {
+    match &report.license {
+        None => {}
+        Some(l) if l.review_required() => println!(
+            "  license      : {:?} — LICENSE REVIEW REQUIRED (not on the SPDX allowlist; \
+             the pack builds, and the catalog's intake routes it to human review)",
+            l.license()
+        ),
+        Some(l) => println!("  license      : {} (allowlisted, builds clean)", l.license()),
+    }
+}
+
+/// Machine-readable build report. Provisional shape — the Contract pins that
+/// `license_review_required` is a build-report outcome the catalog reads, but
+/// not yet the report's file format or name, which is why this is opt-in.
+fn write_report_json(report: &WriteReport, path: &PathBuf) -> Result<()> {
+    let license = report.license.as_ref();
+    let json = format!(
+        "{{\n  \"archive\": {},\n  \"archive_uuid\": \"{}\",\n  \"entries\": {},\n  \"segments\": {},\n  \"signed\": {},\n  \"license\": {},\n  \"license_review_required\": {}\n}}\n",
+        json_str(&report.archive.display().to_string()),
+        report.archive_uuid_text(),
+        report.entries,
+        report.segments,
+        report.sidecar.is_some(),
+        license.map_or("null".to_string(), |l| json_str(l.license())),
+        report.license_review_required(),
+    );
+    std::fs::write(path, json).with_context(|| format!("writing build report {}", path.display()))
+}
+
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }

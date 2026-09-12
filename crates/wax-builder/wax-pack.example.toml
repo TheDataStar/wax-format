@@ -5,52 +5,66 @@
 # `--config`.
 
 # ---------------------------------------------------------------------------
-# [manifest] — Track B's B3 pack manifest, written into segment 0.
+# [manifest] — the B3 pack manifest, written into segment 0.
 #
-# ENFORCED against the B3 field table in docs/track-a-refinement.md §16. That
-# table is exhaustive, not a sample: an unknown key is a build error, not a
-# pass-through. All eight fields below are REQUIRED — a build fails if any is
-# missing or empty.
+# ENFORCED against the one normative field list: docs/cross-track-contract.md
+# §11. Eight required, five optional, nothing else — an unknown key is a
+# build error, not a pass-through.
 # ---------------------------------------------------------------------------
 [manifest]
 name = "Community Science Library"
 
-# Path to an icon entry INSIDE this archive — not a bare external filename and
-# not a data: URI. The build fails if it does not name a real entry.
+# Path to an icon entry INSIDE this archive. A root-level path like "icon.svg"
+# is fine; a data:/http:/file: URI is not. The build fails if it does not name
+# a real entry.
 icon = "img/icon.svg"
 
 # One of exactly: reference | education | media | tools | civic | health
 category = "reference"
 
-# SPDX identifier, or a short free-text description.
+# SPDX identifier or free text. Three outcomes (§11):
+#   blank                          -> the build FAILS
+#   on the allowlist               -> builds clean
+#   anything else (free text, or an SPDX id not on the allowlist)
+#                                  -> builds, and the build report carries
+#                                     license_review_required so the catalog
+#                                     routes the pack to human review
+# Allowlist (literal, case-sensitive): CC0-1.0, CC-BY-4.0, CC-BY-SA-3.0,
+#   CC-BY-SA-4.0, GFDL-1.3-or-later, MIT, Apache-2.0, GPL-2.0-only,
+#   GPL-3.0-only, GPL-3.0-or-later
 license = "CC-BY-SA-4.0"
 
 attribution = "Nairobi Community Trust"
 
-# Human-facing version. Distinct from archive_uuid and from the WAX format
-# version — this is what a person reads in a pack list.
+# CalVer, exactly YYYY.MM.N: four-digit year, two-digit month 01-12, release
+# number. Not semver — "1.0.0" is rejected.
 version = "2026.09.1"
 
-# One of Track E's E6 hardware-tier names, exactly:
+# The lowest board tier the pack runs on. One of exactly:
 #   pi_zero_2w | pi_4 | pi_5 | mini_pc
-# NOT a Deployment Profile name (Kiosk / Classroom / Community Hub / Field Ops)
-# — those are a different axis and are rejected with a specific error.
+# Never "generic" (that is a tier a box reports about itself, never one a pack
+# declares) and never a Deployment Profile name (Kiosk / Classroom /
+# Community Hub / Field Ops — a different axis).
 min_hw_tier = "pi_zero_2w"
 
 # Path to the launch target inside this archive. Same rules as `icon`.
 entry_point = "index.html"
 
-# --- Optional B3 fields ----------------------------------------------------
-# Omitted entirely from the manifest when unset — never written as 0 or "".
-# Uncomment only what actually applies to the pack.
+# --- Optional fields (§11) ------------------------------------------------
+# Omitted entirely from the manifest when unset — never written as 0, "" or
+# false. Uncomment only what actually applies to the pack.
 #
+# guest_accessible = true                # author's default for Guest-profile
+#                                        # visibility; the admin's per-pack
+#                                        # override lives in the catalog
 # runtime_ram_bytes = 268435456          # only if the pack has a companion runtime service
 # runtime_storage_bytes = 1073741824     # only if it needs writable storage beyond unpacking
-# languages = "en,sw,fr"                 # comma-separated language codes
+# languages = "en,sw,fr"                 # comma-separated BCP-47 tags (en, pt-BR, zh-Hans)
 # depends_on = "4a1b2c3d-4e5f-4607-8a99-aabbccddeeff,0f1e2d3c-4b5a-4968-8776-655443322110"
 #   Comma-separated archive_uuid values of packs this one expects installed
-#   (find them with `wax-builder inspect`). Each element must be a UUID; the
-#   build does not check that the pack exists - that is the catalog's job.
+#   (find them with `wax-builder inspect`). Each element must be a UUID and is
+#   written in canonical lowercase-hyphenated form; the build does not check
+#   that the pack exists — that is the catalog's job.
 
 # --- Fields removed from the schema; setting either is a build error --------
 # id               - archive_uuid (the header field) is the only identity a
