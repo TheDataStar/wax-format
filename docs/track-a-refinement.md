@@ -147,21 +147,7 @@ The second implementation pass (wax-builder: assembly, manifest, signing hook, C
 
 - **[Moderate]** wax-builder currently writes every [manifest] key from its config file straight through as TEXT with no validation — category and min_hw_tier accept any string, total_size_bytes is treated as a passthrough value rather than computed, and the field set itself was treated as illustrative rather than exhaustive. Resolved: Track B §2's B3 schema (reproduced here so this document is self-sufficient on the point) is the exhaustive field list, not a sample. wax-builder must validate against it, not merely pass it through.
 
-| **Key** | **Type** | **Required? / domain** |
-|---|---|---|
-| name | string | Required. |
-| icon | string | Required. Path within the archive to an icon entry — a root-level path such as icon.svg is valid. Not a data:/http:/file: URI. wax-builder verifies it resolves to a real entry. |
-| category | enum | Required. One of: reference · education · media · tools · civic · health. Reject anything else at build time. |
-| license | string | Required. SPDX identifier or short free-text description. |
-| attribution | string | Required. |
-| version | string | Required. Human-facing semver (e.g. 2026.09.1) — distinct from Track A's archive_uuid/segment mechanics. |
-| min_hw_tier | enum | Required. One of Track E's E6 tier names: pi_zero_2w · pi_4 · pi_5 · mini_pc. Not a Deployment Profile name. |
-| total_size_bytes | — | REMOVED from the manifest — see §17. The catalog's packs.size column (Track B §5) carries archive size instead. A config supplying it is an error, as with id. |
-| runtime_ram_bytes | integer | Optional. Omit rather than write 0 when the pack has no companion runtime service. |
-| runtime_storage_bytes | integer | Optional. Omit when the pack needs no writable storage beyond unpacking. |
-| entry_point | string | Required. Path within the archive to the launch target. |
-| languages | string | Optional. Comma-separated language codes. |
-| depends_on | string | Optional. Comma-separated archive_uuid values — corrected in §17; "pack ids" was stale wording for an identity field that no longer exists. |
+The field table that stood here has been removed rather than updated. It was a second copy of Track B §2's schema, reproduced so this document would be self-sufficient, and the two copies drifted exactly as duplicated vocabularies do: Track B gained a guest_accessible field per product direction, this copy never did, and wax-builder — enforcing against this copy — rejected a valid manifest as carrying an unknown key. The normative field list now lives in one place, the Cross-Track Contract §11, and both this document and Track B §2 cite it. The rule below still holds and is restated there.
 
 - **No id field:** Deliberately absent — an earlier draft's id duplicated archive_uuid without adding meaning and was dropped during Track B's own review. wax-builder must not invent one; archive_uuid (Track A §2, header field) is the only identity a pack carries.
 - **archive_uuid vs. determinism (A2 brief items 3 and 6):** Confirmed correct: a fresh UUIDv4 by default, an explicit override flag for pinning it, and note that a byte-identical rebuild test necessarily pins archive_uuid and every timestamp (both header.created_at and each segment's segment_meta.created_at, per §15's already-resolved dual-timestamp point) — those are two different, legitimately distinct clocks (pack creation vs. this segment's write time), not one value duplicated by mistake, so both need pinning independently rather than one implying the other.
