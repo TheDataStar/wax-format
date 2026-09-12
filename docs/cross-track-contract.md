@@ -36,6 +36,7 @@ Track E's original table stated RAM and storage as ranges (pi_4 as "2–8GB"), w
 
 - **Total ordering:** pi_zero_2w < pi_4 < pi_5 < mini_pc. A pack or feature declaring a min_hw_tier runs on that tier and every tier above it. The word "tier" always refers to this axis and never to a Deployment Profile.
 - **[New decision]** The installable-stack path gets a generic tier rather than being forced into a board name. A host that is not one of the four boards reports tier generic plus its measured RAM, storage and architecture, and is treated as equivalent to the highest preset tier whose floors it meets. This closes the sweep's finding that every tier-gated decision in three tracks was undecidable on a deployment path the project has already committed to as co-equal.
+- **[New decision]** generic is a value a box reports, never one a pack declares. min_hw_tier is drawn from the four board tiers only — a floor of "declared" would be meaningless as a gate, which is exactly why generic is absent from the ordering above. A generic box decides whether it can run a pack by comparing its own measured resources against the floors of the tier the pack declares, not by placing itself in the ordering.
 - **[New decision]** Tier name is a coarse floor for catalog filtering only. Runtime feature gating uses measured resources, not the tier name — because a tier is a floor, a box at pi_5 may have 4 GB or 16 GB, and a feature needing 8 GB must ask what the box actually has. Every box publishes both its tier and its measured RAM/storage/arch through the capability record in §9. Gating on the tier name alone is what produced the sweep's D5-on-a-2GB-Pi-4 finding.
 
 ## 3. Deployment Profiles
@@ -171,13 +172,38 @@ Track E confines DeltOS state to one tree so that OS rollback has a defined boun
 
 - **[New decision]** State written under this tree carries a schema version that its owner refuses to open if newer than it understands. This is the missing half of Track E's rollback design: /var is shared and never rolled back, so a rollback hands old code data that new code already migrated. Track E presents this as the guarantee without noticing it is also the hazard.
 
-## 11. Smaller Shared Vocabularies
+## 11. The Pack Manifest (B3) and Its Field Formats
 
+This table was previously written out in full in two documents — Track B §2, which designed it, and Track A §16, which reproduced it "so this document is self-sufficient." Two copies is precisely the duplication this contract exists to remove, and it failed exactly as predicted: Track B gained a guest_accessible field per product direction, Track A's copy never did, and wax-builder — built against Track A's copy — now rejects a valid manifest as carrying an unknown key. This is the one normative copy. Both track documents now cite it instead of restating it.
+
+| **Key** | **Req?** | **Value domain** |
+|---|---|---|
+| name | Required | Display name for the launcher. |
+| icon | Required | Path within the archive to an icon entry; must resolve to a real entry at build time. A root-level path such as icon.svg is valid. Not a data:/http:/file: URI. |
+| category | Required | One of: reference · education · media · tools · civic · health. |
+| license | Required | SPDX identifier or free text — see the licensing rules below. |
+| attribution | Required | Human-readable credit line. |
+| version | Required | CalVer YYYY.MM.N — see below. |
+| min_hw_tier | Required | One of: pi_zero_2w · pi_4 · pi_5 · mini_pc (§2). Never generic, never a Deployment Profile name. |
+| entry_point | Required | Path within the archive to the launch target; must resolve to a real entry at build time. |
+| guest_accessible | Optional | Boolean, default false. Whether the pack appears in a Guest profile's launcher grid. The author's default only — an admin's per-pack override lives in the on-device catalog, since the manifest is inside the signed archive and an admin cannot alter it. |
+| runtime_ram_bytes | Optional | Steady-state memory this pack's own services need once running. Omit when negligible rather than writing 0. |
+| runtime_storage_bytes | Optional | Writable storage needed beyond the archive itself. Omit when none. |
+| languages | Optional | Comma-separated BCP-47 codes — see below. |
+| depends_on | Optional | Comma-separated archive_uuid values — see below. |
+
+- **Eight required, five optional, nothing else:** Any key outside this table is a build error. There is no id field — archive_uuid is the only identity a pack carries. There is no total_size_bytes — archive size lives in the catalog (Track A §17, Track B §19). Adding a key here is a change to this document, and to this document only.
+- **[New decision]** guest_accessible is added to the normative list. It existed in Track B §2 and in no other document, which made every conforming builder reject it. Its admin-override half is explicitly relocated to the catalog, because an admin cannot modify a field sealed inside a signed archive — the same trap that removed total_size_bytes.
+
+### Field formats
+
+- **[New decision]** archive_uuid's text form is canonical lowercase hyphenated (8-4-4-4-12, as in 4c0cfba1-3e77-4b1e-9a02-1f9b3c5d7e01). Tools accept the bare 32-hex form on input and normalize on write; nothing ever emits the bare form. Four tracks serialize this value and the repo already carries two spellings — wax-builder's inspect prints bare hex while the Contract's own examples were hyphenated — so a catalog comparing strings rather than parsed UUIDs would silently fail to match a pack against itself.
 - **Language codes:** BCP-47 (en, pt-BR, zh-Hans). Track B's manifest carries them and Track D's tokenizer selection reads them; neither names a standard, and ZIM's own metadata uses ISO 639-3, so the converter must map rather than pass through. Where a source code has no BCP-47 mapping, the field is omitted rather than guessed.
 - **Pack version strings:** CalVer YYYY.MM.N, ordered by the three numeric components. Track B calls the field "human-facing semver" and then gives 2026.09.1 as the example — which is not valid semver, since semver forbids the leading zero. It is CalVer; the description was wrong, not the example.
 - **MQTT topics:** deltos/v1/<device_class>/<device_id>/<metric>, with device_class closed to battery · solar · grid · env · contact · aircraft · vessel, device_id matching [a-z0-9-]+ and stable per physical device from pairing, and metric carrying fixed SI units per name. Payload is {"value": …, "unit": "…", "ts": <epoch ms>}, retained, QoS 1. Commands use the reserved prefix deltos/v1/actions/ and are the only topics any component may publish to without owning the device.
 - **License allowlist:** Literal SPDX identifiers, not families: CC0-1.0 · CC-BY-4.0 · CC-BY-SA-3.0 · CC-BY-SA-4.0 · GFDL-1.3-or-later · MIT · Apache-2.0 · GPL-2.0-only · GPL-3.0-only · GPL-3.0-or-later. Track B's list names families ("CC-BY", "GPL-family") and "public domain", none of which are valid SPDX ids, in a check that ships at P1.
-- **[New decision]** Licensing has three outcomes, not two. A blank license is a hard build failure. A license on the allowlist builds clean. A license that is valid free text or a recognized-but-not-allowlisted identifier builds with a license_review_required flag that routes the pack to human review. Track B currently permits free text in the schema, has the builder refuse anything off the allowlist, and gives a human reviewer an "unrecognized license" state — three rules that cannot all hold, and that fail on real Wikipedia archives, which carry free-text or absent license metadata.
+- **[New decision]** Licensing has three outcomes, not two. A blank license is a hard build failure. A license on the allowlist builds clean. A license that is valid free text or a recognized-but-not-allowlisted identifier builds with a license_review_required outcome that routes the pack to human review. Track B currently permits free text in the schema, has the builder refuse anything off the allowlist, and gives a human reviewer an "unrecognized license" state — three rules that cannot all hold, and that fail on real Wikipedia archives, which carry free-text or absent license metadata.
+- **[New decision]** license_review_required is not a manifest key. It is a build-report outcome — wax-builder emits it alongside the archive, the catalog's intake reads it to route the pack to review, and the catalog carries the resolved review status from then on. Putting it in the manifest would repeat the total_size_bytes mistake exactly: a value that changes after the build, sealed inside an immutable, signature-covered table, with no permitted path to correct it once a reviewer approves the pack. The rule generalizes — the manifest holds what the author knows at build time and nothing whose value can change afterwards.
 
 ## 12. Every New Decision in One Place
 
@@ -199,6 +225,10 @@ Fourteen values in this document had no defensible source anywhere and were chos
 | 9 | The capability record and its path | Nothing defined where a box's own description lives. |
 | 10 | Schema version on all state under /var/lib/deltos | Rollback hands old code newly-migrated data. |
 | 11 | Three licensing outcomes | Three stated rules could not all hold, and failed on Wikipedia. |
+| 11 | The B3 field table moves here, guest_accessible included | Two copies drifted; a valid manifest was rejected as unknown-key. |
+| 11 | archive_uuid is canonical lowercase hyphenated | Four tracks serialize it; the repo already held two spellings. |
+| 11 | license_review_required is a build report, not a manifest key | In the manifest it would repeat the total_size_bytes trap exactly. |
+| 2 | generic is box-reported, never declared by a pack | A floor of "declared" cannot gate anything. |
 
 ## 13. Still Open — Not Invented Here
 

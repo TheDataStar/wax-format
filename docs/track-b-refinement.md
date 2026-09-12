@@ -10,6 +10,8 @@ Track B owns getting real content onto a box: converting the existing ZIM/Kiwix 
 
 ## 2. Pack Manifest Schema (B3) — Concrete Fields
 
+NORMATIVE LIST MOVED: the authoritative field list now lives in the Cross-Track Contract §11 and nothing else. This section is retained for its design rationale — why each field exists, what was dropped and why — but where it and the Contract differ on a field's presence, requiredness or value domain, the Contract wins. The move happened because this table was also reproduced in Track A §16, the two copies drifted when guest_accessible was added here and not there, and a builder enforcing against the other copy rejected a valid manifest.
+
 The manifest table (Track A §3) is generic key/value; this is what actually goes in it. Every field below is required unless marked optional. Revised after review — see the notes on id, min_hw_tier, category, and total_size_bytes below. Revised again per product direction — see the notes on runtime_ram_bytes, runtime_storage_bytes, and guest_accessible below.
 
 | **Key** | **Type** | **Notes** |
