@@ -13,6 +13,7 @@ This document is the remedy. It owns those vocabularies as normative values. Whe
 ### What this document does NOT own
 
 - **On-disk format values:** SPEC.md owns the .wax container's byte layout, endianness, flag bit positions, hash semantics, compression values and signing construction. Those were settled during the A3/A4 and A2 implementation passes (Track A §15–§17) and are already pinned in one place. This document does not restate them, because a second copy is how the problem started.
+- **Where that boundary actually falls:** SPEC.md owns bytes inside the container. This document owns how a shared value is rendered as text anywhere it is written — a build report, a signature's trusted comment, a log line, a config file, a catalog row. The two met during the A2d pass: SPEC.md pinned archive_uuid as bare hex in the minisign trusted comment while this document pinned the canonical text form as hyphenated. That is this document's call, not SPEC.md's, because the value crosses tracks; SPEC.md was corrected, not this one. Where they meet again, the same split applies — and because comparison of that identifier is by parsed value rather than by string, correcting a rendering never invalidates artifacts already signed.
 - **Values internal to a single track:** A value only one track reads stays in that track's document. The test for inclusion here is consumption by two or more tracks, not importance.
 - **Design decisions still genuinely open:** Where the sweep found something unspecified and no defensible value could be derived from existing material, it is listed in §13 as open rather than given an invented value.
 
@@ -198,12 +199,35 @@ This table was previously written out in full in two documents — Track B §2, 
 ### Field formats
 
 - **[New decision]** archive_uuid's text form is canonical lowercase hyphenated (8-4-4-4-12, as in 4c0cfba1-3e77-4b1e-9a02-1f9b3c5d7e01). Tools accept the bare 32-hex form on input and normalize on write; nothing ever emits the bare form. Four tracks serialize this value and the repo already carries two spellings — wax-builder's inspect prints bare hex while the Contract's own examples were hyphenated — so a catalog comparing strings rather than parsed UUIDs would silently fail to match a pack against itself.
+- **[New decision]** Language codes are validated against the IANA subtag registry, not merely checked for well-formedness. "english" and "zz" are both syntactically valid BCP-47 and both wrong, and a mistyped language silently degrades search rather than failing visibly, so the stricter check is worth its cost. Validators embed a registry snapshot, which means a subtag registered after that snapshot is rejected until the dependency is bumped — a routine update, noted here so it is a known property rather than a surprise.
 - **Language codes:** BCP-47 (en, pt-BR, zh-Hans). Track B's manifest carries them and Track D's tokenizer selection reads them; neither names a standard, and ZIM's own metadata uses ISO 639-3, so the converter must map rather than pass through. Where a source code has no BCP-47 mapping, the field is omitted rather than guessed.
+- **[New decision]** CalVer's digits are pinned: YYYY is four digits, MM is a zero-padded two-digit month 01–12, and N is a release counter within that month starting at 1 with no leading zero. So 2026.09.1 is valid and 2026.9.1, 2026.13.1 and 2026.09.01 are not. Zero-padding the month keeps lexical and numeric ordering identical, and matches the YYYY-MM-DD shape a ZIM's own Date metadata carries, so zim2wax's derivation is a reformat rather than a computation.
 - **Pack version strings:** CalVer YYYY.MM.N, ordered by the three numeric components. Track B calls the field "human-facing semver" and then gives 2026.09.1 as the example — which is not valid semver, since semver forbids the leading zero. It is CalVer; the description was wrong, not the example.
 - **MQTT topics:** deltos/v1/<device_class>/<device_id>/<metric>, with device_class closed to battery · solar · grid · env · contact · aircraft · vessel, device_id matching [a-z0-9-]+ and stable per physical device from pairing, and metric carrying fixed SI units per name. Payload is {"value": …, "unit": "…", "ts": <epoch ms>}, retained, QoS 1. Commands use the reserved prefix deltos/v1/actions/ and are the only topics any component may publish to without owning the device.
 - **License allowlist:** Literal SPDX identifiers, not families: CC0-1.0 · CC-BY-4.0 · CC-BY-SA-3.0 · CC-BY-SA-4.0 · GFDL-1.3-or-later · MIT · Apache-2.0 · GPL-2.0-only · GPL-3.0-only · GPL-3.0-or-later. Track B's list names families ("CC-BY", "GPL-family") and "public domain", none of which are valid SPDX ids, in a check that ships at P1.
 - **[New decision]** Licensing has three outcomes, not two. A blank license is a hard build failure. A license on the allowlist builds clean. A license that is valid free text or a recognized-but-not-allowlisted identifier builds with a license_review_required outcome that routes the pack to human review. Track B currently permits free text in the schema, has the builder refuse anything off the allowlist, and gives a human reviewer an "unrecognized license" state — three rules that cannot all hold, and that fail on real Wikipedia archives, which carry free-text or absent license metadata.
+- **[New decision]** Allowlist matching is case-insensitive, normalized to SPDX's canonical casing on write. SPDX's own specification treats identifiers as case-insensitive, and exact matching would route cc-by-sa-4.0 to human review while CC-BY-SA-4.0 builds clean — which on real Wikipedia archives means sending the flagship P1 content to a moderator over letter case. "Literal" in the list above constrains which identifiers are allowed, not how they are capitalized.
 - **[New decision]** license_review_required is not a manifest key. It is a build-report outcome — wax-builder emits it alongside the archive, the catalog's intake reads it to route the pack to review, and the catalog carries the resolved review status from then on. Putting it in the manifest would repeat the total_size_bytes mistake exactly: a value that changes after the build, sealed inside an immutable, signature-covered table, with no permitted path to correct it once a reviewer approves the pack. The rule generalizes — the manifest holds what the author knows at build time and nothing whose value can change afterwards.
+
+### The build report
+
+Introducing license_review_required as "a build-report outcome" created a cross-track interface — wax-builder writes it, the catalog's intake reads it — and then left it unowned, which is the defect this document exists to prevent and which it committed itself. Pinned here.
+
+- **[New decision]** Every successful build writes <archive-filename>.build-report.json beside the archive, by default rather than on request. The catalog's intake cannot depend on a report a builder may or may not have been asked to emit, and an absent report is a failed intake rather than an assumed-clean pack.
+
+{ "report_version": 1,
+  "archive_uuid": "4c0cfba1-3e77-4b1e-9a02-1f9b3c5d7e01",
+  "archive_filename": "wikipedia-en.wax",
+  "built_at": 1789198261422,
+  "builder_version": "wax-builder 0.3.1",
+  "entry_count": 6512044, "redirect_count": 2210338, "skipped_count": 1204,
+  "license": "CC-BY-SA-4.0",
+  "license_review_required": false,
+  "signed": true,
+  "warnings": [ { "code": "unsupported_mimetype", "count": 1204 } ] }
+
+- **Field rules:** built_at is Unix epoch milliseconds UTC, matching §5.2's timestamp rule. archive_uuid is canonical hyphenated. warnings carries one entry per distinct code with a count, not one entry per occurrence — a Wikipedia conversion skipping a million entries must not produce a million-line report. Readers ignore unknown keys; adding a key keeps report_version, changing or removing one bumps it.
+- **What it is not:** Not a trust artifact. It sits outside the signature, so intake treats it as the builder's own claim about its run — useful for routing and diagnostics, never as evidence about a pack's contents. Anything intake must trust is verified against the signed archive itself.
 
 ## 12. Every New Decision in One Place
 
@@ -229,6 +253,11 @@ Fourteen values in this document had no defensible source anywhere and were chos
 | 11 | archive_uuid is canonical lowercase hyphenated | Four tracks serialize it; the repo already held two spellings. |
 | 11 | license_review_required is a build report, not a manifest key | In the manifest it would repeat the total_size_bytes trap exactly. |
 | 2 | generic is box-reported, never declared by a pack | A floor of "declared" cannot gate anything. |
+| 1 | SPEC.md owns container bytes; this document owns text renderings | The two collided over archive_uuid in a signature's trusted comment. |
+| 11 | CalVer digits pinned (zero-padded month, unpadded counter) | YYYY.MM.N admitted four readings; ZIM's own Date reformats cleanly into one. |
+| 11 | SPDX matching is case-insensitive | Exact matching sent every lowercase-licensed Wikipedia pack to a moderator. |
+| 11 | Build report: default-emitted, named, schema pinned | It is a cross-track interface this document created and left unowned. |
+| 11 | BCP-47 validated against the IANA registry, not just well-formedness | "english" is well-formed and wrong; a typo should fail at build, not at search. |
 
 ## 13. Still Open — Not Invented Here
 
