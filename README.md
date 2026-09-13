@@ -27,6 +27,7 @@ only the fixed header is overwritten, as the final atomic step
 |-------|------|--------|
 | [`wax-core`](crates/wax-core) | reader + writer library (A1) | reader path, writer path, segment-chain merge, one-hop redirects, checksum verification |
 | [`wax-builder`](crates/wax-builder) | CLI: directory tree → signed `.wax` (A2) | `build` / `append` / `inspect` / `verify` (+ `ls`, `read`); manifest, aliases, compression policy, UUIDv4 identity, minisign hook |
+| [`zim2wax`](crates/zim2wax) | ZIM — `.wax` converter (Track B, B1) | v0 text + image: §20 canonical paths, href rewriting, redirect flattening, manifest derivation, §11 licensing + build report; verified against a real Wikipedia ZIM |
 | [`fuzz`](fuzz) | `cargo-fuzz` targets against the reader (A4) | 3 targets, build & run clean |
 
 Signing (A7) is specified in [SPEC §8](SPEC.md#8-signing-detached-sidecar--normative-for-v09v1x)
@@ -63,10 +64,12 @@ cargo run -p wax-core --example gen_fixtures
 ## CLI
 
 ```bash
-# Assemble a tree. Picks up ./site/wax-pack.toml if present. --report-json
-# also writes the build report (incl. the licensing outcome) for catalog intake.
-wax-builder build --input ./site --output ./site.wax --sign-key ~/.minisign/pack.key \
-                  --report-json ./site.wax.report.json
+# Assemble a tree. Picks up ./site/wax-pack.toml if present. Always writes
+# ./site.wax.build-report.json beside the archive (Contract §11).
+wax-builder build --input ./site --output ./site.wax --sign-key ~/.minisign/pack.key
+
+# Convert a ZIM (see crates/zim2wax/README.md).
+zim2wax convert --input wiki.zim --output wiki.wax --category reference --min-hw-tier pi_zero_2w
 
 # Add a new segment to an existing pack and re-sign it.
 wax-builder append --archive ./site.wax --input ./update --sign-key ~/.minisign/pack.key
@@ -133,8 +136,11 @@ manifest as valid and opaque. Enforcement applies to a pack that declares one.
 
 `license_review_required` is a **build-report outcome, not a manifest key** —
 it must be able to change once a reviewer approves the pack, and nothing sealed
-inside the signed archive can. `build` prints it and, with `--report-json
-<path>`, writes the report as JSON for the catalog's intake to read.
+inside the signed archive can. Every successful build writes
+`<archive-filename>.build-report.json` beside the archive with the Contract §11
+schema (`report_version`, `archive_uuid`, counts, `license`,
+`license_review_required`, `signed`, `warnings` as one entry per code with a
+count). The catalog's intake reads it; it is not a trust artifact.
 
 #### `archive_uuid` text form
 
