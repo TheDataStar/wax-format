@@ -43,26 +43,42 @@ Rewritten references are **root-relative** (`/Photosynthesis.html`,
 `/_assets/_res_/style.css`): a pack is served as the root of its own origin
 (Contract §8), so that form is correct at any document depth.
 
-### What is skipped, and how you find out
+### Warnings: the Contract's closed vocabulary
 
-Every skipped source item is a warning in the build report:
+The build report's warning codes are a **closed vocabulary owned by Contract
+§11**; the converter emits only these eight. Every dropped source item is
+counted under one of them, so `skipped_count` is always their sum (minus the
+three that are not drops).
 
-| code | meaning |
+| code | means |
 |---|---|
-| `unsupported_mimetype` | audio/video (and anything else outside text + image); Wikipedia's pronunciation audio lands here. The entry is skipped, its references are left intact. |
-| `redirect_cycle` / `redirect_dangling` | dropped redirects |
-| `invalid_path` | a url that is not a valid WAX path (e.g. a Wikipedia redirect titled `Http://…`) |
-| `canonical_path_collision` / `reserved_prefix_collision` | two dirents mapping to one path; an article inside `_assets/` or `_meta/` |
-| `search_index_not_copied` / `wellknown_not_copied` | `X/` and `W/` entries, by design |
-| `icon_placeholder` / `language_unmapped` | derivation fallbacks that were taken |
+| `unsupported_mimetype` | audio/video (and anything else outside text + image) skipped; Wikipedia's pronunciation audio lands here. References to it are left intact. |
+| `redirect_cycle` | a redirect chain closed on itself and was dropped |
+| `redirect_dangling` | a redirect's terminus does not exist (or was itself skipped) and was dropped |
+| `invalid_path` | a url that is not a valid WAX path (e.g. a Wikipedia redirect titled `Http://…`); also two dirents canonicalizing to the same path — the later one is dropped |
+| `reserved_prefix_collision` | an article inside `_assets/` or `_meta/` |
+| `license_operator_supplied` | the ZIM stated no license and `--license` supplied one — **always forces `license_review_required`** |
+| `attribution_operator_supplied` | the ZIM had neither Creator nor Publisher and `--attribution` supplied the credit line |
+| `icon_generated` | no illustration in the ZIM; a placeholder was generated |
 
-### `--license`
+Two things the converter does *not* warn about, because nothing usable was
+lost: the ZIM's `X/` search indexes (Xapian; not usable by WAX, and the FTS5
+rebuild is out of v0 scope) and `W/` well-known entries (the main page reaches
+the manifest through `entry_point`). Both are printed as "not copied, by
+design" on stdout. An unmappable `Language` is likewise visible only as an
+absent `languages` field.
 
-Current Wikipedia ZIMs (mwoffliner 1.17) carry **no** `License` metadata, and
-the Contract makes a blank license a hard failure — so without an operator
-statement the flagship content cannot convert. `--license <SPDX id or text>`
-supplies the license **only when the ZIM has none**; it never overrides a
-license the ZIM states. This is flagged against the Contract in the B1 summary.
+### `--license` and `--attribution`
+
+Current Wikipedia ZIMs (mwoffliner 1.17) carry **no** `License` metadata, and a
+blank license is a hard failure. `--license <SPDX id or text>` supplies one
+**only when the ZIM has none** — it never overrides a stated license — and
+the resulting pack is **always routed to review** (§11: an operator's claim is
+reviewed rather than trusted, even when it names an allowlisted id).
+
+`--attribution <credit line>` is the same shape for a ZIM with neither
+`Creator` nor `Publisher`. It raises its own warning but does not by itself
+force review.
 
 ## Not in v0
 
@@ -78,12 +94,14 @@ license the ZIM states. This is flagged against the Contract in the B1 summary.
 cargo test -p zim2wax
 ```
 
-56 tests: unit tests for canonicalization, href/CSS rewriting, ISO 639-3
+61 tests: unit tests for canonicalization, href/CSS rewriting, ISO 639-3
 mapping, CalVer derivation and the placeholder PNG; an integration suite over
 synthetic ZIMs (a test-only ZIM writer in `tests/common/`) covering redirect
 flattening, cycles, dangling, each manifest derivation and fallback, the three
-licensing outcomes, unsupported-mimetype skipping, required-flag rejection at
-both the library and CLI level; and the two committed openzim test-suite
+licensing outcomes plus the operator-supplied fourth, unsupported-mimetype
+skipping, the `"null"`-title rule, a sweep asserting every code the converter
+can raise is on the Contract's list, required-flag rejection at both the
+library and CLI level; and the two committed openzim test-suite
 archives (`tests/fixtures/`, one per namespace scheme).
 
 A real Wikipedia ZIM (333 MB, not committed) is exercised when

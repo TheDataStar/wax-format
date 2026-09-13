@@ -295,6 +295,7 @@ pub fn opts() -> zim2wax::ConvertOptions {
         category: "reference".into(),
         min_hw_tier: "pi_zero_2w".into(),
         license_if_absent: None,
+        attribution_if_absent: None,
         created_at: Some(1_789_000_000),
         archive_uuid: Some([
             0x4a, 0x1b, 0x2c, 0x3d, 0x4e, 0x5f, 0x46, 0x07, 0x8a, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
@@ -316,4 +317,27 @@ pub fn warning_count(v: &serde_json::Value, code: &str) -> u64 {
         .find(|w| w["code"] == code)
         .map(|w| w["count"].as_u64().unwrap())
         .unwrap_or(0)
+}
+
+/// The Contract §11 closed warning vocabulary. Every code in a report must be
+/// one of these.
+pub const CONTRACT_WARNING_CODES: [&str; 8] = [
+    "unsupported_mimetype",
+    "redirect_cycle",
+    "redirect_dangling",
+    "invalid_path",
+    "reserved_prefix_collision",
+    "license_operator_supplied",
+    "attribution_operator_supplied",
+    "icon_generated",
+];
+
+pub fn assert_only_contract_codes(v: &serde_json::Value) {
+    for w in v["warnings"].as_array().unwrap() {
+        let code = w["code"].as_str().unwrap();
+        assert!(
+            CONTRACT_WARNING_CODES.contains(&code),
+            "report carries {code:?}, which is not in Contract §11's closed vocabulary"
+        );
+    }
 }

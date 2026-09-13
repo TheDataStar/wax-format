@@ -25,28 +25,34 @@ use zim::{MimeType, Namespace, Target, Zim};
 pub const ICON_PATH: &str = "_assets/icon.png";
 
 /// Warning codes this converter emits into the §11 build report.
+///
+/// Contract §11 pins a **closed** vocabulary; a builder must not ship a code
+/// that is not on it. The eight below are the whole list. Conditions this
+/// converter detects that have no pinned code are folded into the nearest one
+/// ([`warn::INVALID_PATH`] for a canonical-path collision) or kept out of the
+/// report and surfaced only in [`ConvertStats`].
 pub mod warn {
-    /// Entry mimetype outside v0's text + image scope (audio/video/…); skipped.
+    /// An entry was skipped because v0 does not carry its media type.
+    /// References to it are left intact.
     pub const UNSUPPORTED_MIMETYPE: &str = "unsupported_mimetype";
-    /// Redirect whose chain loops; dropped.
+    /// A redirect chain closed on itself and was dropped.
     pub const REDIRECT_CYCLE: &str = "redirect_cycle";
-    /// Redirect whose terminus is missing or not emitted; dropped.
+    /// A redirect's terminus does not exist and was dropped.
     pub const REDIRECT_DANGLING: &str = "redirect_dangling";
-    /// Two dirents canonicalized to the same path; the later one skipped.
-    pub const CANONICAL_PATH_COLLISION: &str = "canonical_path_collision";
-    /// An article url inside the reserved `_assets/` or `_meta/` prefix; skipped.
-    pub const RESERVED_PREFIX_COLLISION: &str = "reserved_prefix_collision";
-    /// `X/` search-index entries (§4: rebuilt, not copied); not emitted.
-    pub const SEARCH_INDEX_NOT_COPIED: &str = "search_index_not_copied";
-    /// `W/` well-known entries; not emitted (main page reaches `entry_point`).
-    pub const WELLKNOWN_NOT_COPIED: &str = "wellknown_not_copied";
-    /// The ZIM had no `Illustration_*` entry; a placeholder icon was generated.
-    pub const ICON_PLACEHOLDER: &str = "icon_placeholder";
-    /// `Language` had no BCP-47 mapping; `languages` omitted.
-    pub const LANGUAGE_UNMAPPED: &str = "language_unmapped";
-    /// The canonical path is not a valid WAX path (SPEC §6.1: empty, `.` or
-    /// `..` component, `//`) — e.g. a Wikipedia redirect titled `Http://…`.
+    /// A source path could not be canonicalized into a valid pack path and was
+    /// dropped. Also covers two dirents canonicalizing to the same path (the
+    /// later one is dropped) until the Contract lists a distinct code.
     pub const INVALID_PATH: &str = "invalid_path";
+    /// A source path collided with a reserved prefix (`_assets/`, `_meta/`).
+    pub const RESERVED_PREFIX_COLLISION: &str = "reserved_prefix_collision";
+    /// The source stated no license and the operator supplied one. Always
+    /// accompanies `license_review_required`.
+    pub const LICENSE_OPERATOR_SUPPLIED: &str = "license_operator_supplied";
+    /// The source carried neither Creator nor Publisher and the operator
+    /// supplied the credit line.
+    pub const ATTRIBUTION_OPERATOR_SUPPLIED: &str = "attribution_operator_supplied";
+    /// The source carried no illustration and a placeholder was generated.
+    pub const ICON_GENERATED: &str = "icon_generated";
 }
 
 /// A canonical path is usable only if it is already in SPEC §6.1's stored
@@ -114,6 +120,9 @@ pub struct ConvertOptions {
     /// a hard failure — so without this the flagship content cannot convert.
     /// Never overrides a license the ZIM does state. Flagged in the B1 summary.
     pub license_if_absent: Option<String>,
+    /// Used **only** when the ZIM carries neither `Creator` nor `Publisher`
+    /// (Track B §20; Contract §11). Never overrides a credit the ZIM states.
+    pub attribution_if_absent: Option<String>,
     pub created_at: Option<u64>,
     pub archive_uuid: Option<[u8; 16]>,
     pub sign_key: Option<PathBuf>,
@@ -153,8 +162,9 @@ enum Fate {
     Content(String),
     /// A redirect dirent; resolved in a second step.
     Redirect { target_idx: u32 },
-    /// Not emitted, for the named warning code.
-    Skipped(&'static str),
+    /// Not emitted. `Some(code)` raises that build-report warning; `None` is a
+    /// by-design non-emission (`X/`, `W/`) that is counted in stats only.
+    Skipped(Option<&'static str>),
 }
 
 /// Everything derived from the ZIM's `M/` metadata that the manifest needs.
@@ -178,6 +188,17 @@ pub struct ConvertStats {
     pub redirects_emitted: usize,
     pub hrefs_rewritten: usize,
     pub bytes_in: u64,
+    /// `X/` search-index dirents, not copied by design (Track B §4). Not a
+    /// warning: nothing was lost that WAX could have used.
+    pub search_index_entries: usize,
+    /// `W/` well-known dirents, not copied by design (the main page reaches
+    /// the manifest through `entry_point`).
+    pub wellknown_entries: usize,
+    /// Two dirents canonicalized to the same path; reported as `invalid_path`.
+    pub path_collisions: usize,
+    /// `Language` had no BCP-47 mapping; `languages` omitted. Observable in
+    /// the manifest rather than the report.
+    pub language_unmapped: bool,
 }
 
 #[derive(Debug)]
@@ -250,8 +271,13 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
         let key = (e.namespace.as_byte(), e.url.clone());
         by_key.insert(key.clone(), idx);
         keys.push(key);
+        // Track B §20: for a non-text/html entry, a title of exactly "null" is
+        // mwoffliner's placeholder and is treated as absent. Deliberately not
+        // applied to articles, so an article titled "Null" survives.
+        let is_article = mime_str(&e.mime_type).map(bare_mime).as_deref().is_some_and(is_article_mime);
         let title = Some(e.title.trim().to_string())
-            .filter(|t| !t.is_empty() && t != &e.url);
+            .filter(|t| !t.is_empty())
+            .filter(|t| is_article || t != "null");
         titles.push(title);
 
         let fate = match e.target {
@@ -263,17 +289,26 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
                 let mime = mime_str(&e.mime_type).map(bare_mime);
                 mimes.push(mime.clone());
                 match canonicalize(e.namespace, &e.url, mime.as_deref().unwrap_or("")) {
-                    Disposition::SearchIndex => Fate::Skipped(warn::SEARCH_INDEX_NOT_COPIED),
-                    Disposition::WellKnown => Fate::Skipped(warn::WELLKNOWN_NOT_COPIED),
-                    Disposition::ReservedPrefixCollision => Fate::Skipped(warn::RESERVED_PREFIX_COLLISION),
+                    Disposition::SearchIndex => {
+                        stats.search_index_entries += 1;
+                        Fate::Skipped(None)
+                    }
+                    Disposition::WellKnown => {
+                        stats.wellknown_entries += 1;
+                        Fate::Skipped(None)
+                    }
+                    Disposition::ReservedPrefixCollision => {
+                        Fate::Skipped(Some(warn::RESERVED_PREFIX_COLLISION))
+                    }
                     Disposition::Emit(_) if !mime.as_deref().is_some_and(is_supported_mime) => {
-                        Fate::Skipped(warn::UNSUPPORTED_MIMETYPE)
+                        Fate::Skipped(Some(warn::UNSUPPORTED_MIMETYPE))
                     }
                     Disposition::Emit(path) => {
                         if !is_valid_wax_path(&path) {
-                            Fate::Skipped(warn::INVALID_PATH)
+                            Fate::Skipped(Some(warn::INVALID_PATH))
                         } else if canon_owner.contains_key(&path) {
-                            Fate::Skipped(warn::CANONICAL_PATH_COLLISION)
+                            stats.path_collisions += 1;
+                            Fate::Skipped(Some(warn::INVALID_PATH))
                         } else {
                             canon_owner.insert(path.clone(), idx);
                             Fate::Content(path)
@@ -282,7 +317,7 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
                 }
             }
         };
-        if let Fate::Skipped(code) = &fate {
+        if let Fate::Skipped(Some(code)) = &fate {
             warnings.bump(code);
         }
         fates.push(fate);
@@ -325,10 +360,11 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
                     Disposition::Emit(alias_path) => {
                         if !is_valid_wax_path(&alias_path) {
                             warnings.bump(warn::INVALID_PATH);
-                            fates[idx] = Fate::Skipped(warn::INVALID_PATH);
+                            fates[idx] = Fate::Skipped(Some(warn::INVALID_PATH));
                         } else if canon_owner.contains_key(&alias_path) {
-                            warnings.bump(warn::CANONICAL_PATH_COLLISION);
-                            fates[idx] = Fate::Skipped(warn::CANONICAL_PATH_COLLISION);
+                            stats.path_collisions += 1;
+                            warnings.bump(warn::INVALID_PATH);
+                            fates[idx] = Fate::Skipped(Some(warn::INVALID_PATH));
                         } else {
                             canon_owner.insert(alias_path.clone(), idx as u32);
                             redirect_targets[idx] = Some((alias_path, target_path));
@@ -336,18 +372,18 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
                     }
                     Disposition::ReservedPrefixCollision => {
                         warnings.bump(warn::RESERVED_PREFIX_COLLISION);
-                        fates[idx] = Fate::Skipped(warn::RESERVED_PREFIX_COLLISION);
+                        fates[idx] = Fate::Skipped(Some(warn::RESERVED_PREFIX_COLLISION));
                     }
                     Disposition::SearchIndex | Disposition::WellKnown => {
                         // a redirect living in X/ or W/ (e.g. W/mainPage): not content
-                        warnings.bump(warn::WELLKNOWN_NOT_COPIED);
-                        fates[idx] = Fate::Skipped(warn::WELLKNOWN_NOT_COPIED);
+                        stats.wellknown_entries += 1;
+                        fates[idx] = Fate::Skipped(None);
                     }
                 }
             }
             Err(code) => {
                 warnings.bump(code);
-                fates[idx] = Fate::Skipped(code);
+                fates[idx] = Fate::Skipped(Some(code));
             }
         }
     }
@@ -426,29 +462,40 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
             .ok_or_else(|| anyhow!("ZIM has no Date metadata; manifest.version is required (Contract §11)"))?,
     )?;
 
-    let attribution = metadata_string(&z, "Creator")?
-        .or(metadata_string(&z, "Publisher")?)
-        .unwrap_or_default();
-    if attribution.is_empty() {
-        bail!(
-            "ZIM has neither Creator nor Publisher metadata. Track B §20 derives \
-             attribution as Creator, else Publisher, else the empty string — but \
-             Contract §11 makes attribution required and wax-builder rejects an empty \
-             value, so this ZIM cannot be converted as specified (flagged as a §20/§11 \
-             conflict in the B1 summary)."
-        );
-    }
+    let attribution = match metadata_string(&z, "Creator")?.or(metadata_string(&z, "Publisher")?) {
+        Some(a) => a,
+        None => match &opts.attribution_if_absent {
+            Some(a) if !a.trim().is_empty() => {
+                warnings.bump(warn::ATTRIBUTION_OPERATOR_SUPPLIED);
+                a.trim().to_string()
+            }
+            _ => bail!(
+                "ZIM carries neither Creator nor Publisher metadata, and attribution is \
+                 required (Contract §11 — CC-BY compliance depends on the credit line). \
+                 Pass --attribution <credit line> to state it (used only because the ZIM \
+                 has none)."
+            ),
+        },
+    };
 
+    let mut license_operator_supplied = false;
     let license = match metadata_string(&z, "License")? {
         Some(l) => l,
-        None => opts.license_if_absent.clone().unwrap_or_default(),
+        None => match &opts.license_if_absent {
+            Some(l) if !l.trim().is_empty() => {
+                license_operator_supplied = true;
+                warnings.bump(warn::LICENSE_OPERATOR_SUPPLIED);
+                l.trim().to_string()
+            }
+            _ => String::new(),
+        },
     };
     if license.trim().is_empty() {
         bail!(
             "ZIM has no License metadata and a blank license is a hard build failure \
              (Contract §11). Current Wikipedia ZIMs omit it: pass --license <SPDX id or \
              text> to state the license the ZIM left out (it is used only because the \
-             ZIM has none). This gap is flagged against the Contract in the B1 summary."
+             ZIM has none, and the pack is always routed to license review)."
         );
     }
 
@@ -456,7 +503,7 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
     if let Some(l) = metadata_string(&z, "Language")? {
         languages = languages_field(&l);
         if languages.is_none() {
-            warnings.bump(warn::LANGUAGE_UNMAPPED);
+            stats.language_unmapped = true;
         }
     }
 
@@ -477,7 +524,7 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
     // icon ← Illustration_*, else a legacy favicon, else a placeholder (§20).
     let (icon_bytes, icon_source) = find_illustration(&z)?;
     if icon_source.is_none() {
-        warnings.bump(warn::ICON_PLACEHOLDER);
+        warnings.bump(warn::ICON_GENERATED);
     }
     let derived = Derived {
         name,
@@ -491,7 +538,8 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
     if canon_owner.contains_key(ICON_PATH) {
         // a source entry already lives at _assets/icon.png; the extracted
         // illustration takes precedence and the source entry is dropped
-        warnings.bump(warn::CANONICAL_PATH_COLLISION);
+        stats.path_collisions += 1;
+        warnings.bump(warn::INVALID_PATH);
         entries.retain(|e| e.path != ICON_PATH);
     }
     entries.push(EntryInput::data(ICON_PATH, icon_bytes, Compression::None).with_mime("image/png"));
@@ -515,13 +563,13 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
     // Deterministic order: wax-core lays blobs down in the order given.
     entries.sort_by(|a, b| a.path.cmp(&b.path));
 
+    // skipped_count = source items dropped for a warned reason (§11's example:
+    // 1204 skipped ↔ unsupported_mimetype 1204). By-design non-emission of X/
+    // and W/ is not a drop and is not counted.
     let skipped = warnings.count(warn::UNSUPPORTED_MIMETYPE)
         + warnings.count(warn::REDIRECT_CYCLE)
         + warnings.count(warn::REDIRECT_DANGLING)
-        + warnings.count(warn::CANONICAL_PATH_COLLISION)
         + warnings.count(warn::RESERVED_PREFIX_COLLISION)
-        + warnings.count(warn::SEARCH_INDEX_NOT_COPIED)
-        + warnings.count(warn::WELLKNOWN_NOT_COPIED)
         + warnings.count(warn::INVALID_PATH);
 
     let write = build_from_entries(
@@ -537,6 +585,8 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
             builder_version: Some(format!("zim2wax {}", env!("CARGO_PKG_VERSION"))),
             warnings: warnings.clone(),
             skipped_count: skipped,
+            // Contract §11: an operator's license claim is reviewed, not trusted
+            force_license_review: license_operator_supplied,
         },
     )
     .with_context(|| format!("building {}", output.display()))?;
@@ -658,6 +708,7 @@ mod tests {
             category: "reference".into(),
             min_hw_tier: "pi_4".into(),
             license_if_absent: None,
+            attribution_if_absent: None,
             created_at: None,
             archive_uuid: None,
             sign_key: None,

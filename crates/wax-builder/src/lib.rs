@@ -130,6 +130,10 @@ pub struct BuildContext {
     pub warnings: Warnings,
     /// Source items the caller skipped (not present in `entries`).
     pub skipped_count: u64,
+    /// Report `license_review_required` regardless of the allowlist. Contract
+    /// §11: an operator-supplied license is reviewed rather than trusted, even
+    /// when the id it names would otherwise build clean.
+    pub force_license_review: bool,
 }
 
 /// Fresh single-segment build: `input` tree + `cfg` — `output` archive.
@@ -217,6 +221,14 @@ pub fn build_from_entries(
 
     let sidecar = maybe_sign(output, opts)?;
     let segments = WaxReader::open(output)?.segment_count();
+
+    let license = if ctx.force_license_review {
+        license.map(|l| config::LicenseOutcome::ReviewRequired {
+            license: l.license().to_string(),
+        })
+    } else {
+        license
+    };
 
     let mut report = WriteReport {
         archive: output.to_path_buf(),

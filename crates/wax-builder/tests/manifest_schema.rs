@@ -839,6 +839,7 @@ fn build_report_counts_redirects_and_caller_warnings() {
             builder_version: Some("zim2wax 0.1.0".to_string()),
             warnings,
             skipped_count: 5,
+            force_license_review: false,
         },
     )
     .unwrap();
@@ -856,6 +857,39 @@ fn build_report_counts_redirects_and_caller_warnings() {
             {"code": "unsupported_mimetype", "count": 3}
         ])
     );
+}
+
+#[test]
+fn a_caller_can_force_license_review_on_an_allowlisted_id() {
+    // Contract §11: an operator-supplied license is reviewed, not trusted
+    use wax_builder::{build_from_entries, BuildContext};
+    use wax_core::{Compression, EntryInput};
+    let dst = tempfile::tempdir().unwrap();
+    let archive = out(&dst, "p.wax");
+    let entries = vec![
+        EntryInput::data("index.html", b"<h1/>".to_vec(), Compression::None),
+        EntryInput::data("icon.svg", b"<svg/>".to_vec(), Compression::None),
+    ];
+    let cfg = cfg_from(&manifest_with("icon", r#"icon = "icon.svg""#)); // license = CC-BY-SA-4.0
+    let report = build_from_entries(
+        &archive,
+        entries,
+        &cfg.manifest,
+        &pinned(),
+        BuildContext {
+            force_license_review: true,
+            ..BuildContext::default()
+        },
+    )
+    .unwrap();
+    assert!(report.license_review_required());
+    assert_eq!(report.license.as_ref().unwrap().license(), "CC-BY-SA-4.0");
+    let v = read_report(&archive);
+    assert_eq!(v["license"], "CC-BY-SA-4.0");
+    assert_eq!(v["license_review_required"], true);
+    // the manifest still carries the canonical id; the review flag is report-only
+    let r = WaxReader::open(&archive).unwrap();
+    assert_eq!(r.manifest().get("license").map(String::as_str), Some("CC-BY-SA-4.0"));
 }
 
 #[test]

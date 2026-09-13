@@ -242,7 +242,7 @@ fn icon_is_the_illustration_bytes() {
     assert_eq!(rep.derived.icon_source.as_deref(), Some("M/Illustration_48x48@1"));
     let mut r = WaxReader::open(&fx.wax).unwrap();
     assert_eq!(r.read(ICON_PATH).unwrap(), b"\x89PNG-icon");
-    assert_eq!(warning_count(&report_json(&fx.wax), "icon_placeholder"), 0);
+    assert_eq!(warning_count(&report_json(&fx.wax), "icon_generated"), 0);
 }
 
 #[test]
@@ -255,7 +255,7 @@ fn icon_falls_back_to_a_generated_placeholder_never_omitted() {
     assert_eq!(r.manifest().get("icon").map(String::as_str), Some("_assets/icon.png"));
     let png = r.read(ICON_PATH).unwrap();
     assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "placeholder is a PNG");
-    assert_eq!(warning_count(&report_json(&fx.wax), "icon_placeholder"), 1);
+    assert_eq!(warning_count(&report_json(&fx.wax), "icon_generated"), 1);
 }
 
 #[test]
@@ -271,16 +271,38 @@ fn attribution_falls_back_to_publisher() {
 }
 
 #[test]
-fn attribution_with_neither_creator_nor_publisher_fails_clearly() {
-    // §20 says "else the empty string"; Contract §11 requires attribution.
-    // The conversion stops with a message naming the conflict (flagged).
+fn attribution_with_neither_creator_nor_publisher_needs_the_operator_flag() {
+    // Track B §20 / Contract §11: an empty credit line is rejected; --attribution
+    // is the sanctioned path and raises attribution_operator_supplied.
     let b = ZimBuilder::new()
         .meta("Title", "T").meta("Date", "2026-01-01").meta("License", "MIT")
         .html(C, "index", "i", "<p/>").main_page(C, "index");
     let fx = fixture(&b);
     let err = convert(&fx.zim, &fx.wax, &opts()).unwrap_err().to_string();
-    assert!(err.contains("neither Creator nor Publisher"), "{err}");
-    assert!(err.contains("§20/§11"), "{err}");
+    assert!(err.contains("neither Creator nor Publisher") && err.contains("--attribution"), "{err}");
+    assert!(!fx.wax.exists());
+
+    let mut o = opts();
+    o.attribution_if_absent = Some("Operator Credit".into());
+    let rep = convert(&fx.zim, &fx.wax, &o).unwrap();
+    assert_eq!(rep.derived.attribution, "Operator Credit");
+    let r = WaxReader::open(&fx.wax).unwrap();
+    assert_eq!(r.manifest().get("attribution").map(String::as_str), Some("Operator Credit"));
+    let v = report_json(&fx.wax);
+    assert_eq!(warning_count(&v, "attribution_operator_supplied"), 1);
+    // attribution alone does not force license review (only --license does)
+    assert_eq!(v["license_review_required"], false);
+}
+
+#[test]
+fn attribution_flag_is_ignored_when_the_zim_states_a_credit() {
+    let fx = fixture(&wiki()); // Creator = "Test Creator"
+    let mut o = opts();
+    o.attribution_if_absent = Some("Operator Credit".into());
+    convert(&fx.zim, &fx.wax, &o).unwrap();
+    let r = WaxReader::open(&fx.wax).unwrap();
+    assert_eq!(r.manifest().get("attribution").map(String::as_str), Some("Test Creator"));
+    assert_eq!(warning_count(&report_json(&fx.wax), "attribution_operator_supplied"), 0);
 }
 
 #[test]
@@ -310,7 +332,9 @@ fn unmappable_language_is_omitted_with_a_warning() {
     convert(&fx.zim, &fx.wax, &opts()).unwrap();
     let r = WaxReader::open(&fx.wax).unwrap();
     assert!(r.manifest().get("languages").is_none());
-    assert_eq!(warning_count(&report_json(&fx.wax), "language_unmapped"), 1);
+    // not a Contract warning code: observable through the absent field only
+    assert_eq!(warning_count(&report_json(&fx.wax), "language_unmapped"), 0);
+    assert_only_contract_codes(&report_json(&fx.wax));
 }
 
 #[test]
@@ -436,21 +460,36 @@ fn blank_license_is_a_hard_failure() {
 }
 
 #[test]
-fn license_override_applies_only_when_the_zim_has_none() {
-    // absent → override used
+fn operator_supplied_license_is_reviewed_not_trusted_even_when_allowlisted() {
+    // Contract §11: license_operator_supplied always accompanies
+    // license_review_required, so an operator's claim goes to a reviewer.
     let b = ZimBuilder::new()
         .meta("Title", "T").meta("Date", "2026-01-01").meta("Creator", "c")
         .html(C, "index", "i", "<p/>").main_page(C, "index");
     let fx = fixture(&b);
     let mut o = opts();
-    o.license_if_absent = Some("mit".into());
-    convert(&fx.zim, &fx.wax, &o).unwrap();
-    assert_eq!(WaxReader::open(&fx.wax).unwrap().manifest().get("license").map(String::as_str), Some("MIT"));
-    // present → ZIM's own value wins, override ignored
+    o.license_if_absent = Some("cc-by-sa-4.0".into());
+    let rep = convert(&fx.zim, &fx.wax, &o).unwrap();
+    assert!(rep.write.license_review_required(), "operator-supplied → review, even for an allowlisted id");
+    let v = report_json(&fx.wax);
+    assert_eq!(v["license"], "CC-BY-SA-4.0", "still canonicalized");
+    assert_eq!(v["license_review_required"], true);
+    assert_eq!(warning_count(&v, "license_operator_supplied"), 1);
+    // the manifest carries the canonical id; the review flag is report-only
+    assert_eq!(WaxReader::open(&fx.wax).unwrap().manifest().get("license").map(String::as_str), Some("CC-BY-SA-4.0"));
+    assert_only_contract_codes(&v);
+}
+
+#[test]
+fn license_override_is_ignored_when_the_zim_states_one() {
     let b = ZimBuilder::new().standard_meta().html(C, "index", "i", "<p/>").main_page(C, "index");
     let fx = fixture(&b);
-    convert(&fx.zim, &fx.wax, &o).unwrap();
+    let mut o = opts();
+    o.license_if_absent = Some("mit".into());
+    let rep = convert(&fx.zim, &fx.wax, &o).unwrap();
     assert_eq!(WaxReader::open(&fx.wax).unwrap().manifest().get("license").map(String::as_str), Some("CC-BY-SA-4.0"));
+    assert!(!rep.write.license_review_required(), "the ZIM's own allowlisted license builds clean");
+    assert_eq!(warning_count(&report_json(&fx.wax), "license_operator_supplied"), 0);
 }
 
 // ===========================================================================
@@ -482,6 +521,88 @@ fn audio_and_video_are_skipped_counted_and_references_left_intact() {
 }
 
 // ===========================================================================
+// the Contract's closed warning vocabulary (§11)
+// ===========================================================================
+
+#[test]
+fn a_canonical_path_collision_is_reported_as_invalid_path() {
+    // "Foo" (no ext) and "Foo.html" both canonicalize to Foo.html; the later
+    // one is dropped. The Contract has no distinct code for this, so it is
+    // folded into invalid_path rather than shipped as an unlisted code.
+    let b = ZimBuilder::new()
+        .standard_meta()
+        .html(C, "index", "i", "<p/>")
+        .html(C, "Foo", "Foo", "<p>first</p>")
+        .html(C, "Foo.html", "Foo html", "<p>second</p>")
+        .main_page(C, "index");
+    let fx = fixture(&b);
+    let rep = convert(&fx.zim, &fx.wax, &opts()).unwrap();
+    assert_eq!(rep.stats.path_collisions, 1);
+    let mut r = WaxReader::open(&fx.wax).unwrap();
+    assert_eq!(r.read("Foo.html").unwrap(), b"<p>first</p>", "url-order first wins");
+    let v = report_json(&fx.wax);
+    assert_eq!(warning_count(&v, "invalid_path"), 1);
+    assert_eq!(warning_count(&v, "canonical_path_collision"), 0);
+    assert_eq!(v["skipped_count"], 1);
+    assert_only_contract_codes(&v);
+}
+
+#[test]
+fn every_report_this_converter_writes_uses_only_contract_codes() {
+    // one archive that trips every warning the converter can raise
+    let b = ZimBuilder::new()
+        .meta("Title", "T").meta("Date", "2026-01-01") // no Creator/Publisher, no License, no Illustration
+        .html(C, "index", "i", "<p/>")
+        .html(C, "_assets/shadow", "s", "<p/>") // reserved_prefix_collision
+        .content(C, "_assets_/clip.ogg", "null", "application/ogg", b"OGG") // unsupported_mimetype
+        .redirect(C, "Loop", "l", C, "Loop") // redirect_cycle
+        .redirect(C, "Dangle", "d", C, "_assets_/clip.ogg") // redirect_dangling
+        .redirect(C, "Http://x", "x", C, "index") // invalid_path
+        .main_page(C, "index");
+    let fx = fixture(&b);
+    let mut o = opts();
+    o.license_if_absent = Some("MIT".into()); // license_operator_supplied
+    o.attribution_if_absent = Some("Op".into()); // attribution_operator_supplied
+    convert(&fx.zim, &fx.wax, &o).unwrap(); // icon_generated
+    let v = report_json(&fx.wax);
+    assert_only_contract_codes(&v);
+    let codes: Vec<&str> = v["warnings"].as_array().unwrap().iter().map(|w| w["code"].as_str().unwrap()).collect();
+    assert_eq!(
+        codes,
+        vec![
+            "attribution_operator_supplied",
+            "icon_generated",
+            "invalid_path",
+            "license_operator_supplied",
+            "redirect_cycle",
+            "redirect_dangling",
+            "reserved_prefix_collision",
+            "unsupported_mimetype",
+        ],
+        "all eight Contract codes, sorted, and nothing else"
+    );
+    assert_eq!(v["license_review_required"], true);
+}
+
+#[test]
+fn a_literal_null_title_on_a_non_article_is_treated_as_absent() {
+    // Track B §20: mwoffliner writes title="null" on every non-article dirent.
+    let b = ZimBuilder::new()
+        .standard_meta()
+        .html(C, "index", "i", "<p/>")
+        .html(C, "Null", "Null", "<p>a genuine article about null</p>")
+        .content(C, "_assets_/pic.png", "null", "image/png", b"PNG")
+        .content(C, "_res_/s.css", "null", "text/css", "a{}")
+        .main_page(C, "index");
+    let fx = fixture(&b);
+    convert(&fx.zim, &fx.wax, &opts()).unwrap();
+    let r = WaxReader::open(&fx.wax).unwrap();
+    assert_eq!(r.entry("_assets/_assets_/pic.png").unwrap().title, None);
+    assert_eq!(r.entry("_assets/_res_/s.css").unwrap().title, None);
+    assert_eq!(r.entry("Null.html").unwrap().title.as_deref(), Some("Null"), "an article titled Null survives");
+}
+
+// ===========================================================================
 // the committed openzim test-suite fixtures (one per namespace scheme)
 // ===========================================================================
 
@@ -502,9 +623,16 @@ fn committed_fixture_new_namespace_scheme_converts() {
     assert!(r.read("main.html").unwrap().starts_with(b"<"));
     assert!(r.entry("_assets/favicon.png").is_some());
     assert!(!r.paths().any(|p| p.contains("xapian") || p.contains("listing/")), "indexes not copied");
+    // X/ and W/ are by-design non-emission: counted in stats, never a warning
+    assert_eq!(rep.stats.search_index_entries, 3);
+    assert_eq!(rep.stats.wellknown_entries, 1);
     let v = report_json(&wax);
-    assert_eq!(warning_count(&v, "search_index_not_copied"), 3);
-    assert_eq!(warning_count(&v, "wellknown_not_copied"), 1);
+    // the only warning is the operator-supplied license (the fixture has none),
+    // which also forces review
+    assert_eq!(v["warnings"], serde_json::json!([{"code": "license_operator_supplied", "count": 1}]), "{v}");
+    assert_eq!(v["license_review_required"], true);
+    assert_eq!(v["skipped_count"], 0, "by-design non-emission is not a skip");
+    assert_only_contract_codes(&v);
 }
 
 #[test]

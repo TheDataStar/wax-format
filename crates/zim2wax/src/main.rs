@@ -33,6 +33,11 @@ enum Commands {
         /// Contract §11). Ignored when the ZIM states one. SPDX id or text.
         #[arg(long)]
         license: Option<String>,
+        /// Credit line to record when the ZIM carries neither Creator nor
+        /// Publisher (attribution is required, Contract §11). Ignored when the
+        /// ZIM states either.
+        #[arg(long)]
+        attribution: Option<String>,
         /// minisign secret key; also $WAX_MINISIGN_KEY
         #[arg(long)]
         sign_key: Option<PathBuf>,
@@ -60,11 +65,12 @@ fn main() -> Result<()> {
             category,
             min_hw_tier,
             license,
+            attribution,
             sign_key,
             created_at,
             archive_uuid,
         } => cmd_convert(
-            input, output, category, min_hw_tier, license, sign_key, created_at, archive_uuid,
+            input, output, category, min_hw_tier, license, attribution, sign_key, created_at, archive_uuid,
         ),
         Commands::Probe { input } => cmd_probe(input),
     }
@@ -77,6 +83,7 @@ fn cmd_convert(
     category: String,
     min_hw_tier: String,
     license: Option<String>,
+    attribution: Option<String>,
     sign_key: Option<PathBuf>,
     created_at: Option<u64>,
     archive_uuid: Option<String>,
@@ -85,6 +92,7 @@ fn cmd_convert(
         category,
         min_hw_tier,
         license_if_absent: license,
+        attribution_if_absent: attribution,
         created_at: created_at.or_else(|| {
             std::env::var("SOURCE_DATE_EPOCH").ok().and_then(|v| v.parse().ok())
         }),
@@ -115,12 +123,22 @@ fn cmd_convert(
     );
     match &r.derived.languages {
         Some(l) => println!("  languages    : {l}"),
-        None => println!("  languages    : (omitted — no BCP-47 mapping)"),
+        None if r.stats.language_unmapped => println!("  languages    : (omitted — ZIM Language has no BCP-47 mapping)"),
+        None => println!("  languages    : (omitted — ZIM has no Language metadata)"),
     }
+    println!(
+        "  not copied   : {} search-index (X/) + {} well-known (W/) dirents, by design",
+        r.stats.search_index_entries, r.stats.wellknown_entries
+    );
     match &w.license {
         Some(l) if l.review_required() => println!(
-            "  license      : {:?} — LICENSE REVIEW REQUIRED (not on the SPDX allowlist)",
-            l.license()
+            "  license      : {:?} — LICENSE REVIEW REQUIRED ({})",
+            l.license(),
+            if r.warnings.count("license_operator_supplied") > 0 {
+                "operator-supplied; reviewed rather than trusted"
+            } else {
+                "not on the SPDX allowlist"
+            }
         ),
         Some(l) => println!("  license      : {} (allowlisted, builds clean)", l.license()),
         None => {}
