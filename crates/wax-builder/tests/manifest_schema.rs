@@ -529,7 +529,7 @@ fn guest_accessible_must_be_a_boolean() {
 
 #[test]
 fn version_accepts_calver() {
-    for v in ["2026.09.1", "2026.01.0", "2026.12.42", "1999.06.7"] {
+    for v in ["2026.09.1", "2026.01.1", "2026.12.42", "1999.06.7"] {
         let cfg = manifest_with("version", &format!(r#"version = "{v}""#));
         let (_dir, archive) = build_ok(&cfg);
         assert_eq!(
@@ -550,6 +550,7 @@ fn version_rejects_semver_and_other_shapes() {
         ("2026.09.1.2", "four components"),
         ("26.09.1", "two-digit year"),
         ("2026.09.01", "leading zero on release"),
+        ("2026.09.0", "release counter starts at 1"),
         ("2026.09.x", "non-numeric release"),
         ("v2026.09.1", "prefix"),
     ] {
@@ -671,17 +672,41 @@ fn recognized_but_not_allowlisted_spdx_id_routes_to_review() {
 }
 
 #[test]
-fn allowlist_match_is_literal() {
-    // "Literal SPDX identifiers" (Contract 11): case and spelling must match
+fn allowlist_match_is_case_insensitive_and_written_canonically() {
+    // Contract §11: matching is case-insensitive, normalized to SPDX's canonical
+    // casing on write. "Literal" constrains which ids are allowed, not their case.
     let src = manifest_tree();
     let dst = tempfile::tempdir().unwrap();
-    for near_miss in ["mit", "Mit", "CC-BY-SA", "cc-by-sa-4.0", "Apache 2.0", "GPL-3.0"] {
+    for (spelling, canonical) in [
+        ("mit", "MIT"),
+        ("Mit", "MIT"),
+        ("cc-by-sa-4.0", "CC-BY-SA-4.0"),
+        ("CC-by-SA-4.0", "CC-BY-SA-4.0"),
+        ("apache-2.0", "Apache-2.0"),
+        ("gpl-3.0-or-later", "GPL-3.0-or-later"),
+    ] {
+        let cfg = cfg_from(&manifest_with("license", &format!(r#"license = "{spelling}""#)));
+        let archive = out(&dst, "p.wax");
+        let report = build_pack(src.path(), &archive, &cfg, &pinned()).unwrap();
+        assert!(!report.license_review_required(), "{spelling:?} must build clean");
+        assert_eq!(report.license.as_ref().unwrap().license(), canonical);
+        let r = WaxReader::open(&archive).unwrap();
+        assert_eq!(
+            r.manifest().get("license").map(String::as_str),
+            Some(canonical),
+            "{spelling:?} must be written in canonical casing"
+        );
+    }
+}
+
+#[test]
+fn near_misses_that_are_not_case_variants_still_route_to_review() {
+    let src = manifest_tree();
+    let dst = tempfile::tempdir().unwrap();
+    for near_miss in ["CC-BY-SA", "Apache 2.0", "GPL-3.0", "MIT License", "cc0"] {
         let cfg = cfg_from(&manifest_with("license", &format!(r#"license = "{near_miss}""#)));
         let report = build_pack(src.path(), &out(&dst, "p.wax"), &cfg, &pinned()).unwrap();
-        assert!(
-            report.license_review_required(),
-            "{near_miss:?} is not a literal allowlist match and must route to review"
-        );
+        assert!(report.license_review_required(), "{near_miss:?} is not on the allowlist");
     }
 }
 
@@ -714,6 +739,136 @@ fn generic_tier_is_rejected_with_a_targeted_message() {
         );
         assert!(msg.contains("pi_zero_2w"), "should point at the board tiers: {msg}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// the build report — Contract §11 "The build report"
+// ---------------------------------------------------------------------------
+
+fn read_report(archive: &std::path::Path) -> serde_json::Value {
+    let p = wax_builder::BuildReport::path_for(archive);
+    assert!(p.is_file(), "build report must be written by default at {}", p.display());
+    serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap()
+}
+
+#[test]
+fn build_report_is_written_by_default_beside_the_archive() {
+    let (_dir, archive) = build_ok(VALID_MANIFEST);
+    let p = wax_builder::BuildReport::path_for(&archive);
+    assert_eq!(
+        p.file_name().unwrap().to_string_lossy(),
+        "p.wax.build-report.json",
+        "name is <archive-filename>.build-report.json"
+    );
+    assert_eq!(p.parent(), archive.parent());
+    assert!(p.is_file());
+}
+
+#[test]
+fn build_report_has_exactly_the_contract_fields() {
+    let (_dir, archive) = build_ok(VALID_MANIFEST);
+    let v = read_report(&archive);
+    let obj = v.as_object().unwrap();
+    let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "archive_filename",
+            "archive_uuid",
+            "builder_version",
+            "built_at",
+            "entry_count",
+            "license",
+            "license_review_required",
+            "redirect_count",
+            "report_version",
+            "signed",
+            "skipped_count",
+            "warnings",
+        ]
+    );
+    assert_eq!(v["report_version"], 1);
+    assert_eq!(v["archive_uuid"], "4a1b2c3d-4e5f-4607-8a99-aabbccddeeff");
+    assert_eq!(v["archive_filename"], "p.wax");
+    assert!(v["built_at"].as_u64().unwrap() > 1_600_000_000_000, "epoch milliseconds");
+    assert!(v["builder_version"].as_str().unwrap().starts_with("wax-builder "));
+    assert_eq!(v["entry_count"], 3);
+    assert_eq!(v["redirect_count"], 0);
+    assert_eq!(v["skipped_count"], 0);
+    assert_eq!(v["license"], "CC-BY-SA-4.0");
+    assert_eq!(v["license_review_required"], false);
+    assert_eq!(v["signed"], false);
+    assert_eq!(v["warnings"], serde_json::json!([]));
+}
+
+#[test]
+fn build_report_carries_review_required_for_free_text() {
+    let src = manifest_tree();
+    let dst = tempfile::tempdir().unwrap();
+    let archive = out(&dst, "p.wax");
+    let cfg = cfg_from(&manifest_with("license", r#"license = "see COPYING""#));
+    build_pack(src.path(), &archive, &cfg, &pinned()).unwrap();
+    let v = read_report(&archive);
+    assert_eq!(v["license"], "see COPYING");
+    assert_eq!(v["license_review_required"], true);
+}
+
+#[test]
+fn build_report_counts_redirects_and_caller_warnings() {
+    use wax_builder::{build_from_entries, BuildContext, Warnings};
+    use wax_core::{Compression, EntryInput};
+    let dst = tempfile::tempdir().unwrap();
+    let archive = out(&dst, "p.wax");
+    let mut warnings = Warnings::new();
+    warnings.add("unsupported_mimetype", 3);
+    warnings.bump("redirect_cycle");
+    warnings.bump("redirect_cycle");
+    let entries = vec![
+        EntryInput::data("index.html", b"<h1/>".to_vec(), Compression::None),
+        EntryInput::data("icon.svg", b"<svg/>".to_vec(), Compression::None),
+        EntryInput::redirect("home.html", "index.html"),
+    ];
+    let cfg = cfg_from(&manifest_with("icon", r#"icon = "icon.svg""#));
+    let report = build_from_entries(
+        &archive,
+        entries,
+        &cfg.manifest,
+        &pinned(),
+        BuildContext {
+            builder_version: Some("zim2wax 0.1.0".to_string()),
+            warnings,
+            skipped_count: 5,
+        },
+    )
+    .unwrap();
+    assert_eq!(report.redirect_count, 1);
+    let v = read_report(&archive);
+    assert_eq!(v["builder_version"], "zim2wax 0.1.0");
+    assert_eq!(v["entry_count"], 3);
+    assert_eq!(v["redirect_count"], 1);
+    assert_eq!(v["skipped_count"], 5);
+    // one entry per code with a count, sorted by code
+    assert_eq!(
+        v["warnings"],
+        serde_json::json!([
+            {"code": "redirect_cycle", "count": 2},
+            {"code": "unsupported_mimetype", "count": 3}
+        ])
+    );
+}
+
+#[test]
+fn append_refreshes_the_build_report() {
+    let src = manifest_tree();
+    let extra = tree(&[("articles/b.html", b"<p>b</p>")]);
+    let dst = tempfile::tempdir().unwrap();
+    let archive = out(&dst, "p.wax");
+    let cfg = cfg_from(VALID_MANIFEST);
+    build_pack(src.path(), &archive, &cfg, &pinned()).unwrap();
+    assert_eq!(read_report(&archive)["entry_count"], 3);
+    append_pack(&archive, extra.path(), &cfg, &pinned()).unwrap();
+    assert_eq!(read_report(&archive)["entry_count"], 4, "report reflects the appended state");
 }
 
 // ---------------------------------------------------------------------------

@@ -362,12 +362,7 @@ impl ManifestConfig {
     /// Classify the license per Contract §11. Assumes presence was already
     /// checked (a blank license is a hard failure in [`validate`]).
     pub fn license_outcome(&self) -> LicenseOutcome {
-        let license = self.license.as_deref().unwrap_or_default().trim().to_string();
-        if LICENSE_ALLOWLIST.contains(&license.as_str()) {
-            LicenseOutcome::Clean { license }
-        } else {
-            LicenseOutcome::ReviewRequired { license }
-        }
+        classify_license(self.license.as_deref().unwrap_or_default())
     }
 
     /// Flatten to the `manifest` rows written into segment 0.
@@ -382,6 +377,10 @@ impl ManifestConfig {
             if let Some(v) = v {
                 rows.insert(k.to_string(), v.clone());
             }
+        }
+        // An allowlisted license is written in SPDX's canonical casing (§11).
+        if let Some(l) = &self.license {
+            rows.insert("license".to_string(), classify_license(l).license().to_string());
         }
         if let Some(v) = self.guest_accessible {
             rows.insert("guest_accessible".to_string(), v.to_string());
@@ -409,6 +408,28 @@ impl ManifestConfig {
     }
 }
 
+/// Contract §11 licensing outcome for a license string.
+///
+/// Allowlist matching is **case-insensitive**; a match is reported in SPDX's
+/// canonical casing (the allowlist spelling), which is also what
+/// [`ManifestConfig::to_rows`] writes. SPDX itself treats identifiers as
+/// case-insensitive, and exact matching would have sent every
+/// `cc-by-sa-4.0`-licensed Wikipedia pack to a moderator over letter case.
+pub fn classify_license(raw: &str) -> LicenseOutcome {
+    let trimmed = raw.trim();
+    match LICENSE_ALLOWLIST
+        .iter()
+        .find(|id| id.eq_ignore_ascii_case(trimmed))
+    {
+        Some(canonical) => LicenseOutcome::Clean {
+            license: canonical.to_string(),
+        },
+        None => LicenseOutcome::ReviewRequired {
+            license: trimmed.to_string(),
+        },
+    }
+}
+
 /// Every key §11 permits, for error messages.
 pub fn allowed_keys() -> Vec<&'static str> {
     let mut v: Vec<&'static str> = REQUIRED_FIELDS.to_vec();
@@ -417,8 +438,8 @@ pub fn allowed_keys() -> Vec<&'static str> {
     v
 }
 
-/// CalVer `YYYY.MM.N` (Contract §11): four-digit year, two-digit month 01–12,
-/// non-negative release number without leading zeros.
+/// CalVer `YYYY.MM.N` (Contract §11): four-digit year, zero-padded month 01—12,
+/// release counter starting at 1 with no leading zero.
 pub fn check_calver(s: &str) -> std::result::Result<(), &'static str> {
     let mut parts = s.split('.');
     let (Some(y), Some(m), Some(n), None) = (parts.next(), parts.next(), parts.next(), parts.next())
@@ -438,8 +459,12 @@ pub fn check_calver(s: &str) -> std::result::Result<(), &'static str> {
     if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
         return Err("release number must be digits");
     }
-    if n.len() > 1 && n.starts_with('0') {
-        return Err("release number must not have a leading zero");
+    if n.starts_with('0') {
+        return Err(if n == "0" {
+            "release number starts at 1"
+        } else {
+            "release number must not have a leading zero"
+        });
     }
     Ok(())
 }

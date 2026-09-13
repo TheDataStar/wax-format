@@ -15,6 +15,7 @@
 
 pub mod assemble;
 pub mod config;
+pub mod report;
 pub mod sign;
 
 use anyhow::{bail, Context, Result};
@@ -25,6 +26,7 @@ use wax_core::{WaxReader, WaxWriter};
 
 pub use assemble::WalkStats;
 pub use config::PackConfig;
+pub use report::{BuildReport, Warnings};
 
 /// Options shared by [`build_pack`] and [`append_pack`].
 #[derive(Debug, Default, Clone)]
@@ -89,6 +91,15 @@ pub struct WriteReport {
     /// manifest. `license_review_required` is a build-report fact, never a
     /// manifest key — the catalog's intake reads it from here.
     pub license: Option<config::LicenseOutcome>,
+    /// Redirect (alias) entries written.
+    pub redirect_count: u64,
+    /// Source items not written, as declared by the caller (a converter's
+    /// skipped entries, dropped redirects, …).
+    pub skipped_count: u64,
+    /// Warnings by code, one entry per code (§11).
+    pub warnings: Warnings,
+    /// Where the §11 build report was written. Always written on success.
+    pub report_path: PathBuf,
 }
 
 impl WriteReport {
@@ -108,14 +119,23 @@ pub fn uuid_text(b: &[u8; 16]) -> String {
     uuid::Uuid::from_bytes(*b).hyphenated().to_string()
 }
 
-/// Fresh single-segment build: `input` tree + `cfg` → `output` archive.
+/// What a caller of [`build_from_entries`] contributes to the §11 build
+/// report beyond what the writer itself can see.
+#[derive(Debug, Default, Clone)]
+pub struct BuildContext {
+    /// `"<tool> <version>"` for `builder_version`, e.g. `zim2wax 0.1.0`.
+    /// Defaults to this crate's own name and version.
+    pub builder_version: Option<String>,
+    /// Warnings the caller accumulated while producing `entries`.
+    pub warnings: Warnings,
+    /// Source items the caller skipped (not present in `entries`).
+    pub skipped_count: u64,
+}
+
+/// Fresh single-segment build: `input` tree + `cfg` — `output` archive.
 ///
-/// A new UUIDv4 `archive_uuid` is minted here (SPEC §2) unless
-/// [`WriteOptions::archive_uuid`] pins one; appends reuse whatever is already
-/// in the archive.
-///
-/// The manifest is validated against the B3 schema first (§16/§17), including
-/// that `icon` and `entry_point` name entries that actually exist in this pack.
+/// Thin wrapper over [`build_from_entries`]: walks the tree, then hands the
+/// entries and the config's `[manifest]` to the entries-based build.
 pub fn build_pack(
     input: &Path,
     output: &Path,
@@ -123,21 +143,52 @@ pub fn build_pack(
     opts: &WriteOptions,
 ) -> Result<WriteReport> {
     let (entries, stats) = assemble::collect_entries(input, cfg)?;
+    let mut report = build_from_entries(
+        output,
+        entries,
+        &cfg.manifest,
+        opts,
+        BuildContext::default(),
+    )?;
+    report.stats = stats;
+    Ok(report)
+}
+
+/// Build a fresh single-segment archive from already-assembled entries.
+///
+/// This is the primitive a converter (zim2wax, warc2wax) calls: it owns entry
+/// production, and this function owns manifest validation (Contract §11),
+/// the write, signing, and the §11 build report, which is written beside the
+/// archive on every success.
+///
+/// A new UUIDv4 `archive_uuid` is minted (SPEC §2) unless
+/// [`WriteOptions::archive_uuid`] pins one.
+pub fn build_from_entries(
+    output: &Path,
+    entries: Vec<wax_core::EntryInput>,
+    manifest: &config::ManifestConfig,
+    opts: &WriteOptions,
+    ctx: BuildContext,
+) -> Result<WriteReport> {
     let uuid = opts.mint_uuid();
     let n = entries.len();
+    let redirect_count = entries
+        .iter()
+        .filter(|e| matches!(e.content, wax_core::EntryContent::Redirect { .. }))
+        .count() as u64;
 
     // Validate the manifest before writing anything. `icon`/`entry_point` are
     // checked against the paths this build will actually contain.
-    let declares_manifest = !cfg.manifest.is_empty();
+    let declares_manifest = !manifest.is_empty();
     let license = if declares_manifest {
         let paths: BTreeSet<String> = entries
             .iter()
             .map(|e| wax_core::writer::normalize_path(&e.path).unwrap_or_else(|_| e.path.clone()))
             .collect();
         Some(
-            cfg.manifest
+            manifest
                 .validate(Some(&paths))
-                .context("invalid [manifest] in pack config")?,
+                .context("invalid manifest")?,
         )
     } else {
         None
@@ -155,27 +206,62 @@ pub fn build_pack(
     if let Some(t) = opts.effective_created_at() {
         writer = writer.created_at(t);
     }
-    let manifest = if declares_manifest {
-        cfg.manifest.to_rows()
+    let rows = if declares_manifest {
+        manifest.to_rows()
     } else {
         BTreeMap::new()
     };
     writer
-        .build(output, entries, &manifest)
+        .build(output, entries, &rows)
         .with_context(|| format!("writing {}", output.display()))?;
 
     let sidecar = maybe_sign(output, opts)?;
     let segments = WaxReader::open(output)?.segment_count();
 
-    Ok(WriteReport {
+    let mut report = WriteReport {
         archive: output.to_path_buf(),
         archive_uuid: uuid,
         entries: n,
         segments,
-        stats,
+        stats: WalkStats::default(),
         sidecar,
         license,
-    })
+        redirect_count,
+        skipped_count: ctx.skipped_count,
+        warnings: ctx.warnings,
+        report_path: PathBuf::new(),
+    };
+    report.report_path = write_build_report(&report, ctx.builder_version.as_deref())?;
+    Ok(report)
+}
+
+/// Render and write the §11 build report for `report`, beside its archive.
+fn write_build_report(report: &WriteReport, builder_version: Option<&str>) -> Result<PathBuf> {
+    let br = BuildReport {
+        report_version: report::REPORT_VERSION,
+        archive_uuid: report.archive_uuid_text(),
+        archive_filename: report
+            .archive
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        built_at: report::now_ms(),
+        builder_version: builder_version
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))),
+        entry_count: report.entries as u64,
+        redirect_count: report.redirect_count,
+        skipped_count: report.skipped_count,
+        license: report
+            .license
+            .as_ref()
+            .map(|l| l.license().to_string())
+            .unwrap_or_default(),
+        license_review_required: report.license_review_required(),
+        signed: report.sidecar.is_some(),
+        warnings: report.warnings.to_vec(),
+    };
+    br.write(&report.archive)
 }
 
 /// Append a new `(blob region, index segment)` pair to an existing archive
@@ -225,23 +311,30 @@ pub fn append_pack(
 
     // The manifest is immutable across appends, so the licensing outcome is
     // whatever the archive already carries.
-    let license = reader.manifest().get("license").map(|l| {
-        if config::LICENSE_ALLOWLIST.contains(&l.as_str()) {
-            config::LicenseOutcome::Clean { license: l.clone() }
-        } else {
-            config::LicenseOutcome::ReviewRequired { license: l.clone() }
-        }
-    });
+    let license = reader
+        .manifest()
+        .get("license")
+        .map(|l| config::classify_license(l));
 
-    Ok(WriteReport {
+    let redirect_count = reader.entries().filter(|e| e.is_redirect()).count() as u64;
+    let total = reader.entries().count();
+    let mut report = WriteReport {
         archive: archive.to_path_buf(),
         archive_uuid: uuid,
-        entries: n,
+        entries: total,
         segments: reader.segment_count(),
         stats,
         sidecar,
         license,
-    })
+        redirect_count,
+        skipped_count: 0,
+        warnings: Warnings::new(),
+        report_path: PathBuf::new(),
+    };
+    let _ = n;
+    // An append changes the archive, so the report beside it is refreshed.
+    report.report_path = write_build_report(&report, None)?;
+    Ok(report)
 }
 
 fn maybe_sign(archive: &Path, opts: &WriteOptions) -> Result<Option<PathBuf>> {
