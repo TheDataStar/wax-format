@@ -1,0 +1,25 @@
+[package]
+name = "zim2wax"
+version = "0.1.0"
+edition = "2021"
+description = "ZIM archive → .wax pack converter (DeltOS Track B, component B1)"
+license = "MIT"
+
+[[bin]]
+name = "zim2wax"
+path = "src/main.rs"
+
+[dependencies]
+wax-builder = { path = "../wax-builder" }
+wax-core = { path = "../wax-core" }
+# Pure-Rust ZIM reader. Exposes the raw dirent namespace byte under both the
+# legacy (A/I/-/M) and ≥6.1 (C/M/W/X) schemes, which §20's canonicalization
+# needs; its only native deps are the LZMA/zstd cluster decoders.
+zim = "0.5"
+anyhow = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+language-tags = "0.3"
+
+[dev-dependencies]
+tempfile = "3.8"
+serde_json = "1"
