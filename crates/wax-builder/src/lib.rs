@@ -19,7 +19,7 @@ pub mod report;
 pub mod sign;
 
 use anyhow::{bail, Context, Result};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use wax_core::header::flag;
 use wax_core::{WaxReader, WaxWriter};
@@ -27,6 +27,7 @@ use wax_core::{WaxReader, WaxWriter};
 pub use assemble::WalkStats;
 pub use config::PackConfig;
 pub use report::{BuildReport, Warnings};
+pub use wax_core::{EntryMeta, EntryStats};
 
 /// Options shared by [`build_pack`] and [`append_pack`].
 #[derive(Debug, Default, Clone)]
@@ -160,13 +161,9 @@ pub fn build_pack(
 
 /// Build a fresh single-segment archive from already-assembled entries.
 ///
-/// This is the primitive a converter (zim2wax, warc2wax) calls: it owns entry
-/// production, and this function owns manifest validation (Contract §11),
-/// the write, signing, and the §11 build report, which is written beside the
-/// archive on every success.
-///
-/// A new UUIDv4 `archive_uuid` is minted (SPEC §2) unless
-/// [`WriteOptions::archive_uuid`] pins one.
+/// Thin wrapper over [`PackStream`] for callers that already hold their
+/// entries in memory. Converters should use [`PackStream`] directly so that
+/// peak memory does not scale with the archive (Track A §18).
 pub fn build_from_entries(
     output: &Path,
     entries: Vec<wax_core::EntryInput>,
@@ -174,77 +171,214 @@ pub fn build_from_entries(
     opts: &WriteOptions,
     ctx: BuildContext,
 ) -> Result<WriteReport> {
-    let uuid = opts.mint_uuid();
-    let n = entries.len();
-    let redirect_count = entries
-        .iter()
-        .filter(|e| matches!(e.content, wax_core::EntryContent::Redirect { .. }))
-        .count() as u64;
-
-    // Validate the manifest before writing anything. `icon`/`entry_point` are
-    // checked against the paths this build will actually contain.
-    let declares_manifest = !manifest.is_empty();
-    let license = if declares_manifest {
-        let paths: BTreeSet<String> = entries
-            .iter()
-            .map(|e| wax_core::writer::normalize_path(&e.path).unwrap_or_else(|_| e.path.clone()))
-            .collect();
-        Some(
-            manifest
-                .validate(Some(&paths))
-                .context("invalid manifest")?,
-        )
-    } else {
-        None
-    };
-
-    // `is_signed` lives in the header and the header is inside the signed digest
-    // (SPEC §8.1), so the flag has to be set before the archive is written —
-    // not patched in afterwards.
-    let mut flags = 0u16;
-    if opts.sign_key.is_some() {
-        flags |= flag::IS_SIGNED;
+    let mut stream = PackStream::create(output, manifest, opts, ctx)?;
+    for e in entries {
+        match e.content {
+            wax_core::EntryContent::Data { bytes, compression } => {
+                let meta = wax_core::EntryMeta {
+                    path: e.path,
+                    mime: e.mime,
+                    title: e.title,
+                    compression: Some(compression),
+                };
+                stream.add_entry(meta, &mut std::io::Cursor::new(bytes))?;
+            }
+            wax_core::EntryContent::Redirect { to } => {
+                stream.add_redirect(e.path, to, e.title)?;
+            }
+        }
     }
+    stream.finish()
+}
 
-    let mut writer = WaxWriter::new(uuid).flags(flags);
-    if let Some(t) = opts.effective_created_at() {
-        writer = writer.created_at(t);
-    }
-    let rows = if declares_manifest {
-        manifest.to_rows()
-    } else {
-        BTreeMap::new()
-    };
-    writer
-        .build(output, entries, &rows)
-        .with_context(|| format!("writing {}", output.display()))?;
+/// A pack being built by streaming (Track A §18): the primitive a converter
+/// drives. Owns manifest validation (Contract §11), signing, and the §11
+/// build report; entries are handed to [`PackStream::add_entry`] one at a time
+/// as a `Read` and never held in memory.
+///
+/// Manifest format rules are checked at `create`, before any bytes are
+/// written; the two rules that need the archive's contents (§11: `icon` and
+/// `entry_point` must name real entries) are point lookups in the index at
+/// `finish`, so no path set is ever held in memory.
+pub struct PackStream {
+    output: PathBuf,
+    writer: wax_core::StreamingWriter,
+    manifest: Option<config::ManifestConfig>,
+    license: Option<config::LicenseOutcome>,
+    opts: WriteOptions,
+    ctx: BuildContext,
+    archive_uuid: [u8; 16],
+}
 
-    let sidecar = maybe_sign(output, opts)?;
-    let segments = WaxReader::open(output)?.segment_count();
+impl PackStream {
+    pub fn create(
+        output: &Path,
+        manifest: &config::ManifestConfig,
+        opts: &WriteOptions,
+        ctx: BuildContext,
+    ) -> Result<Self> {
+        let uuid = opts.mint_uuid();
+        let declares_manifest = !manifest.is_empty();
+        // Format/domain validation now; the existence checks come at finish.
+        let license = if declares_manifest {
+            Some(manifest.validate(None).context("invalid manifest")?)
+        } else {
+            None
+        };
 
-    let license = if ctx.force_license_review {
-        license.map(|l| config::LicenseOutcome::ReviewRequired {
-            license: l.license().to_string(),
+        // `is_signed` lives in the header and the header is inside the signed
+        // digest (SPEC §8.1), so the flag has to be set before writing.
+        let mut flags = 0u16;
+        if opts.sign_key.is_some() {
+            flags |= flag::IS_SIGNED;
+        }
+        let mut w = WaxWriter::new(uuid).flags(flags);
+        if let Some(t) = opts.effective_created_at() {
+            w = w.created_at(t);
+        }
+        let rows = if declares_manifest {
+            manifest.to_rows()
+        } else {
+            BTreeMap::new()
+        };
+        let writer = w
+            .create(output, &rows)
+            .with_context(|| format!("creating {}", output.display()))?;
+
+        Ok(PackStream {
+            output: output.to_path_buf(),
+            writer,
+            manifest: declares_manifest.then(|| clone_manifest(manifest)),
+            license,
+            opts: WriteOptions {
+                created_at: opts.created_at,
+                sign_key: opts.sign_key.clone(),
+                archive_uuid: Some(uuid),
+            },
+            ctx,
+            archive_uuid: uuid,
         })
-    } else {
-        license
-    };
+    }
 
-    let mut report = WriteReport {
-        archive: output.to_path_buf(),
-        archive_uuid: uuid,
-        entries: n,
-        segments,
-        stats: WalkStats::default(),
-        sidecar,
-        license,
-        redirect_count,
-        skipped_count: ctx.skipped_count,
-        warnings: ctx.warnings,
-        report_path: PathBuf::new(),
-    };
-    report.report_path = write_build_report(&report, ctx.builder_version.as_deref())?;
-    Ok(report)
+    /// Stream one content entry from `src`.
+    pub fn add_entry(
+        &mut self,
+        meta: wax_core::EntryMeta,
+        src: &mut dyn std::io::Read,
+    ) -> Result<wax_core::EntryStats> {
+        Ok(self.writer.add_entry(meta, src)?)
+    }
+
+    /// Add a redirect (no blob). Chains are flattened at `finish`.
+    pub fn add_redirect(
+        &mut self,
+        path: impl Into<String>,
+        to: impl Into<String>,
+        title: Option<String>,
+    ) -> Result<()> {
+        Ok(self.writer.add_redirect(path, to, title)?)
+    }
+
+    /// Point lookup: has this path been added?
+    pub fn has_path(&self, path: &str) -> Result<bool> {
+        Ok(self.writer.has_path(path)?)
+    }
+
+    /// Caller-side warnings accumulated while producing entries.
+    pub fn warnings_mut(&mut self) -> &mut Warnings {
+        &mut self.ctx.warnings
+    }
+
+    /// Record how many source items were dropped (for `skipped_count`).
+    pub fn set_skipped(&mut self, n: u64) {
+        self.ctx.skipped_count = n;
+    }
+
+    /// Report `license_review_required` regardless of the allowlist.
+    pub fn force_license_review(&mut self) {
+        self.ctx.force_license_review = true;
+    }
+
+    /// Validate the contents-dependent manifest rules, commit the archive,
+    /// sign, and write the §11 build report.
+    pub fn finish(self) -> Result<WriteReport> {
+        let PackStream {
+            output,
+            writer,
+            manifest,
+            license,
+            opts,
+            ctx,
+            archive_uuid,
+        } = self;
+
+        // §11: icon and entry_point must resolve to real entries. Two point
+        // lookups in the index, done before the archive is committed.
+        if let Some(m) = &manifest {
+            for (key, value) in [("icon", m.icon.as_deref()), ("entry_point", m.entry_point.as_deref())] {
+                let value = value.unwrap_or_default();
+                let normalized = assemble::normalize_for_lookup(value);
+                if !writer.resolves(&normalized)? {
+                    bail!(
+                        "invalid manifest: {key} {value:?} does not name an entry in this pack. \
+                         It must be a path within the archive (docs/cross-track-contract.md §11)"
+                    );
+                }
+            }
+        }
+
+        let stats = writer
+            .finish()
+            .with_context(|| format!("writing {}", output.display()))?;
+
+        let sidecar = maybe_sign(&output, &opts)?;
+
+        let license = if ctx.force_license_review {
+            license.map(|l| config::LicenseOutcome::ReviewRequired {
+                license: l.license().to_string(),
+            })
+        } else {
+            license
+        };
+
+        let mut report = WriteReport {
+            archive: output,
+            archive_uuid,
+            entries: (stats.entries + stats.redirects) as usize,
+            // a fresh build is exactly one segment; no reader open needed
+            segments: 1,
+            stats: WalkStats::default(),
+            sidecar,
+            license,
+            redirect_count: stats.redirects,
+            skipped_count: ctx.skipped_count,
+            warnings: ctx.warnings,
+            report_path: PathBuf::new(),
+        };
+        report.report_path = write_build_report(&report, ctx.builder_version.as_deref())?;
+        Ok(report)
+    }
+}
+
+fn clone_manifest(m: &config::ManifestConfig) -> config::ManifestConfig {
+    config::ManifestConfig {
+        name: m.name.clone(),
+        icon: m.icon.clone(),
+        category: m.category.clone(),
+        license: m.license.clone(),
+        attribution: m.attribution.clone(),
+        version: m.version.clone(),
+        min_hw_tier: m.min_hw_tier.clone(),
+        entry_point: m.entry_point.clone(),
+        guest_accessible: m.guest_accessible,
+        runtime_ram_bytes: m.runtime_ram_bytes,
+        runtime_storage_bytes: m.runtime_storage_bytes,
+        languages: m.languages.clone(),
+        depends_on: m.depends_on.clone(),
+        id: m.id.clone(),
+        total_size_bytes: m.total_size_bytes.clone(),
+        unknown: m.unknown.clone(),
+    }
 }
 
 /// Render and write the §11 build report for `report`, beside its archive.

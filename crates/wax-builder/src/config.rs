@@ -334,18 +334,21 @@ impl ManifestConfig {
             }
         }
 
-        // icon / entry_point name entries inside the pack.
-        if let Some(paths) = archive_paths {
-            for (key, value) in [
-                ("icon", self.icon.as_deref().unwrap_or_default()),
-                ("entry_point", self.entry_point.as_deref().unwrap_or_default()),
-            ] {
-                if let Some(scheme) = uri_scheme(value) {
-                    bail!(
-                        "manifest {key} {value:?} looks like a {scheme} URI; it must be a \
-                         path to an entry inside the archive"
-                    );
-                }
+        // icon / entry_point: never a URI (format rule, always checked) and,
+        // when the caller supplies the path set, must name a real entry. A
+        // streaming builder checks existence itself at finish, by point
+        // lookup, and passes `None` here.
+        for (key, value) in [
+            ("icon", self.icon.as_deref().unwrap_or_default()),
+            ("entry_point", self.entry_point.as_deref().unwrap_or_default()),
+        ] {
+            if let Some(scheme) = uri_scheme(value) {
+                bail!(
+                    "manifest {key} {value:?} looks like a {scheme} URI; it must be a \
+                     path to an entry inside the archive"
+                );
+            }
+            if let Some(paths) = archive_paths {
                 let normalized = crate::assemble::normalize_for_lookup(value);
                 if !paths.contains(&normalized) {
                     bail!(

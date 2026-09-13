@@ -368,3 +368,43 @@ impl WaxReader {
         Ok(hasher.finalize().into())
     }
 }
+
+/// The SPEC §8.1 signable digest of an archive **without** materializing its
+/// entries: header parse, chain walk, blob-section check, then a streaming
+/// SHA-256 over the header bytes and every segment database in chain order.
+///
+/// [`WaxReader::open`] merges every entry into memory, which is O(entries);
+/// signing a Wikipedia-scale pack must not pay that. Returns
+/// `(digest, archive_uuid, created_at)`.
+pub fn signable_digest_of<P: AsRef<Path>>(path: P) -> Result<([u8; 32], [u8; 16], u64)> {
+    let mut file = File::open(path)?;
+    let file_size = file.seek(SeekFrom::End(0))?;
+    file.seek(SeekFrom::Start(0))?;
+    let mut hbuf = [0u8; HEADER_LEN];
+    match file.read_exact(&mut hbuf) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            return Err(WaxError::TruncatedHeader { found: file_size })
+        }
+        Err(e) => return Err(e.into()),
+    }
+    let header = WaxHeader::parse(&hbuf)?;
+    header.validate(file_size)?;
+    let segments = WaxReader::walk_chain(&mut file, &header, file_size)?;
+    WaxReader::check_blob_section(&header, &segments)?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(header.to_bytes());
+    let mut buf = vec![0u8; 1 << 20];
+    for seg in &segments {
+        file.seek(SeekFrom::Start(seg.disk_offset))?;
+        let mut remaining = seg.db_len;
+        while remaining > 0 {
+            let want = remaining.min(buf.len() as u64) as usize;
+            file.read_exact(&mut buf[..want])?;
+            hasher.update(&buf[..want]);
+            remaining -= want as u64;
+        }
+    }
+    Ok((hasher.finalize().into(), header.archive_uuid, header.created_at))
+}

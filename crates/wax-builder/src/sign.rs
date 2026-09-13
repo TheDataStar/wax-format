@@ -24,7 +24,6 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use wax_core::WaxReader;
 
 /// Environment overrides.
 pub const ENV_MINISIGN: &str = "WAX_MINISIGN";
@@ -52,12 +51,9 @@ pub fn trusted_comment(uuid: &[u8; 16], created_at: u64) -> String {
 /// Recompute the signable digest for an archive on disk (SPEC §8.1).
 /// Returns `(digest, archive_uuid, created_at)`.
 pub fn signable_digest(archive: &Path) -> Result<([u8; 32], [u8; 16], u64)> {
-    let mut r = WaxReader::open(archive)
-        .with_context(|| format!("opening {} to compute its digest", archive.display()))?;
-    let uuid = r.header().archive_uuid;
-    let created_at = r.header().created_at;
-    let digest = r.signable_digest()?;
-    Ok((digest, uuid, created_at))
+    // Streams header + segment bytes; never loads the entry table (Track A §18).
+    wax_core::reader::signable_digest_of(archive)
+        .with_context(|| format!("computing the digest of {}", archive.display()))
 }
 
 /// Sign `archive`, writing `<archive>.minisig`.

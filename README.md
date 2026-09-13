@@ -25,7 +25,7 @@ only the fixed header is overwritten, as the final atomic step
 
 | Crate | Role | Status |
 |-------|------|--------|
-| [`wax-core`](crates/wax-core) | reader + writer library (A1) | reader path, writer path, segment-chain merge, one-hop redirects, checksum verification |
+| [`wax-core`](crates/wax-core) | reader + writer library (A1) | reader path, **streaming writer** (bounded memory, Track A §18) with the Vec API as a wrapper, segment-chain merge, one-hop redirects, checksum verification |
 | [`wax-builder`](crates/wax-builder) | CLI: directory tree → signed `.wax` (A2) | `build` / `append` / `inspect` / `verify` (+ `ls`, `read`); manifest, aliases, compression policy, UUIDv4 identity, minisign hook |
 | [`zim2wax`](crates/zim2wax) | ZIM — `.wax` converter (Track B, B1) | v0 text + image: §20 canonical paths, href rewriting, redirect flattening, manifest derivation, §11 licensing + build report; verified against a real Wikipedia ZIM |
 | [`fuzz`](fuzz) | `cargo-fuzz` targets against the reader (A4) | 3 targets, build & run clean |

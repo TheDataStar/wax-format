@@ -80,6 +80,37 @@ reviewed rather than trusted, even when it names an allowlisted id).
 `Creator` nor `Publisher`. It raises its own warning but does not by itself
 force review.
 
+## Memory: bounded, not proportional (Track A §18)
+
+The converter streams. Blobs go from the ZIM's memory-mapped cluster through
+SHA-256 + zstd straight into the pack one at a time; index rows are inserted
+into the segment's SQLite database as they arrive; the `(namespace, url)`
+lookup that href rewriting needs lives in a temp SQLite file, not a map; and
+content is emitted in cluster order so exactly one decompressed cluster is
+resident. The only per-dirent heap is an 8-byte classification.
+
+Measured on Windows, release build, sampled at 20 ms:
+
+| ZIM | size | dirents | hrefs rewritten | wall | **private bytes (heap), peak** | working set, peak |
+|---|---:|---:|---:|---:|---:|---:|
+| `wikipedia_en_chemistry_mini` | 24 MB | 58,260 | 233,416 | 4.6 s | **23.5 MB** | 36 MB |
+| `wikipedia_en_100` | 318 MB | 9,337 | 11,751 | 0.9 s | **20.5 MB** | 67 MB |
+| `wikipedia_en_history_maxi` | 2,267 MB | 382,612 | 5,177,603 | 63 s | **55.9 MB** | 2,150 MB |
+
+Private bytes — the memory a process actually owns and the number that can
+exhaust a 512 MB box — moves from 20 MB to 56 MB across a 100× spread in input
+size, and what movement there is tracks dirent count (~8 B each plus two
+bounded caches), not bytes. The working-set column is the `zim` crate's mmap
+of the input: every blob read touches a mapped page, and the OS charges touched
+file-backed pages to the working set. Those pages are clean page cache,
+reclaimed under pressure, never a failure mode. Proof: the 2,267 MB conversion
+**completes inside a Job Object with a hard 128 MB commit limit** (peak commit
+57.1 MB by the kernel's accounting), and the result verifies entry-for-entry.
+
+Extrapolating to a full English Wikipedia (~6.5 M dirents): ~50 MB of
+classification plus ~50 MB of emission ordering plus the constant caches —
+comfortably inside `pi_zero_2w`'s 512 MB floor.
+
 ## Not in v0
 
 * The `search_index` FTS5 table (Track B §4 says zim2wax rebuilds it; schema and

@@ -14,11 +14,12 @@ use crate::paths::{bare_mime, canonicalize, is_article_mime, Disposition};
 use crate::png::placeholder_icon;
 use crate::rewrite::{rewrite_css, rewrite_html};
 use anyhow::{anyhow, bail, Context, Result};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
+use std::io;
 use std::path::{Path, PathBuf};
 use wax_builder::config::{ManifestConfig, CATEGORIES, MIN_HW_TIERS};
-use wax_builder::{build_from_entries, BuildContext, Warnings, WriteOptions, WriteReport};
-use wax_core::{Compression, EntryInput};
+use wax_builder::{BuildContext, EntryMeta, PackStream, Warnings, WriteOptions, WriteReport};
+use wax_core::Compression;
 use zim::{MimeType, Namespace, Target, Zim};
 
 /// Canonical path of the extracted illustration (§20).
@@ -53,6 +54,50 @@ pub mod warn {
     pub const ATTRIBUTION_OPERATOR_SUPPLIED: &str = "attribution_operator_supplied";
     /// The source carried no illustration and a placeholder was generated.
     pub const ICON_GENERATED: &str = "icon_generated";
+}
+
+/// The `(namespace, url) → dirent index` map hrefs resolve through, kept in a
+/// temporary SQLite file rather than a `HashMap` so that heap does not grow
+/// with the number of dirents (Track A §18: ~210 bytes per dirent in a map
+/// is ~1.3 GB at full-Wikipedia scale, which a 512 MB box cannot hold). A
+/// lookup is one indexed point query.
+struct DirentIndex {
+    _tmp: tempfile::NamedTempFile,
+    conn: rusqlite::Connection,
+}
+
+impl DirentIndex {
+    fn create() -> Result<Self> {
+        let tmp = tempfile::Builder::new().suffix(".dirents").tempfile()?;
+        let conn = rusqlite::Connection::open(tmp.path())?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
+             CREATE TABLE d (ns INTEGER NOT NULL, url TEXT NOT NULL, idx INTEGER NOT NULL,
+                             PRIMARY KEY (ns, url)) WITHOUT ROWID;
+             BEGIN;",
+        )?;
+        Ok(DirentIndex { _tmp: tmp, conn })
+    }
+    fn insert(&self, ns: u8, url: &str, idx: u32) -> Result<()> {
+        let mut st = self
+            .conn
+            .prepare_cached("INSERT OR IGNORE INTO d (ns, url, idx) VALUES (?1, ?2, ?3)")?;
+        st.execute(rusqlite::params![ns as i64, url, idx as i64])?;
+        Ok(())
+    }
+    fn seal(&self) -> Result<()> {
+        self.conn.execute_batch("COMMIT")?;
+        Ok(())
+    }
+    fn lookup(&self, ns: u8, url: &str) -> Option<u32> {
+        let mut st = self
+            .conn
+            .prepare_cached("SELECT idx FROM d WHERE ns = ?1 AND url = ?2")
+            .ok()?;
+        st.query_row(rusqlite::params![ns as i64, url], |r| r.get::<_, i64>(0))
+            .ok()
+            .map(|i| i as u32)
+    }
 }
 
 /// A canonical path is usable only if it is already in SPEC §6.1's stored
@@ -151,17 +196,20 @@ impl ConvertOptions {
     }
 }
 
-/// Where a redirect chain ends: the terminus dirent and its canonical path,
-/// or the warning code for why it was dropped.
-type ChainOutcome = std::result::Result<(u32, String), &'static str>;
+/// Where a redirect chain ends: the terminus dirent, or the warning code for
+/// why it was dropped.
+type ChainOutcome = std::result::Result<u32, &'static str>;
 
-/// Per-dirent outcome of planning.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Per-dirent outcome of planning. Deliberately string-free (8 bytes): the
+/// canonical path is recomputed from the dirent when it is emitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Fate {
-    /// Content to emit at this canonical path.
-    Content(String),
-    /// A redirect dirent; resolved in a second step.
+    /// Content to emit; canonical path derived from the dirent at emission.
+    Content,
+    /// A redirect dirent, not yet resolved.
     Redirect { target_idx: u32 },
+    /// A redirect whose chain ends at this content dirent.
+    Resolved { terminus: u32 },
     /// Not emitted. `Some(code)` raises that build-report warning; `None` is a
     /// by-design non-emission (`X/`, `W/`) that is counted in stats only.
     Skipped(Option<&'static str>),
@@ -248,6 +296,15 @@ pub fn calver_from_zim_date(date: &str) -> Result<String> {
 }
 
 /// Run the conversion.
+///
+/// Memory discipline (Track A §18): the only per-dirent heap state is an
+/// 8-byte [`Fate`] (plus a 12-byte emission-order tuple per content entry);
+/// the `(namespace, url) → index` map hrefs resolve through lives in a temp
+/// SQLite file ([`DirentIndex`]). Canonical paths, titles and mimetypes are
+/// re-read from the dirent when needed; content is emitted in cluster order
+/// with one decompressed cluster resident; index rows go into SQLite as they
+/// are produced. Heap therefore stays flat in the archive's byte size and
+/// grows only ~20 bytes per dirent.
 pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<ConvertReport> {
     opts.validate()?;
     let z = Zim::new(zim_path).with_context(|| format!("opening ZIM {}", zim_path.display()))?;
@@ -255,39 +312,21 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
     let mut stats = ConvertStats::default();
 
     // ------------------------------------------------------------------
-    // 1. Plan: classify every dirent.
+    // 1. Plan: classify every dirent (metadata only; no blob is touched).
     // ------------------------------------------------------------------
     let mut fates: Vec<Fate> = Vec::new();
-    let mut keys: Vec<(u8, String)> = Vec::new(); // idx -> (ns, url)
-    let mut mimes: Vec<Option<String>> = Vec::new(); // idx -> bare mime
-    let mut titles: Vec<Option<String>> = Vec::new();
-    let mut by_key: HashMap<(u8, String), u32> = HashMap::new();
-    let mut canon_owner: HashMap<String, u32> = HashMap::new();
+    let dirents = DirentIndex::create()?;
 
     for (idx, e) in z.iterate_by_urls().enumerate() {
         let e = e.with_context(|| format!("reading dirent #{idx}"))?;
         let idx = idx as u32;
         stats.dirents += 1;
-        let key = (e.namespace.as_byte(), e.url.clone());
-        by_key.insert(key.clone(), idx);
-        keys.push(key);
-        // Track B §20: for a non-text/html entry, a title of exactly "null" is
-        // mwoffliner's placeholder and is treated as absent. Deliberately not
-        // applied to articles, so an article titled "Null" survives.
-        let is_article = mime_str(&e.mime_type).map(bare_mime).as_deref().is_some_and(is_article_mime);
-        let title = Some(e.title.trim().to_string())
-            .filter(|t| !t.is_empty())
-            .filter(|t| is_article || t != "null");
-        titles.push(title);
+        dirents.insert(e.namespace.as_byte(), &e.url, idx)?;
 
         let fate = match e.target {
-            Some(Target::Redirect(t)) => {
-                mimes.push(None);
-                Fate::Redirect { target_idx: t }
-            }
+            Some(Target::Redirect(t)) => Fate::Redirect { target_idx: t },
             _ => {
                 let mime = mime_str(&e.mime_type).map(bare_mime);
-                mimes.push(mime.clone());
                 match canonicalize(e.namespace, &e.url, mime.as_deref().unwrap_or("")) {
                     Disposition::SearchIndex => {
                         stats.search_index_entries += 1;
@@ -306,12 +345,8 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
                     Disposition::Emit(path) => {
                         if !is_valid_wax_path(&path) {
                             Fate::Skipped(Some(warn::INVALID_PATH))
-                        } else if canon_owner.contains_key(&path) {
-                            stats.path_collisions += 1;
-                            Fate::Skipped(Some(warn::INVALID_PATH))
                         } else {
-                            canon_owner.insert(path.clone(), idx);
-                            Fate::Content(path)
+                            Fate::Content
                         }
                     }
                 }
@@ -322,60 +357,53 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
         }
         fates.push(fate);
     }
+    dirents.seal()?;
 
     // ------------------------------------------------------------------
-    // 2. Redirects: flatten to the terminus; drop cycles and dangling (§20).
+    // 2. Redirects: find each chain's terminus; drop cycles and dangling (§20).
     //
-    // Two phases on purpose: chains are walked against the *original*
-    // classification, so a redirect dropped in this step never turns a later
-    // chain through it from "cycle" into "dangling". Every alias points at the
-    // terminus content, never at an intermediate redirect.
+    // Walked against the original classification, so dropping one redirect
+    // never reclassifies a chain through it. Only the terminus index is kept.
     // ------------------------------------------------------------------
-    let mut redirect_targets: Vec<Option<(String, String)>> = vec![None; fates.len()]; // idx -> (alias canonical, target canonical)
-    let mut resolved: Vec<(usize, ChainOutcome)> = Vec::new();
+    // Chains are walked against a snapshot of the classification (8 bytes per
+    // dirent) so that dropping one redirect never reclassifies a chain through
+    // it; results are written into the live table.
+    let snapshot: Vec<Fate> = fates.clone();
     for idx in 0..fates.len() {
-        let Fate::Redirect { target_idx } = fates[idx] else { continue };
+        let Fate::Redirect { target_idx } = snapshot[idx] else { continue };
         let mut seen: HashSet<u32> = HashSet::new();
         seen.insert(idx as u32);
         let mut cur = target_idx;
-        let terminus = loop {
+        let outcome: ChainOutcome = loop {
             if !seen.insert(cur) {
                 break Err(warn::REDIRECT_CYCLE);
             }
-            match fates.get(cur as usize) {
+            match snapshot.get(cur as usize) {
                 Some(Fate::Redirect { target_idx }) => cur = *target_idx,
-                Some(Fate::Content(path)) => break Ok((cur, path.clone())),
+                Some(Fate::Content) => break Ok(cur),
+                Some(Fate::Resolved { terminus }) => break Ok(*terminus),
                 Some(Fate::Skipped(_)) | None => break Err(warn::REDIRECT_DANGLING),
             }
         };
-        resolved.push((idx, terminus));
-    }
-    for (idx, terminus) in resolved {
-        match terminus {
-            Ok((tidx, target_path)) => {
-                // the alias lands where its target's mime would put it
-                let (ns, url) = &keys[idx];
-                let target_mime = mimes[tidx as usize].clone().unwrap_or_default();
-                match canonicalize(Namespace::from(*ns), url, &target_mime) {
-                    Disposition::Emit(alias_path) => {
-                        if !is_valid_wax_path(&alias_path) {
-                            warnings.bump(warn::INVALID_PATH);
-                            fates[idx] = Fate::Skipped(Some(warn::INVALID_PATH));
-                        } else if canon_owner.contains_key(&alias_path) {
-                            stats.path_collisions += 1;
-                            warnings.bump(warn::INVALID_PATH);
-                            fates[idx] = Fate::Skipped(Some(warn::INVALID_PATH));
-                        } else {
-                            canon_owner.insert(alias_path.clone(), idx as u32);
-                            redirect_targets[idx] = Some((alias_path, target_path));
-                        }
+        match outcome {
+            Ok(terminus) => {
+                // the alias lands where its target's mime would put it; an
+                // alias in X/ or W/ is not content
+                let alias = z.get_by_url_index(idx as u32)?;
+                let terminus_mime = bare_mime(mime_str(&z.get_by_url_index(terminus)?.mime_type).unwrap_or(""));
+                match canonicalize(alias.namespace, &alias.url, &terminus_mime) {
+                    Disposition::Emit(p) if is_valid_wax_path(&p) => {
+                        fates[idx] = Fate::Resolved { terminus };
+                    }
+                    Disposition::Emit(_) => {
+                        warnings.bump(warn::INVALID_PATH);
+                        fates[idx] = Fate::Skipped(Some(warn::INVALID_PATH));
                     }
                     Disposition::ReservedPrefixCollision => {
                         warnings.bump(warn::RESERVED_PREFIX_COLLISION);
                         fates[idx] = Fate::Skipped(Some(warn::RESERVED_PREFIX_COLLISION));
                     }
                     Disposition::SearchIndex | Disposition::WellKnown => {
-                        // a redirect living in X/ or W/ (e.g. W/mainPage): not content
                         stats.wellknown_entries += 1;
                         fates[idx] = Fate::Skipped(None);
                     }
@@ -387,72 +415,55 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
             }
         }
     }
+    drop(snapshot);
 
+    // Canonical path of an emitted dirent, recomputed from the dirent.
+    let canonical_of = |idx: u32| -> Result<Option<String>> {
+        let d = match fates.get(idx as usize) {
+            Some(Fate::Content) => z.get_by_url_index(idx)?,
+            Some(Fate::Resolved { terminus }) => {
+                let alias = z.get_by_url_index(idx)?;
+                let tm = bare_mime(mime_str(&z.get_by_url_index(*terminus)?.mime_type).unwrap_or(""));
+                return Ok(match canonicalize(alias.namespace, &alias.url, &tm) {
+                    Disposition::Emit(p) => Some(p),
+                    _ => None,
+                });
+            }
+            _ => return Ok(None),
+        };
+        let m = bare_mime(mime_str(&d.mime_type).unwrap_or(""));
+        Ok(match canonicalize(d.namespace, &d.url, &m) {
+            Disposition::Emit(p) => Some(p),
+            _ => None,
+        })
+    };
     // Resolver for href rewriting: (ns, url) -> emitted canonical path.
     // Redirect aliases resolve to the alias path (wax-core follows the one hop).
-    let canonical_of = |idx: u32| -> Option<String> {
-        match &fates[idx as usize] {
-            Fate::Content(p) => Some(p.clone()),
-            Fate::Redirect { .. } => redirect_targets[idx as usize].as_ref().map(|(a, _)| a.clone()),
-            Fate::Skipped(_) => None,
-        }
-    };
+    // Hrefs repeat heavily (the same targets are linked from thousands of
+    // pages), so a small cache in front of the SQLite lookup removes most of
+    // them. It is *bounded*: at HREF_CACHE_CAP entries it is cleared, so it is
+    // a constant ~10 MB, never a function of the archive.
+    const HREF_CACHE_CAP: usize = 65_536;
+    let href_cache: std::cell::RefCell<std::collections::HashMap<(u8, String), Option<String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::with_capacity(HREF_CACHE_CAP));
     let resolver = |ns: Namespace, url: &str| -> Option<String> {
-        by_key.get(&(ns.as_byte(), url.to_string())).and_then(|i| canonical_of(*i))
+        let key = (ns.as_byte(), url.to_string());
+        if let Some(hit) = href_cache.borrow().get(&key) {
+            return hit.clone();
+        }
+        let v = dirents
+            .lookup(ns.as_byte(), url)
+            .and_then(|i| canonical_of(i).ok().flatten());
+        let mut c = href_cache.borrow_mut();
+        if c.len() >= HREF_CACHE_CAP {
+            c.clear();
+        }
+        c.insert(key, v.clone());
+        v
     };
 
     // ------------------------------------------------------------------
-    // 3. Read content, rewrite references, build entries.
-    // ------------------------------------------------------------------
-    let mut entries: Vec<EntryInput> = Vec::with_capacity(fates.len());
-    for (idx, fate) in fates.iter().enumerate() {
-        match fate {
-            Fate::Content(path) => {
-                let e = z.get_by_url_index(idx as u32)?;
-                let bare = mimes[idx].clone().unwrap_or_default();
-                let raw = z
-                    .entry_content(&e)?
-                    .ok_or_else(|| anyhow!("dirent #{idx} {:?} has no content", e.url))?
-                    .to_vec()?;
-                stats.bytes_in += raw.len() as u64;
-                let bytes = if is_article_mime(&bare) || bare == "text/css" {
-                    let text = String::from_utf8_lossy(&raw);
-                    let (out, rs) = if bare == "text/css" {
-                        rewrite_css(&text, e.namespace, &e.url, &resolver)
-                    } else {
-                        rewrite_html(&text, e.namespace, &e.url, &resolver)
-                    };
-                    stats.hrefs_rewritten += rs.rewritten;
-                    out.into_bytes()
-                } else {
-                    raw
-                };
-                let mut ei = EntryInput::data(path.clone(), bytes, compression_for(&bare));
-                if let Some(m) = mime_str(&e.mime_type) {
-                    ei = ei.with_mime(m);
-                }
-                if let Some(t) = &titles[idx] {
-                    ei = ei.with_title(t.clone());
-                }
-                entries.push(ei);
-                stats.content_emitted += 1;
-            }
-            Fate::Redirect { .. } => {
-                if let Some((alias, target)) = &redirect_targets[idx] {
-                    let mut ei = EntryInput::redirect(alias.clone(), target.clone());
-                    if let Some(t) = &titles[idx] {
-                        ei = ei.with_title(t.clone());
-                    }
-                    entries.push(ei);
-                    stats.redirects_emitted += 1;
-                }
-            }
-            Fate::Skipped(_) => {}
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // 4. Manifest derivations (§20).
+    // 3. Manifest derivations (§20) — needed before the pack is opened.
     // ------------------------------------------------------------------
     let name = metadata_string(&z, "Title")?
         .ok_or_else(|| anyhow!("ZIM has no Title metadata; manifest.name is required (Contract §11)"))?;
@@ -535,14 +546,6 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
         entry_point,
         icon_source,
     };
-    if canon_owner.contains_key(ICON_PATH) {
-        // a source entry already lives at _assets/icon.png; the extracted
-        // illustration takes precedence and the source entry is dropped
-        stats.path_collisions += 1;
-        warnings.bump(warn::INVALID_PATH);
-        entries.retain(|e| e.path != ICON_PATH);
-    }
-    entries.push(EntryInput::data(ICON_PATH, icon_bytes, Compression::None).with_mime("image/png"));
 
     let manifest = ManifestConfig {
         name: Some(derived.name.clone()),
@@ -558,10 +561,113 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
     };
 
     // ------------------------------------------------------------------
-    // 5. Build.
+    // 4. Stream: open the pack, then emit every dirent in url order.
     // ------------------------------------------------------------------
-    // Deterministic order: wax-core lays blobs down in the order given.
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut pack = PackStream::create(
+        output,
+        &manifest,
+        &WriteOptions {
+            created_at: opts.created_at,
+            sign_key: opts.sign_key.clone(),
+            archive_uuid: opts.archive_uuid,
+        },
+        BuildContext {
+            builder_version: Some(format!("zim2wax {}", env!("CARGO_PKG_VERSION"))),
+            warnings: Warnings::new(),
+            skipped_count: 0,
+            force_license_review: license_operator_supplied,
+        },
+    )
+    .with_context(|| format!("creating {}", output.display()))?;
+
+    // The icon goes in first so a source entry at the same path is the one
+    // that loses the collision.
+    pack.add_entry(
+        EntryMeta::new(ICON_PATH).mime("image/png").compression(Compression::None),
+        &mut io::Cursor::new(icon_bytes),
+    )?;
+
+    // Content is emitted in (cluster, blob) order so each cluster is
+    // decompressed exactly once and only one decompressed cluster is resident
+    // at a time. Url order would re-decompress a cluster for every blob in it
+    // and dominate the runtime. Order is still a pure function of the ZIM, so
+    // rebuilds stay byte-identical.
+    let mut content_order: Vec<(u32, u32, u32)> = Vec::new(); // (cluster, blob, idx)
+    for (idx, fate) in fates.iter().enumerate() {
+        if let Fate::Content = fate {
+            let e = z.get_by_url_index(idx as u32)?;
+            if let Some(Target::Cluster(c, b)) = e.target {
+                content_order.push((c, b, idx as u32));
+            }
+        }
+    }
+    content_order.sort_unstable();
+
+    let mut current: Option<(u32, zim::Cluster<'_>)> = None;
+    for &(cluster_idx, blob_idx, idx) in &content_order {
+        let e = z.get_by_url_index(idx)?;
+        let bare = bare_mime(mime_str(&e.mime_type).unwrap_or(""));
+        let Disposition::Emit(path) = canonicalize(e.namespace, &e.url, &bare) else {
+            continue;
+        };
+        if pack.has_path(&path)? {
+            stats.path_collisions += 1;
+            warnings.bump(warn::INVALID_PATH);
+            continue;
+        }
+        if current.as_ref().map(|(c, _)| *c) != Some(cluster_idx) {
+            current = Some((cluster_idx, z.get_cluster(cluster_idx)?));
+        }
+        let cluster = &current.as_ref().expect("just set").1;
+        let guard = cluster.read()?;
+        let bytes: &[u8] = guard.blob(blob_idx)?;
+
+        let title = entry_title(&e, &bare);
+        let mut meta = EntryMeta::new(path).compression(compression_for(&bare));
+        if let Some(m) = mime_str(&e.mime_type) {
+            meta = meta.mime(m);
+        }
+        if let Some(t) = title {
+            meta = meta.title(t);
+        }
+        stats.bytes_in += bytes.len() as u64;
+
+        if is_article_mime(&bare) || bare == "text/css" {
+            // one document at a time: decode, rewrite, stream
+            let text = String::from_utf8_lossy(bytes);
+            let (out, rs) = if bare == "text/css" {
+                rewrite_css(&text, e.namespace, &e.url, &resolver)
+            } else {
+                rewrite_html(&text, e.namespace, &e.url, &resolver)
+            };
+            stats.hrefs_rewritten += rs.rewritten;
+            drop(text);
+            pack.add_entry(meta, &mut io::Cursor::new(out.into_bytes()))?;
+        } else {
+            // zero-copy from the decompressed cluster
+            pack.add_entry(meta, &mut &bytes[..])?;
+        }
+        stats.content_emitted += 1;
+    }
+    drop(current);
+    drop(content_order);
+
+    // Redirects (no blob) in url order.
+    for (idx, fate) in fates.iter().enumerate() {
+        let Fate::Resolved { terminus } = *fate else { continue };
+        let (Some(alias), Some(target)) = (canonical_of(idx as u32)?, canonical_of(terminus)?) else {
+            continue;
+        };
+        if pack.has_path(&alias)? {
+            stats.path_collisions += 1;
+            warnings.bump(warn::INVALID_PATH);
+            continue;
+        }
+        let e = z.get_by_url_index(idx as u32)?;
+        let title = entry_title(&e, "text/html");
+        pack.add_redirect(alias, target, title)?;
+        stats.redirects_emitted += 1;
+    }
 
     // skipped_count = source items dropped for a warned reason (§11's example:
     // 1204 skipped ↔ unsupported_mimetype 1204). By-design non-emission of X/
@@ -571,25 +677,12 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
         + warnings.count(warn::REDIRECT_DANGLING)
         + warnings.count(warn::RESERVED_PREFIX_COLLISION)
         + warnings.count(warn::INVALID_PATH);
+    *pack.warnings_mut() = warnings.clone();
+    pack.set_skipped(skipped);
 
-    let write = build_from_entries(
-        output,
-        entries,
-        &manifest,
-        &WriteOptions {
-            created_at: opts.created_at,
-            sign_key: opts.sign_key.clone(),
-            archive_uuid: opts.archive_uuid,
-        },
-        BuildContext {
-            builder_version: Some(format!("zim2wax {}", env!("CARGO_PKG_VERSION"))),
-            warnings: warnings.clone(),
-            skipped_count: skipped,
-            // Contract §11: an operator's license claim is reviewed, not trusted
-            force_license_review: license_operator_supplied,
-        },
-    )
-    .with_context(|| format!("building {}", output.display()))?;
+    let write = pack
+        .finish()
+        .with_context(|| format!("building {}", output.display()))?;
 
     Ok(ConvertReport {
         write,
@@ -597,6 +690,18 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
         stats,
         warnings,
     })
+}
+
+/// A dirent's title for `entries.title`. Empty → none. Track B §20: for a
+/// non-article, a title of exactly `"null"` is mwoffliner's placeholder and is
+/// treated as absent; an article titled "Null" survives.
+fn entry_title(e: &zim::DirectoryEntry, bare: &str) -> Option<String> {
+    let t = e.title.trim();
+    if t.is_empty() || (!is_article_mime(bare) && t == "null") {
+        None
+    } else {
+        Some(t.to_string())
+    }
 }
 
 /// The icon bytes and where they came from. Order: `Illustration_48x48@1`,
