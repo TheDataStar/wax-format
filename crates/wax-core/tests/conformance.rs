@@ -15,8 +15,8 @@ use wax_core::{Compression, EntryInput, WaxError, WaxReader};
 #[test]
 fn pos_minimum_size_archive() {
     let f = minimal();
-    let mut r = WaxReader::open(&f.path).unwrap();
-    assert_eq!(r.paths().collect::<Vec<_>>(), vec!["a"]);
+    let r = WaxReader::open(&f.path).unwrap();
+    assert_eq!(r.paths().map(|p| p.unwrap()).collect::<Vec<_>>(), vec!["a"]);
     assert_eq!(r.read("a").unwrap(), Vec::<u8>::new());
     assert_eq!(r.segment_count(), 1);
 }
@@ -27,7 +27,7 @@ fn pos_reserved_field_all_ones_still_opens() {
     // set the 56 reserved bytes (72..128) to 0xFF
     let mutated = patch(base.clone(), hoff::RESERVED, &[0xFF; 56]);
     let f = write_wax(&mutated);
-    let mut r = WaxReader::open(&f.path).unwrap();
+    let r = WaxReader::open(&f.path).unwrap();
     // identical behaviour to the zero-reserved twin
     assert_eq!(r.read("a").unwrap(), Vec::<u8>::new());
 }
@@ -40,8 +40,8 @@ fn pos_unicode_paths_roundtrip_and_sort() {
         EntryInput::data("café/ résumé.txt", b"x".to_vec(), Compression::None),
     ];
     let f = valid(entries);
-    let mut r = WaxReader::open(&f.path).unwrap();
-    let paths: Vec<String> = r.paths().map(|s| s.to_string()).collect();
+    let r = WaxReader::open(&f.path).unwrap();
+    let paths: Vec<String> = r.paths().map(|p| p.unwrap()).collect();
     let mut sorted = paths.clone();
     sorted.sort();
     assert_eq!(paths, sorted, "list() is code-point sorted");
@@ -56,10 +56,10 @@ fn pos_redirect_depth_one_resolves() {
         EntryInput::data("real.html", b"<h1>hi</h1>".to_vec(), Compression::None),
         EntryInput::redirect("alias.html", "real.html"),
     ]);
-    let mut r = WaxReader::open(&f.path).unwrap();
+    let r = WaxReader::open(&f.path).unwrap();
     // both paths visible
-    assert!(r.paths().any(|p| p == "alias.html"));
-    assert!(r.paths().any(|p| p == "real.html"));
+    assert!(r.paths().any(|p| p.unwrap() == "alias.html"));
+    assert!(r.paths().any(|p| p.unwrap() == "real.html"));
     // resolve + read follow the hop
     let resolved = r.resolve("alias.html").unwrap();
     assert_eq!(resolved.entry.path, "real.html");
@@ -94,7 +94,7 @@ fn pos_unknown_minor_version_and_extra_column() {
         h.version_minor = 0xFF;
     });
     let f = write_wax(&bytes);
-    let mut r = WaxReader::open(&f.path).unwrap();
+    let r = WaxReader::open(&f.path).unwrap();
     assert_eq!(r.header().version_minor, 0xFF);
     assert_eq!(r.read("p.txt").unwrap(), b"hello");
 }
@@ -112,7 +112,7 @@ fn pos_multi_segment_last_wins() {
             EntryInput::data("c", b"two".to_vec(), Compression::None),
         ]],
     );
-    let mut r = WaxReader::open(&f.path).unwrap();
+    let r = WaxReader::open(&f.path).unwrap();
     assert_eq!(r.segment_count(), 2);
     assert_eq!(r.read("a").unwrap(), b"two", "later segment wins");
     assert_eq!(r.read("b").unwrap(), b"one", "untouched entry from base");
@@ -128,7 +128,7 @@ fn pos_multi_segment_append_turns_entry_into_redirect() {
         ],
         vec![vec![EntryInput::redirect("page", "canonical")]],
     );
-    let mut r = WaxReader::open(&f.path).unwrap();
+    let r = WaxReader::open(&f.path).unwrap();
     let res = r.resolve("page").unwrap();
     assert_eq!(res.entry.path, "canonical");
     assert_eq!(r.read("page").unwrap(), b"canon");
@@ -357,7 +357,7 @@ fn neg_on_disk_redirect_chain_depth_two() {
     let seg = craft_segment(&rows, blob.len() as u64);
     let bytes = assemble_single(&blob, &seg, |_| {});
     let f = write_wax(&bytes);
-    let mut r = WaxReader::open(&f.path).unwrap(); // opens fine
+    let r = WaxReader::open(&f.path).unwrap(); // opens fine
     let e = r.resolve("a").unwrap_err();
     assert!(matches!(e, WaxError::RedirectChainTooDeep { .. }), "got {e:?}");
     // reading also errors, never follows
@@ -400,7 +400,7 @@ fn neg_unknown_compression() {
     let seg = craft_segment(&[row], blob.len() as u64);
     let bytes = assemble_single(&blob, &seg, |_| {});
     let f = write_wax(&bytes);
-    let mut r = WaxReader::open(&f.path).unwrap(); // opens fine
+    let r = WaxReader::open(&f.path).unwrap(); // opens fine
     assert!(matches!(
         r.read("p").unwrap_err(),
         WaxError::UnknownCompression { .. }
@@ -418,7 +418,7 @@ fn neg_checksum_mismatch_on_corrupted_blob() {
     // flip one byte inside the blob region (just after the header)
     bytes[HEADER_LEN + 2] ^= 0xFF;
     let f2 = write_wax(&bytes);
-    let mut r = WaxReader::open(&f2.path).unwrap();
+    let r = WaxReader::open(&f2.path).unwrap();
     let e = r.read("p.txt").unwrap_err();
     assert!(
         matches!(e, WaxError::ChecksumMismatch { .. } | WaxError::Decompress { .. }),

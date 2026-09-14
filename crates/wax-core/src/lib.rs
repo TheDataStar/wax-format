@@ -5,8 +5,12 @@
 //!
 //! * [`header`] — the fixed 128-byte header (parse / validate / serialize).
 //! * [`segment`] — one embedded SQLite index segment (`entries`, `segment_meta`, …).
+//! * [`vfs`] — a read-only SQLite VFS that opens an index segment in place at
+//!   its offset inside the archive, so nothing is copied to open one.
 //! * [`reader`] — [`reader::WaxReader`]: open an archive, walk the segment chain,
-//!   merge entries (last-segment-wins), resolve one-hop redirects, verify content.
+//!   answer lookups by querying the segments (last-segment-wins, newest first),
+//!   resolve one-hop redirects, verify content. Open is O(segments); no entry
+//!   table is ever materialized.
 //! * [`writer`] — [`writer::WaxWriter`]: assemble a valid archive; append a segment
 //!   following the spec's append-commit protocol (§7). v0.9 builders emit a single
 //!   segment; append exists for the general shape and for the A4 conformance suite.
@@ -21,11 +25,12 @@ pub mod header;
 pub mod model;
 pub mod reader;
 pub mod segment;
+pub mod vfs;
 pub mod writer;
 
 pub use header::WaxHeader;
 pub use model::{Compression, Entry, EntryContent, EntryInput, Resolved};
-pub use reader::WaxReader;
+pub use reader::{Entries, ReadOptions, WaxReader};
 pub use writer::{EntryMeta, EntryStats, FinishStats, StreamingWriter, WaxWriter};
 
 /// Magic bytes at offset 0: ASCII `"WAX1"`.

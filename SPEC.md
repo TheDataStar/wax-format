@@ -202,6 +202,12 @@ The reader opens each segment **read-only** and MUST tolerate SQLite errors
 (malformed database, missing table, wrong column type) by returning a WAX error,
 never by panicking (A4 fuzz target 2).
 
+How the reader hands the byte range to SQLite is its business: `wax-core`
+opens the range *in place* through a windowing VFS (`?vfs=wax&off=…&len=…`),
+so opening a segment reads only the pages SQLite touches and copies nothing.
+Copying the range to a temporary file first is also conformant, just O(index
+bytes) per open (§12.23).
+
 ### 4.2 `segment_meta` — chain linkage
 
 ```sql
@@ -293,8 +299,15 @@ CREATE TABLE entries (
     sha256              BLOB,
     volume_id           INTEGER DEFAULT 0,
     redirect_to         TEXT DEFAULT NULL
-);
+) WITHOUT ROWID;
 ```
+
+Writers SHOULD declare `entries` `WITHOUT ROWID` (SQLite ≥ 3.8.2), which makes
+the `path` primary key the table's own B-tree: a point lookup is one tree
+descent and a `path`-ordered scan reads pages sequentially. Archives written
+before A1b carry a rowid table plus the implicit `path` index instead; the
+logical schema is identical and readers MUST accept either (§12.23 records
+the measured difference — it is why the layout changed).
 
 | Column | Meaning / constraints |
 |--------|-----------------------|
@@ -350,7 +363,11 @@ segment), the reader treats it as all-NULL rather than failing
 
 ### 5.5 Merge — last-segment-wins
 
-The reader presents a single logical entry set built from the chain:
+The reader presents a single logical entry set built from the chain. This is
+a *definition* of what a lookup returns, not an instruction to materialize it:
+a conformant reader may answer `merged_entry` by querying the segments newest
+first and `list()` by a streaming merge of their `path`-ordered rows, holding
+nothing proportional to the entry count (A1b; `wax-core` does exactly this).
 
 ```
 merged_entry(path):
@@ -714,7 +731,7 @@ The suite in `crates/wax-core/tests/` and the fuzz crate `fuzz/` MUST cover:
 | Target | Input | Property |
 |--------|-------|----------|
 | `header_parse` | arbitrary ≤ 4 KiB | `Header::parse` + `validate(file_size)` never panics; returns `Ok`/`Err` |
-| `index_loader` | arbitrary ≤ 256 KiB, written to a temp file and opened as a segment | segment open + `entries`/`segment_meta` read never panics; bounded memory |
+| `index_loader` | arbitrary ≤ 256 KiB, written to a temp file and opened in place as a segment through the windowing VFS | segment open + `segment_meta` read + paged `entries` walk + point lookup + `manifest` read never panics; bounded memory |
 | `segment_merge` | `arbitrary`-derived model of 0–8 synthetic segments with overlapping paths/redirects | chain walk + merge + `resolve` never panics, never infinite-loops, one-hop redirect rule holds |
 
 Each fuzz target's body is also callable as a plain function
@@ -826,6 +843,24 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
     the value and the repo already held two spellings). The Contract wins over
     this document, so §8.2 is corrected rather than the Contract amended.
     Verifiers compare parsed UUIDs, so pre-correction sidecars still bind.
+23. **The reader queries the index; it does not load it — and `entries` is
+    `WITHOUT ROWID` because of what that measured.** Until A1b, `WaxReader::open`
+    copied each segment to a temp file and merged every `entries` row into an
+    in-memory map: ~870 bytes per entry (332 MB private bytes to open a
+    382,608-entry pack; several GB extrapolated to full Wikipedia). It now opens
+    each segment in place (§4.1) and answers lookups by point query, newest
+    segment first (§5.5): opening the same pack costs 1.9 MB and ~30 ms, of
+    which all but ~0.5 ms is the `volume_id` scan (§5.2 — the one O(entries)
+    *time* cost left at open; bounded memory, sequential I/O, ~48 MB of table
+    pages for that pack). Measured on the 382,608-entry pack, a point lookup
+    against the original rowid table costs 2.03 index page reads (index probe,
+    then the row by rowid) and a `path`-ordered walk of the whole table costs
+    222,617 page reads — one random table read per row — against 1.29 and
+    11,563 (sequential) with `WITHOUT ROWID`, and the index shrinks from 72.3 MB
+    to 47.4 MB. On SD-card-class storage, where a page read is a random I/O,
+    that walk is the difference between minutes and about a second for
+    `verify`/`ls`. Readers accept both layouts, so nothing already written is
+    affected.
 
 ---
 
@@ -833,6 +868,7 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
 
 | Format version | Date | Change |
 |----------------|------|--------|
+| 0.9 | 2026-09-13 | A1b — no byte-layout change. §5.2: `entries` is declared `WITHOUT ROWID` by writers; readers MUST accept either layout. §4.1/§5.5 clarify that segments may be opened in place and that the merge is a definition, not a materialization. §11.3 fuzz target 2 walks the segment through the same path the reader uses. §12.23 records the measurements. |
 | 0.9 | 2026-09-12 | §8.2: sidecar trusted-comment `archive_uuid` is canonical lowercase-hyphenated per Contract §11 (was bare hex); verifiers compare parsed values. No byte-layout change. |
 | 0.9 | 2026-09-09 | Initial frozen specification (A3). Header 128 B; SQLite segment chain; `entries` / `manifest` / `segment_meta` / `signatures` / optional `search_index`; append-commit protocol; detached minisign sidecar signing model. |
 | 0.9 | 2026-09-10 | A2 pass — no byte-layout or schema change. §8.2 signing CLI mapping corrected (`-H` is verify-side, §12.18); trusted-comment format pinned; §1 no longer claims v0.9 writers never append (§12.17); §12.19–21 record the UUID/reproducibility interaction and the duplicated `created_at`. |

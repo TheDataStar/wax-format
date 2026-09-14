@@ -1,57 +1,109 @@
 //! [`WaxReader`] — open an archive and serve entries (SPEC §5).
 //!
 //! Open path: parse header → validate → walk the segment chain backward to the
-//! base → check blob-section integrity → build the merged path index
-//! (last-segment-wins). Read path: resolve at most one redirect hop, pull the
-//! blob span, decompress, verify `sha256`.
+//! base (each segment opened in place through the [`crate::vfs`] window) →
+//! check blob-section integrity → reject any non-zero `volume_id`. Nothing
+//! proportional to the entry count is held: opening costs O(segments).
+//!
+//! Lookup path: a point query per segment, newest first — the first hit is the
+//! last-segment-wins answer (SPEC §5.5). Read path: resolve at most one
+//! redirect hop, pull the blob span, decompress, verify `sha256`. Iteration
+//! (`entries`, `paths`) is a streaming k-way merge over the segments' path
+//! order, one page of rows per segment in memory.
 
 use crate::header::WaxHeader;
 use crate::model::{Compression, Entry, Resolved};
 use crate::segment::Segment;
 use crate::{Result, WaxError, HEADER_LEN, MAX_SEGMENTS, MIN_SQLITE_LEN};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::io::{self, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 
-/// Options controlling reader strictness.
+/// Rows fetched per segment per page while iterating. Bounds iteration memory
+/// at `PAGE_ROWS × segments` entries.
+pub const PAGE_ROWS: usize = 256;
+
+/// Default size of the lookup cache (entries). See [`ReadOptions`].
+pub const DEFAULT_LOOKUP_CACHE: usize = 1024;
+
+/// Options controlling reader strictness and memory.
 #[derive(Debug, Clone, Copy)]
 pub struct ReadOptions {
     /// Verify each entry's `sha256` after decompression (SPEC §3.1). Default on.
     pub verify_checksums: bool,
+    /// Bound on the path → entry lookup cache in front of the index queries.
+    /// Each cached entry is one `Entry` (path, title, mime, and fixed fields;
+    /// a few hundred bytes for typical paths). `0` disables it. Default
+    /// [`DEFAULT_LOOKUP_CACHE`].
+    pub lookup_cache_entries: usize,
 }
 
 impl Default for ReadOptions {
     fn default() -> Self {
         ReadOptions {
             verify_checksums: true,
+            lookup_cache_entries: DEFAULT_LOOKUP_CACHE,
         }
+    }
+}
+
+/// Bounded path → entry cache. When full it is cleared rather than evicted
+/// piecemeal: the bound is what matters, and the working set of a pack is
+/// re-warmed in a handful of lookups.
+struct LookupCache {
+    map: HashMap<String, Entry>,
+    cap: usize,
+    hits: u64,
+    misses: u64,
+}
+
+impl LookupCache {
+    fn get(&mut self, path: &str) -> Option<Entry> {
+        let hit = self.map.get(path).cloned();
+        if hit.is_some() {
+            self.hits += 1;
+        } else {
+            self.misses += 1;
+        }
+        hit
+    }
+
+    fn put(&mut self, entry: &Entry) {
+        if self.cap == 0 {
+            return;
+        }
+        if self.map.len() >= self.cap {
+            self.map.clear();
+        }
+        self.map.insert(entry.path.clone(), entry.clone());
     }
 }
 
 impl std::fmt::Debug for WaxReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WaxReader")
+            .field("path", &self.path)
             .field("file_size", &self.file_size)
             .field("segments", &self.segments.len())
-            .field("entries", &self.merged.len())
             .field("version", &(self.header.version_major, self.header.version_minor))
             .finish()
     }
 }
 
 pub struct WaxReader {
+    path: PathBuf,
     file: File,
     file_size: u64,
     header: WaxHeader,
     /// Segments in ascending `segment_index` order (base first).
     segments: Vec<Segment>,
-    /// path → (segment index in `segments`, entry). Last-segment-wins already
-    /// applied (SPEC §5.5).
-    merged: BTreeMap<String, Entry>,
+    /// Base-segment manifest (SPEC §5.6); small, held.
     manifest: BTreeMap<String, String>,
     opts: ReadOptions,
+    cache: RefCell<LookupCache>,
 }
 
 impl WaxReader {
@@ -60,7 +112,8 @@ impl WaxReader {
     }
 
     pub fn open_with<P: AsRef<Path>>(path: P, opts: ReadOptions) -> Result<Self> {
-        let mut file = File::open(path)?;
+        let path = path.as_ref().to_path_buf();
+        let mut file = File::open(&path)?;
         let file_size = file.seek(SeekFrom::End(0))?;
         file.seek(SeekFrom::Start(0))?;
 
@@ -68,7 +121,7 @@ impl WaxReader {
         let mut hbuf = [0u8; HEADER_LEN];
         match file.read_exact(&mut hbuf) {
             Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
                 return Err(WaxError::TruncatedHeader { found: file_size })
             }
             Err(e) => return Err(e.into()),
@@ -77,22 +130,15 @@ impl WaxReader {
         header.validate(file_size)?;
 
         // --- segment chain (SPEC §5.1) ---
-        let segments = Self::walk_chain(&mut file, &header, file_size)?;
+        let segments = Self::walk_chain(&path, &header, file_size)?;
 
         // --- blob-section integrity (SPEC §4.3) ---
         Self::check_blob_section(&header, &segments)?;
 
-        // --- merge (SPEC §5.5) + volume_id guard (SPEC §5.2) ---
-        let mut merged: BTreeMap<String, Entry> = BTreeMap::new();
+        // --- volume_id guard (SPEC §5.2): a scan per segment, not a load ---
         for seg in &segments {
-            for entry in seg.entries()? {
-                if entry.volume_id != 0 {
-                    return Err(WaxError::UnexpectedVolumeId {
-                        path: entry.path,
-                        found: entry.volume_id,
-                    });
-                }
-                merged.insert(entry.path.clone(), entry);
+            if let Some((path, found)) = seg.first_nonzero_volume()? {
+                return Err(WaxError::UnexpectedVolumeId { path, found });
             }
         }
 
@@ -105,25 +151,49 @@ impl WaxReader {
         }
 
         Ok(WaxReader {
+            path,
             file,
             file_size,
             header,
             segments,
-            merged,
             manifest,
             opts,
+            cache: RefCell::new(LookupCache {
+                map: HashMap::new(),
+                cap: opts.lookup_cache_entries,
+                hits: 0,
+                misses: 0,
+            }),
         })
     }
 
-    fn read_range(file: &mut File, offset: u64, length: u64) -> Result<Vec<u8>> {
-        // length is already bounds-checked by the caller.
-        let mut buf = vec![0u8; length as usize];
-        file.seek(SeekFrom::Start(offset))?;
-        file.read_exact(&mut buf)?;
-        Ok(buf)
+    /// Positional read of exactly `buf.len()` bytes at `offset`; leaves no
+    /// cursor state behind, so reads take `&self`.
+    fn read_exact_at(file: &File, mut offset: u64, mut buf: &mut [u8]) -> io::Result<()> {
+        while !buf.is_empty() {
+            #[cfg(windows)]
+            let n = {
+                use std::os::windows::fs::FileExt;
+                file.seek_read(buf, offset)?
+            };
+            #[cfg(unix)]
+            let n = {
+                use std::os::unix::fs::FileExt;
+                file.read_at(buf, offset)?
+            };
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "blob span ends past end of file",
+                ));
+            }
+            buf = &mut buf[n..];
+            offset += n as u64;
+        }
+        Ok(())
     }
 
-    fn walk_chain(file: &mut File, header: &WaxHeader, file_size: u64) -> Result<Vec<Segment>> {
+    fn walk_chain(path: &Path, header: &WaxHeader, file_size: u64) -> Result<Vec<Segment>> {
         let mut chain: Vec<Segment> = Vec::new();
         let mut seen: Vec<u64> = Vec::new();
         let mut cur = (header.index_offset, header.index_length);
@@ -137,8 +207,7 @@ impl WaxReader {
             }
             seen.push(cur.0);
 
-            let bytes = Self::read_range(file, cur.0, cur.1)?;
-            let seg = Segment::open(cur.0, &bytes)?;
+            let seg = Segment::open_at(path, cur.0, cur.1)?;
 
             let prev = seg.meta.prev_segment;
             chain.push(seg);
@@ -249,37 +318,93 @@ impl WaxReader {
         &self.manifest
     }
 
-    /// All entry paths, ascending (SPEC §5.5). Includes redirect aliases.
-    pub fn paths(&self) -> impl Iterator<Item = &str> {
-        self.merged.keys().map(|s| s.as_str())
+    /// `(hits, misses)` of the lookup cache since open. Diagnostic.
+    pub fn cache_stats(&self) -> (u64, u64) {
+        let c = self.cache.borrow();
+        (c.hits, c.misses)
+    }
+
+    /// The merged (pre-redirect-resolution) entry for `path`, or `None`.
+    /// Newest segment first; the first segment that has the path wins
+    /// (SPEC §5.5).
+    fn lookup(&self, path: &str) -> Result<Option<Entry>> {
+        if let Some(hit) = self.cache.borrow_mut().get(path) {
+            return Ok(Some(hit));
+        }
+        for seg in self.segments.iter().rev() {
+            if let Some(e) = seg.lookup(path)? {
+                self.cache.borrow_mut().put(&e);
+                return Ok(Some(e));
+            }
+        }
+        Ok(None)
     }
 
     /// The merged (pre-redirect-resolution) entry for `path`.
-    pub fn entry(&self, path: &str) -> Option<&Entry> {
-        self.merged.get(path)
+    /// [`WaxError::EntryNotFound`] if no segment carries it.
+    pub fn entry(&self, path: &str) -> Result<Entry> {
+        self.lookup(path)?
+            .ok_or_else(|| WaxError::EntryNotFound(path.to_string()))
     }
 
-    /// All merged entries, ascending by path.
-    pub fn entries(&self) -> impl Iterator<Item = &Entry> {
-        self.merged.values()
+    /// Whether any segment carries `path` (redirect aliases included).
+    pub fn contains(&self, path: &str) -> Result<bool> {
+        Ok(self.lookup(path)?.is_some())
+    }
+
+    /// Number of distinct paths across the segment chain. One `COUNT(*)` for
+    /// a single-segment archive; a streaming merge otherwise.
+    pub fn entry_count(&self) -> Result<u64> {
+        if self.segments.len() == 1 {
+            return self.segments[0].count();
+        }
+        let mut n = 0u64;
+        for e in self.entries() {
+            e?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    /// All merged entries, ascending by path, streamed (SPEC §5.5). Holds at
+    /// most [`PAGE_ROWS`] rows per segment. An error ends the iteration.
+    pub fn entries(&self) -> Entries<'_> {
+        Entries {
+            cursors: self
+                .segments
+                .iter()
+                .map(|seg| SegCursor {
+                    seg,
+                    buf: VecDeque::new(),
+                    last: None,
+                    exhausted: false,
+                })
+                .collect(),
+            done: false,
+        }
+    }
+
+    /// All entry paths, ascending, streamed (SPEC §5.5). Includes redirect
+    /// aliases.
+    pub fn paths(&self) -> impl Iterator<Item = Result<String>> + '_ {
+        self.entries().map(|e| e.map(|e| e.path))
     }
 
     /// Resolve `path`, following at most one redirect hop (SPEC §5.3).
     pub fn resolve(&self, path: &str) -> Result<Resolved> {
-        let e = self
-            .merged
-            .get(path)
-            .ok_or_else(|| WaxError::EntryNotFound(path.to_string()))?;
+        let e = self.entry(path)?;
         match &e.redirect_to {
             None => Ok(Resolved {
                 requested: path.to_string(),
-                entry: e.clone(),
+                entry: e,
             }),
             Some(target) => {
-                let t = self.merged.get(target).ok_or_else(|| WaxError::DanglingRedirect {
-                    from: path.to_string(),
-                    to: target.clone(),
-                })?;
+                let t = self
+                    .lookup(target)?
+                    .ok_or_else(|| WaxError::DanglingRedirect {
+                        from: path.to_string(),
+                        to: target.clone(),
+                    })?;
                 if t.redirect_to.is_some() {
                     return Err(WaxError::RedirectChainTooDeep {
                         from: path.to_string(),
@@ -288,22 +413,21 @@ impl WaxReader {
                 }
                 Ok(Resolved {
                     requested: path.to_string(),
-                    entry: t.clone(),
+                    entry: t,
                 })
             }
         }
     }
 
     /// Read and decompress the content for `path` (following one redirect hop).
-    pub fn read(&mut self, path: &str) -> Result<Vec<u8>> {
+    pub fn read(&self, path: &str) -> Result<Vec<u8>> {
         let resolved = self.resolve(path)?;
         let e = resolved.entry;
 
         let codec = Compression::parse(&e.path, &e.compression)?;
 
         // bounds-check the blob span against the file (SPEC §3).
-        let end = e
-            .offset
+        e.offset
             .checked_add(e.length)
             .filter(|end| *end <= self.file_size)
             .ok_or_else(|| WaxError::Schema {
@@ -312,9 +436,9 @@ impl WaxReader {
                     e.path, e.offset, e.length
                 ),
             })?;
-        let _ = end;
 
-        let raw = Self::read_range(&mut self.file, e.offset, e.length)?;
+        let mut raw = vec![0u8; e.length as usize];
+        Self::read_exact_at(&self.file, e.offset, &mut raw)?;
         let content = match codec {
             Compression::None => raw,
             Compression::Zstd => {
@@ -351,60 +475,126 @@ impl WaxReader {
     }
 
     /// Recompute the signable digest (SPEC §8.1): SHA-256 over the header bytes
-    /// followed by every segment database, base-first. A7 (signing) builds on
-    /// this; exposed now so the conformance suite can pin it.
-    pub fn signable_digest(&mut self) -> Result<[u8; 32]> {
-        let ranges: Vec<(u64, u64)> = self
-            .segments
-            .iter()
-            .map(|s| (s.disk_offset, s.db_len))
-            .collect();
+    /// followed by every segment database, base-first, streamed through a
+    /// 1 MiB buffer.
+    pub fn signable_digest(&self) -> Result<[u8; 32]> {
         let mut hasher = Sha256::new();
         hasher.update(self.header.to_bytes());
-        for (off, len) in ranges {
-            let bytes = Self::read_range(&mut self.file, off, len)?;
-            hasher.update(&bytes);
+        let mut buf = vec![0u8; 1 << 20];
+        for seg in &self.segments {
+            let mut off = seg.disk_offset;
+            let mut remaining = seg.db_len;
+            while remaining > 0 {
+                let want = remaining.min(buf.len() as u64) as usize;
+                Self::read_exact_at(&self.file, off, &mut buf[..want])?;
+                hasher.update(&buf[..want]);
+                off += want as u64;
+                remaining -= want as u64;
+            }
         }
         Ok(hasher.finalize().into())
     }
+
+    /// Test hook: the query plans behind [`WaxReader::entry`] and
+    /// [`WaxReader::entries`] for the base segment.
+    #[doc(hidden)]
+    pub fn query_plans(&self) -> Result<(String, String)> {
+        let s = &self.segments[0];
+        Ok((s.lookup_plan()?, s.page_plan()?))
+    }
 }
 
-/// The SPEC §8.1 signable digest of an archive **without** materializing its
-/// entries: header parse, chain walk, blob-section check, then a streaming
-/// SHA-256 over the header bytes and every segment database in chain order.
-///
-/// [`WaxReader::open`] merges every entry into memory, which is O(entries);
-/// signing a Wikipedia-scale pack must not pay that. Returns
-/// `(digest, archive_uuid, created_at)`.
+/// The SPEC §8.1 signable digest of an archive: `(digest, archive_uuid,
+/// created_at)`. Kept as a free function for callers that only sign or
+/// verify; opening is O(segments) so it is simply open + digest.
 pub fn signable_digest_of<P: AsRef<Path>>(path: P) -> Result<([u8; 32], [u8; 16], u64)> {
-    let mut file = File::open(path)?;
-    let file_size = file.seek(SeekFrom::End(0))?;
-    file.seek(SeekFrom::Start(0))?;
-    let mut hbuf = [0u8; HEADER_LEN];
-    match file.read_exact(&mut hbuf) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-            return Err(WaxError::TruncatedHeader { found: file_size })
-        }
-        Err(e) => return Err(e.into()),
-    }
-    let header = WaxHeader::parse(&hbuf)?;
-    header.validate(file_size)?;
-    let segments = WaxReader::walk_chain(&mut file, &header, file_size)?;
-    WaxReader::check_blob_section(&header, &segments)?;
+    let r = WaxReader::open_with(
+        path,
+        ReadOptions {
+            verify_checksums: false,
+            lookup_cache_entries: 0,
+        },
+    )?;
+    Ok((r.signable_digest()?, r.header.archive_uuid, r.header.created_at))
+}
 
-    let mut hasher = Sha256::new();
-    hasher.update(header.to_bytes());
-    let mut buf = vec![0u8; 1 << 20];
-    for seg in &segments {
-        file.seek(SeekFrom::Start(seg.disk_offset))?;
-        let mut remaining = seg.db_len;
-        while remaining > 0 {
-            let want = remaining.min(buf.len() as u64) as usize;
-            file.read_exact(&mut buf[..want])?;
-            hasher.update(&buf[..want]);
-            remaining -= want as u64;
+// ---------------------------------------------------------------------------
+// Streaming merged iteration
+// ---------------------------------------------------------------------------
+
+struct SegCursor<'r> {
+    seg: &'r Segment,
+    buf: VecDeque<Entry>,
+    /// Last path handed out of this segment; the next page starts after it.
+    last: Option<String>,
+    exhausted: bool,
+}
+
+impl SegCursor<'_> {
+    /// Make sure the head of `buf` is the next row, if there is one.
+    fn fill(&mut self) -> Result<()> {
+        if !self.buf.is_empty() || self.exhausted {
+            return Ok(());
         }
+        let page = self.seg.page(self.last.as_deref(), PAGE_ROWS)?;
+        if page.len() < PAGE_ROWS {
+            self.exhausted = true;
+        }
+        if let Some(l) = page.last() {
+            self.last = Some(l.path.clone());
+        }
+        self.buf.extend(page);
+        Ok(())
     }
-    Ok((hasher.finalize().into(), header.archive_uuid, header.created_at))
+}
+
+/// Iterator behind [`WaxReader::entries`]: a k-way merge of the segments'
+/// path-ordered rows, ties resolved to the newest segment (SPEC §5.5).
+pub struct Entries<'r> {
+    cursors: Vec<SegCursor<'r>>,
+    done: bool,
+}
+
+impl Iterator for Entries<'_> {
+    type Item = Result<Entry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        for c in &mut self.cursors {
+            if let Err(e) = c.fill() {
+                self.done = true;
+                return Some(Err(e));
+            }
+        }
+        // smallest head path; on ties the highest segment index wins
+        let mut best: Option<(usize, &str)> = None;
+        for (i, c) in self.cursors.iter().enumerate() {
+            if let Some(head) = c.buf.front() {
+                let better = match best {
+                    None => true,
+                    Some((_, p)) => head.path.as_str() <= p, // `<=` keeps the newer segment on ties
+                };
+                if better {
+                    best = Some((i, head.path.as_str()));
+                }
+            }
+        }
+        let Some((win, path)) = best else {
+            self.done = true;
+            return None;
+        };
+        let path = path.to_string();
+        let mut out = None;
+        for (i, c) in self.cursors.iter_mut().enumerate() {
+            if c.buf.front().is_some_and(|h| h.path == path) {
+                let e = c.buf.pop_front();
+                if i == win {
+                    out = e;
+                }
+            }
+        }
+        out.map(Ok)
+    }
 }

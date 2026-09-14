@@ -13,14 +13,14 @@ fn fx(name: &str) -> PathBuf {
 
 #[test]
 fn fixture_minimal_opens_and_reads() {
-    let mut r = WaxReader::open(fx("minimal.wax")).unwrap();
+    let r = WaxReader::open(fx("minimal.wax")).unwrap();
     assert_eq!(r.segment_count(), 1);
     assert_eq!(r.read("index.html").unwrap(), b"<h1>ok</h1>");
 }
 
 #[test]
 fn fixture_redirect_chain_is_flattened_on_disk() {
-    let mut r = WaxReader::open(fx("redirect-chain.wax")).unwrap();
+    let r = WaxReader::open(fx("redirect-chain.wax")).unwrap();
     // every alias points straight at the canonical entry (depth 1)
     for alias in ["articles/old-name.html", "articles/older-name.html", "index.html"] {
         assert_eq!(
@@ -35,7 +35,7 @@ fn fixture_redirect_chain_is_flattened_on_disk() {
 
 #[test]
 fn fixture_multi_segment_merges_last_wins() {
-    let mut r = WaxReader::open(fx("multi-segment.wax")).unwrap();
+    let r = WaxReader::open(fx("multi-segment.wax")).unwrap();
     assert_eq!(r.segment_count(), 3);
     assert_eq!(r.read("a.txt").unwrap(), b"a-base");
     assert_eq!(r.read("shared.txt").unwrap(), b"v2", "append overrides base");
@@ -45,7 +45,7 @@ fn fixture_multi_segment_merges_last_wins() {
 #[test]
 fn fixture_corrupt_signature_archive_opens_but_digest_wont_match_sidecar() {
     // The archive itself is valid...
-    let mut r = WaxReader::open(fx("corrupt-signature.wax")).unwrap();
+    let r = WaxReader::open(fx("corrupt-signature.wax")).unwrap();
     let digest = r.signable_digest().unwrap();
     assert_eq!(digest.len(), 32);
 
@@ -76,7 +76,7 @@ fn fixture_tampering_changes_the_signable_digest() {
     std::fs::write(&tampered, &tampered_bytes).unwrap();
 
     match WaxReader::open(&tampered) {
-        Ok(mut r) => {
+        Ok(r) => {
             let d = r.signable_digest().unwrap();
             assert_ne!(d_clean, d, "digest must change when the index is tampered");
         }

@@ -25,7 +25,7 @@ only the fixed header is overwritten, as the final atomic step
 
 | Crate | Role | Status |
 |-------|------|--------|
-| [`wax-core`](crates/wax-core) | reader + writer library (A1) | reader path, **streaming writer** (bounded memory, Track A §18) with the Vec API as a wrapper, segment-chain merge, one-hop redirects, checksum verification |
+| [`wax-core`](crates/wax-core) | reader + writer library (A1) | **streaming reader** (opens segments in place, queries rather than loads the index; Track A §18/A1b) and **streaming writer** (A2e) — both bounded in memory — with the Vec API as a wrapper; segment-chain merge, one-hop redirects, checksum verification |
 | [`wax-builder`](crates/wax-builder) | CLI: directory tree → signed `.wax` (A2) | `build` / `append` / `inspect` / `verify` (+ `ls`, `read`); manifest, aliases, compression policy, UUIDv4 identity, minisign hook |
 | [`zim2wax`](crates/zim2wax) | ZIM — `.wax` converter (Track B, B1) | v0 text + image: §20 canonical paths, href rewriting, redirect flattening, manifest derivation, §11 licensing + build report; verified against a real Wikipedia ZIM |
 | [`fuzz`](fuzz) | `cargo-fuzz` targets against the reader (A4) | 3 targets, build & run clean |
@@ -60,6 +60,33 @@ Regenerate the checked-in fixtures / fuzz seeds:
 ```bash
 cargo run -p wax-core --example gen_fixtures
 ```
+
+## Memory: opening and serving a pack is bounded
+
+`WaxReader::open` costs O(segments), not O(entries): each index segment is
+opened *in place* through a small read-only SQLite VFS that windows the
+archive file at the segment's offset, and lookups are point queries against
+the `path` primary key (newest segment first, so last-segment-wins is a query
+order, not a merge). Iteration is a streaming k-way merge holding 256 rows per
+segment. Measured on the same three Wikipedia packs A2e used, release build,
+peak private bytes sampled at 20 ms:
+
+| pack | entries | open, before (A2e reader) | open, after | serving (iterate + 60k lookups + 20k reads) |
+|---|---:|---:|---:|---:|
+| `wp100` | 9,272 | 4.3 MB | 1.9 MB | 12.6 MB |
+| `chemistry_mini` | 58,257 | 41.3 MB | 1.9 MB | 8.6 MB |
+| `history_maxi` | 382,608 | 332.2 MB | 1.9 MB | 10.7 MB |
+
+The 382,608-entry, 2.56 GB pack opens and serves 60,000 lookups plus 20,000
+reads inside a Windows Job Object with a **32 MB commit limit** (peak commit
+15.7 MB), and `wax-builder verify` re-reads all 382,608 entries under a
+**64 MB** limit (peak 13.9 MB; the old reader needed 290 MB). Per-lookup cost
+on NVMe is ~5 µs warm; the number that matters for SD-card-class storage is
+index page reads per lookup — 1.3 with the `WITHOUT ROWID` layout new
+archives use (2.0 for pre-A1b archives). The one O(entries) *time* cost left
+at open is SPEC §5.2's `volume_id` check: a sequential table scan, ~30 ms on
+NVMe for that pack. Reproduce with
+`cargo run --release -p wax-core --example readbench -- <pack.wax>`.
 
 ## CLI
 

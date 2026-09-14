@@ -462,8 +462,16 @@ pub fn append_pack(
         .get("license")
         .map(|l| config::classify_license(l));
 
-    let redirect_count = reader.entries().filter(|e| e.is_redirect()).count() as u64;
-    let total = reader.entries().count();
+    // One streaming pass over the merged index: bounded memory however many
+    // entries the archive now carries.
+    let mut redirect_count = 0u64;
+    let mut total = 0usize;
+    for e in reader.entries() {
+        if e?.is_redirect() {
+            redirect_count += 1;
+        }
+        total += 1;
+    }
     let mut report = WriteReport {
         archive: archive.to_path_buf(),
         archive_uuid: uuid,
@@ -507,24 +515,27 @@ impl VerifyReport {
 }
 
 /// Read every entry (which verifies its `sha256`, SPEC §3.1) and optionally
-/// check the A7 sidecar.
+/// check the A7 sidecar. Entries are streamed from the index and read one at
+/// a time; memory is bounded by the largest single entry, not the count.
 pub fn verify_pack(
     archive: &Path,
     pubkey: Option<&sign::PubKey>,
     require_signature: bool,
 ) -> Result<VerifyReport> {
-    let mut reader = WaxReader::open(archive)
+    let reader = WaxReader::open(archive)
         .with_context(|| format!("opening {}", archive.display()))?;
-
-    let paths: Vec<String> = reader.paths().map(|s| s.to_string()).collect();
-    let redirects = reader.entries().filter(|e| e.is_redirect()).count();
 
     let mut bad = Vec::new();
     let mut checked = 0usize;
-    for p in &paths {
-        match reader.read(p) {
+    let mut redirects = 0usize;
+    for entry in reader.entries() {
+        let entry = entry.with_context(|| format!("listing {}", archive.display()))?;
+        if entry.is_redirect() {
+            redirects += 1;
+        }
+        match reader.read(&entry.path) {
             Ok(_) => checked += 1,
-            Err(e) => bad.push((p.clone(), e.to_string())),
+            Err(e) => bad.push((entry.path, e.to_string())),
         }
     }
 

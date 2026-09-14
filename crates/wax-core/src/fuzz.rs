@@ -40,8 +40,10 @@ pub fn check_header_parse(data: &[u8]) -> Result<()> {
 }
 
 /// Target 2: index-footer SQLite loader. Writes arbitrary bytes to a temp file
-/// and tries to open them as an index segment, then reads `entries` +
-/// `manifest`. SQLite must not be able to make us panic.
+/// and tries to open them in place as an index segment (through the offset
+/// VFS, exactly as the reader does), then pages through `entries`, probes a
+/// path, and reads `manifest`. SQLite must not be able to make us panic, and
+/// nothing proportional to the row count is held.
 pub fn check_index_loader(data: &[u8]) -> Result<()> {
     // Cap the input so a fuzzer can't ask us to buffer gigabytes; the real
     // reader bounds this via header fields.
@@ -54,8 +56,18 @@ pub fn check_index_loader(data: &[u8]) -> Result<()> {
     tmp.write_all(data)?;
     tmp.flush()?;
 
-    let seg = Segment::open(0, data)?;
-    let _ = seg.entries()?;
+    let seg = Segment::open_at(tmp.path(), 0, data.len() as u64)?;
+    let mut after: Option<String> = None;
+    loop {
+        let page = seg.page(after.as_deref(), 64)?;
+        let Some(last) = page.last() else { break };
+        after = Some(last.path.clone());
+        if page.len() < 64 {
+            break;
+        }
+    }
+    let _ = seg.lookup("index.html")?;
+    let _ = seg.first_nonzero_volume()?;
     let _ = seg.manifest()?;
     Ok(())
 }

@@ -42,7 +42,7 @@ fn articles_flatten_to_root_and_assets_go_under_assets_prefix() {
     let fx = fixture(&wiki());
     convert(&fx.zim, &fx.wax, &opts()).unwrap();
     let r = WaxReader::open(&fx.wax).unwrap();
-    let paths: Vec<&str> = r.paths().collect();
+    let paths: Vec<String> = r.paths().map(|p| p.unwrap()).collect();
     for p in [
         "index.html",
         "Photosynthesis.html",
@@ -55,7 +55,7 @@ fn articles_flatten_to_root_and_assets_go_under_assets_prefix() {
         "_meta/Title",
         "_meta/Illustration_48x48@1",
     ] {
-        assert!(paths.contains(&p), "missing {p}; have {paths:?}");
+        assert!(paths.iter().any(|x| x == p), "missing {p}; have {paths:?}");
     }
     // nothing keeps a namespace prefix
     assert!(!paths.iter().any(|p| p.starts_with("C/") || p.starts_with("M/")), "{paths:?}");
@@ -66,7 +66,7 @@ fn hrefs_are_rewritten_to_root_relative_canonical_paths() {
     let fx = fixture(&wiki());
     let rep = convert(&fx.zim, &fx.wax, &opts()).unwrap();
     assert!(rep.stats.hrefs_rewritten >= 6, "{:?}", rep.stats);
-    let mut r = WaxReader::open(&fx.wax).unwrap();
+    let r = WaxReader::open(&fx.wax).unwrap();
     let index = String::from_utf8(r.read("index.html").unwrap()).unwrap();
     assert!(index.contains(r#"href="/Photosynthesis.html""#), "{index}");
     assert!(index.contains(r#"href="/Plant_cell.html#Wall""#), "fragment preserved: {index}");
@@ -94,11 +94,11 @@ fn legacy_namespace_scheme_maps_the_same_way() {
         .main_page(A, "Main_Page");
     let fx = fixture(&b);
     let rep = convert(&fx.zim, &fx.wax, &opts()).unwrap();
-    let mut r = WaxReader::open(&fx.wax).unwrap();
+    let r = WaxReader::open(&fx.wax).unwrap();
     let main = String::from_utf8(r.read("Main_Page.html").unwrap()).unwrap();
     assert_eq!(main, r#"<a href="/Other.html"><img src="/_assets/pic.jpg"><link href="/_assets/s.css">"#);
-    assert!(r.entry("_assets/pic.jpg").is_some());
-    assert!(r.entry("_assets/s.css").is_some());
+    assert!(r.contains("_assets/pic.jpg").unwrap());
+    assert!(r.contains("_assets/s.css").unwrap());
     // -/favicon redirect → _assets/favicon → _assets/favicon.png
     assert_eq!(r.entry("_assets/favicon").unwrap().redirect_to.as_deref(), Some("_assets/favicon.png"));
     // no Illustration_* in a legacy ZIM: the favicon is the icon (not a placeholder)
@@ -116,7 +116,7 @@ fn case_is_preserved_and_case_variants_stay_distinct() {
         .main_page(C, "index");
     let fx = fixture(&b);
     convert(&fx.zim, &fx.wax, &opts()).unwrap();
-    let mut r = WaxReader::open(&fx.wax).unwrap();
+    let r = WaxReader::open(&fx.wax).unwrap();
     assert_eq!(r.read("MacOS.html").unwrap(), b"<p>os</p>");
     assert_eq!(r.read("Macos.html").unwrap(), b"<p>other</p>");
 }
@@ -131,7 +131,7 @@ fn an_article_inside_a_reserved_prefix_is_dropped_with_a_warning() {
     let fx = fixture(&b);
     convert(&fx.zim, &fx.wax, &opts()).unwrap();
     let r = WaxReader::open(&fx.wax).unwrap();
-    assert!(r.entry("_assets/shadow.html").is_none());
+    assert!(!r.contains("_assets/shadow.html").unwrap());
     assert_eq!(warning_count(&report_json(&fx.wax), "reserved_prefix_collision"), 1);
 }
 
@@ -165,7 +165,7 @@ fn redirect_chains_are_flattened_to_one_hop() {
     let fx = fixture(&b);
     let rep = convert(&fx.zim, &fx.wax, &opts()).unwrap();
     assert_eq!(rep.stats.redirects_emitted, 3);
-    let mut r = WaxReader::open(&fx.wax).unwrap();
+    let r = WaxReader::open(&fx.wax).unwrap();
     for alias in ["Hop1.html", "Hop2.html", "Hop3.html"] {
         assert_eq!(
             r.entry(alias).unwrap().redirect_to.as_deref(),
@@ -190,7 +190,7 @@ fn redirect_cycles_are_dropped_and_counted() {
     let rep = convert(&fx.zim, &fx.wax, &opts()).unwrap();
     assert_eq!(rep.stats.redirects_emitted, 0);
     let r = WaxReader::open(&fx.wax).unwrap();
-    assert!(r.entry("Loop_A.html").is_none() && r.entry("Loop_B.html").is_none() && r.entry("Self.html").is_none());
+    assert!(!r.contains("Loop_A.html").unwrap() && !r.contains("Loop_B.html").unwrap() && !r.contains("Self.html").unwrap());
     let v = report_json(&fx.wax);
     assert_eq!(warning_count(&v, "redirect_cycle"), 3);
     assert_eq!(v["redirect_count"], 0);
@@ -240,7 +240,7 @@ fn icon_is_the_illustration_bytes() {
     let fx = fixture(&wiki());
     let rep = convert(&fx.zim, &fx.wax, &opts()).unwrap();
     assert_eq!(rep.derived.icon_source.as_deref(), Some("M/Illustration_48x48@1"));
-    let mut r = WaxReader::open(&fx.wax).unwrap();
+    let r = WaxReader::open(&fx.wax).unwrap();
     assert_eq!(r.read(ICON_PATH).unwrap(), b"\x89PNG-icon");
     assert_eq!(warning_count(&report_json(&fx.wax), "icon_generated"), 0);
 }
@@ -251,7 +251,7 @@ fn icon_falls_back_to_a_generated_placeholder_never_omitted() {
     let fx = fixture(&b);
     let rep = convert(&fx.zim, &fx.wax, &opts()).unwrap();
     assert_eq!(rep.derived.icon_source, None);
-    let mut r = WaxReader::open(&fx.wax).unwrap();
+    let r = WaxReader::open(&fx.wax).unwrap();
     assert_eq!(r.manifest().get("icon").map(String::as_str), Some("_assets/icon.png"));
     let png = r.read(ICON_PATH).unwrap();
     assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "placeholder is a PNG");
@@ -507,10 +507,10 @@ fn audio_and_video_are_skipped_counted_and_references_left_intact() {
         .main_page(C, "index");
     let fx = fixture(&b);
     convert(&fx.zim, &fx.wax, &opts()).unwrap();
-    let mut r = WaxReader::open(&fx.wax).unwrap();
-    assert!(r.entry("_assets/_assets_/say.ogg").is_none());
-    assert!(r.entry("_assets/_assets_/clip.webm").is_none());
-    assert!(r.entry("_assets/_assets_/ok.png").is_some());
+    let r = WaxReader::open(&fx.wax).unwrap();
+    assert!(!r.contains("_assets/_assets_/say.ogg").unwrap());
+    assert!(!r.contains("_assets/_assets_/clip.webm").unwrap());
+    assert!(r.contains("_assets/_assets_/ok.png").unwrap());
     let html = String::from_utf8(r.read("index.html").unwrap()).unwrap();
     assert!(html.contains(r#"<audio src="./_assets_/say.ogg">"#), "reference left intact: {html}");
     assert!(html.contains(r#"<video src="./_assets_/clip.webm">"#), "{html}");
@@ -538,7 +538,7 @@ fn a_canonical_path_collision_is_reported_as_invalid_path() {
     let fx = fixture(&b);
     let rep = convert(&fx.zim, &fx.wax, &opts()).unwrap();
     assert_eq!(rep.stats.path_collisions, 1);
-    let mut r = WaxReader::open(&fx.wax).unwrap();
+    let r = WaxReader::open(&fx.wax).unwrap();
     assert_eq!(r.read("Foo.html").unwrap(), b"<p>first</p>", "url-order first wins");
     let v = report_json(&fx.wax);
     assert_eq!(warning_count(&v, "invalid_path"), 1);
@@ -615,14 +615,14 @@ fn committed_fixture_new_namespace_scheme_converts() {
     let rep = convert(&committed("small-ns6.1.zim"), &wax, &o).unwrap();
     assert_eq!(rep.stats.dirents, 16);
     assert_eq!(rep.derived.icon_source.as_deref(), Some("M/Illustration_48x48@1"));
-    let mut r = WaxReader::open(&wax).unwrap();
+    let r = WaxReader::open(&wax).unwrap();
     assert_eq!(r.manifest().get("name").map(String::as_str), Some("Test ZIM file"));
     assert_eq!(r.manifest().get("version").map(String::as_str), Some("2021.06.2"));
     assert_eq!(r.manifest().get("languages").map(String::as_str), Some("en"));
     assert_eq!(r.manifest().get("entry_point").map(String::as_str), Some("main.html"));
     assert!(r.read("main.html").unwrap().starts_with(b"<"));
-    assert!(r.entry("_assets/favicon.png").is_some());
-    assert!(!r.paths().any(|p| p.contains("xapian") || p.contains("listing/")), "indexes not copied");
+    assert!(r.contains("_assets/favicon.png").unwrap());
+    assert!(!r.paths().any(|p| { let p = p.unwrap(); p.contains("xapian") || p.contains("listing/") }), "indexes not copied");
     // X/ and W/ are by-design non-emission: counted in stats, never a warning
     assert_eq!(rep.stats.search_index_entries, 3);
     assert_eq!(rep.stats.wellknown_entries, 1);
@@ -669,12 +669,12 @@ fn real_wikipedia_zim() {
     let v = report_json(&wax);
     assert!(warning_count(&v, "unsupported_mimetype") > 0, "Wikipedia carries audio/video");
     assert_eq!(warning_count(&v, "redirect_cycle"), 0);
-    let mut r = WaxReader::open(&wax).unwrap();
+    let r = WaxReader::open(&wax).unwrap();
     let ep = r.manifest().get("entry_point").cloned().unwrap();
     let html = String::from_utf8(r.read(&ep).unwrap()).unwrap();
     assert!(html.contains(r#"href="/"#), "hrefs rewritten root-relative");
     // every entry reads back (sha256 verified by the reader)
-    let paths: Vec<String> = r.paths().map(String::from).collect();
+    let paths: Vec<String> = r.paths().map(|p| p.unwrap()).collect();
     for p in paths.iter().step_by(97) {
         r.read(p).unwrap();
     }

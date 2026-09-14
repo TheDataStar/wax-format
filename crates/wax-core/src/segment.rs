@@ -1,18 +1,26 @@
 //! One embedded SQLite index segment (SPEC §4).
 //!
-//! A segment's bytes are a raw SQLite database. This module copies a byte range
-//! to a temp file, opens it read-only, and reads `segment_meta` + `entries`.
-//! Every SQLite / schema problem becomes a [`WaxError`]; nothing panics
+//! A segment's bytes are a raw SQLite database sitting at an offset inside the
+//! archive. This module opens that byte range in place through the [`crate::vfs`]
+//! window — nothing is copied — and answers queries against `entries`,
+//! `segment_meta` and `manifest` one row (or one page of rows) at a time, so
+//! a segment costs its SQLite page cache and nothing proportional to its row
+//! count. Every SQLite / schema problem becomes a [`WaxError`]; nothing panics
 //! (A4 fuzz target 2, SPEC §11.3).
 
 use crate::model::Entry;
 use crate::{Result, WaxError};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
-use std::io::Write;
-use tempfile::NamedTempFile;
+use std::path::Path;
 
 /// The constant stored at `segment_meta.format` (SPEC §4.2).
 pub const SEGMENT_FORMAT_TAG: &str = "wax-index-segment";
+
+/// Per-segment SQLite page cache, in KiB. The one place a segment's memory
+/// lives: a 1 MiB cache holds the whole interior of a Wikipedia-scale
+/// `entries` B-tree plus the leaves recently touched, and at the SPEC §5.1
+/// cap of 64 segments the worst case is 64 MiB.
+pub const PAGE_CACHE_KIB: u32 = 1024;
 
 /// Parsed `segment_meta` (SPEC §4.2).
 #[derive(Debug, Clone)]
@@ -25,37 +33,50 @@ pub struct SegmentMeta {
     pub prev_segment: Option<(u64, u64)>,
 }
 
-/// An opened index segment. Holds its temp file alive for the connection's life.
+/// An opened index segment: a read-only connection onto a window of the
+/// archive file.
 pub struct Segment {
-    /// Absolute file offset this segment's database starts at (for diagnostics).
+    /// Absolute file offset this segment's database starts at.
     pub disk_offset: u64,
     /// Length in bytes of this segment's SQLite database on disk.
     pub db_len: u64,
     pub meta: SegmentMeta,
     conn: Connection,
-    has_redirect_to: bool,
-    has_title: bool,
-    _tmp: NamedTempFile,
+    /// The `SELECT` column list, with absent optional columns substituted
+    /// (SPEC §5.2 column tolerance).
+    columns: String,
+    has_volume: bool,
 }
 
 impl Segment {
-    /// Open a segment from `bytes` (already sliced out of the archive).
-    /// `disk_offset` is only used in error messages.
-    pub fn open(disk_offset: u64, bytes: &[u8]) -> Result<Self> {
-        let mut tmp = NamedTempFile::new()?;
-        tmp.write_all(bytes)?;
-        tmp.flush()?;
-
+    /// Open the database occupying `[disk_offset, disk_offset + db_len)` of
+    /// `archive`. The caller has already bounds-checked the range against the
+    /// header and file size (SPEC §2.2, §5.1).
+    pub fn open_at(archive: &Path, disk_offset: u64, db_len: u64) -> Result<Self> {
+        if !crate::vfs::ensure_registered() {
+            return Err(WaxError::Sqlite(rusqlite::Error::InvalidQuery));
+        }
+        let uri = crate::vfs::segment_uri(archive, disk_offset, db_len).ok_or_else(|| {
+            WaxError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "archive path is not valid UTF-8",
+            ))
+        })?;
         let conn = Connection::open_with_flags(
-            tmp.path(),
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            &uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|e| WaxError::NotAnIndexSegment {
             offset: disk_offset,
-            reason: format!("not a SQLite database: {e}"),
+            reason: format!("cannot open as SQLite: {e}"),
         })?;
+        conn.execute_batch(&format!("PRAGMA cache_size=-{PAGE_CACHE_KIB}; PRAGMA query_only=1;"))
+            .map_err(|e| WaxError::NotAnIndexSegment {
+                offset: disk_offset,
+                reason: format!("not a SQLite database: {e}"),
+            })?;
 
-        // Touching the schema forces SQLite to actually parse the header/pages;
+        // Touching the schema forces SQLite to actually read the header/pages;
         // a truncated or corrupt db fails here rather than later.
         let table_present = |name: &str| -> Result<bool> {
             Ok(conn
@@ -95,15 +116,22 @@ impl Segment {
                 });
             }
         }
+        let has = |name: &str| cols.iter().any(|c| c == name);
+        let columns = format!(
+            "path, {title} AS title, offset, length, uncompressed_length, mime, compression, \
+             sha256, {vol} AS volume_id, {redir} AS redirect_to",
+            title = if has("title") { "title" } else { "NULL" },
+            vol = if has("volume_id") { "COALESCE(volume_id, 0)" } else { "0" },
+            redir = if has("redirect_to") { "redirect_to" } else { "NULL" },
+        );
 
         Ok(Segment {
             disk_offset,
-            db_len: bytes.len() as u64,
+            db_len,
             meta,
-            has_redirect_to: cols.iter().any(|c| c == "redirect_to"),
-            has_title: cols.iter().any(|c| c == "title"),
             conn,
-            _tmp: tmp,
+            columns,
+            has_volume: has("volume_id"),
         })
     }
 
@@ -183,48 +211,99 @@ impl Segment {
         })
     }
 
-    /// All `entries` rows in this segment, `ORDER BY path` (SPEC §5.5).
-    pub fn entries(&self) -> Result<Vec<Entry>> {
-        let title_col = if self.has_title { "title" } else { "NULL" };
-        let redir_col = if self.has_redirect_to {
-            "redirect_to"
-        } else {
-            "NULL"
-        };
-        // volume_id may be absent in an odd build; COALESCE via a subselect-free
-        // approach: check column presence like the others.
-        let has_volume = Self::entry_columns(&self.conn)?
-            .iter()
-            .any(|c| c == "volume_id");
-        let vol_col = if has_volume { "volume_id" } else { "0" };
+    fn row_to_raw(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawRow> {
+        Ok(RawRow {
+            path: r.get("path")?,
+            title: r.get("title")?,
+            offset: r.get::<_, i64>("offset")?,
+            length: r.get::<_, i64>("length")?,
+            uncompressed_length: r.get::<_, i64>("uncompressed_length")?,
+            mime: r.get("mime")?,
+            compression: r.get("compression")?,
+            sha256: r.get("sha256")?,
+            volume_id: r.get::<_, i64>("volume_id")?,
+            redirect_to: r.get("redirect_to")?,
+        })
+    }
 
+    /// Point lookup of one path in this segment (an index probe; SPEC §5.2
+    /// `path` is the primary key). `COLLATE BINARY` pins byte-order
+    /// comparison even if a crafted segment declared another collation.
+    pub fn lookup(&self, path: &str) -> Result<Option<Entry>> {
         let sql = format!(
-            "SELECT path, {title_col} AS title, offset, length, uncompressed_length, \
-             mime, compression, sha256, {vol_col} AS volume_id, {redir_col} AS redirect_to \
-             FROM entries ORDER BY path ASC"
+            "SELECT {} FROM entries WHERE path = ?1 COLLATE BINARY",
+            self.columns
         );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |r| {
-            let sha: Option<Vec<u8>> = r.get("sha256")?;
-            Ok(RawRow {
-                path: r.get("path")?,
-                title: r.get("title")?,
-                offset: r.get::<_, i64>("offset")?,
-                length: r.get::<_, i64>("length")?,
-                uncompressed_length: r.get::<_, i64>("uncompressed_length")?,
-                mime: r.get("mime")?,
-                compression: r.get("compression")?,
-                sha256: sha,
-                volume_id: r.get::<_, i64>("volume_id")?,
-                redirect_to: r.get("redirect_to")?,
-            })
-        })?;
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        let raw = stmt.query_row([path], Self::row_to_raw).optional()?;
+        raw.map(|r| r.into_entry(self.disk_offset)).transpose()
+    }
 
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?.into_entry(self.disk_offset)?);
+    /// The next `limit` entries in ascending byte order of `path`, strictly
+    /// after `after` (`None` ⇒ from the start). Keyset pagination: each call
+    /// is one index range scan and holds `limit` rows, however many the
+    /// segment has (SPEC §5.5 ordering).
+    pub fn page(&self, after: Option<&str>, limit: usize) -> Result<Vec<Entry>> {
+        let sql = match after {
+            None => format!(
+                "SELECT {} FROM entries ORDER BY path COLLATE BINARY LIMIT ?1",
+                self.columns
+            ),
+            Some(_) => format!(
+                "SELECT {} FROM entries WHERE path COLLATE BINARY > ?2 \
+                 ORDER BY path COLLATE BINARY LIMIT ?1",
+                self.columns
+            ),
+        };
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        let limit = limit as i64;
+        let mut out = Vec::with_capacity(limit as usize);
+        let mut push = |r: rusqlite::Result<RawRow>| -> Result<()> {
+            out.push(r?.into_entry(self.disk_offset)?);
+            Ok(())
+        };
+        match after {
+            None => {
+                let rows = stmt.query_map([limit], Self::row_to_raw)?;
+                for r in rows {
+                    push(r)?;
+                }
+            }
+            Some(a) => {
+                let rows = stmt.query_map(rusqlite::params![limit, a], Self::row_to_raw)?;
+                for r in rows {
+                    push(r)?;
+                }
+            }
         }
         Ok(out)
+    }
+
+    /// Number of rows in `entries`.
+    pub fn count(&self) -> Result<u64> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
+        Ok(u64::try_from(n).unwrap_or(0))
+    }
+
+    /// Some entry whose `volume_id` is not 0, if any. A table scan in storage
+    /// order (deliberately unordered: an `ORDER BY path` would walk the index
+    /// and fetch every row at random) — bounded memory, O(rows) time — so the
+    /// reader can keep rejecting multi-volume rows at open (SPEC §5.2) without
+    /// holding the rows.
+    pub fn first_nonzero_volume(&self) -> Result<Option<(String, i64)>> {
+        if !self.has_volume {
+            return Ok(None); // no column ⇒ every row is volume 0
+        }
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT path, COALESCE(volume_id, 0) FROM entries                  WHERE COALESCE(volume_id, 0) != 0 LIMIT 1",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .optional()?)
     }
 
     /// `manifest` as an opaque string map. Caller decides whether to read it
@@ -251,6 +330,40 @@ impl Segment {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    /// `EXPLAIN QUERY PLAN` for the point lookup — test hook that pins "this
+    /// is an index probe, not a scan".
+    #[doc(hidden)]
+    pub fn lookup_plan(&self) -> Result<String> {
+        let sql = format!(
+            "EXPLAIN QUERY PLAN SELECT {} FROM entries WHERE path = ?1 COLLATE BINARY",
+            self.columns
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(["x"], |r| r.get::<_, String>(3))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out.join("\n"))
+    }
+
+    /// `EXPLAIN QUERY PLAN` for a continuation page — same purpose.
+    #[doc(hidden)]
+    pub fn page_plan(&self) -> Result<String> {
+        let sql = format!(
+            "EXPLAIN QUERY PLAN SELECT {} FROM entries WHERE path COLLATE BINARY > ?2 \
+             ORDER BY path COLLATE BINARY LIMIT ?1",
+            self.columns
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params![10i64, "x"], |r| r.get::<_, String>(3))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out.join("\n"))
     }
 }
 

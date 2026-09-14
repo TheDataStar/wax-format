@@ -13,7 +13,7 @@ so the property is checked on every CI run even where libFuzzer is unavailable.
 | Target (`cargo fuzz run …`) | Function | Exercises |
 |---|---|---|
 | `header-parse`   | `check_header_parse`  | `WaxHeader::parse` + `validate` against adversarial file-size hypotheses (SPEC §2) |
-| `index-loader`   | `check_index_loader`  | opening arbitrary bytes as a SQLite index segment, reading `entries` / `segment_meta` / `manifest` (SPEC §4) |
+| `index-loader`   | `check_index_loader`  | opening arbitrary bytes *in place* as a SQLite index segment through the windowing VFS (the reader's own path), reading `segment_meta`, paging `entries`, a point lookup, `manifest` (SPEC §4, §12.23) |
 | `segment-merge`  | `check_segment_merge` | segment-chain merge (last-segment-wins) + one-hop redirect resolution over a compact synthetic model (SPEC §5.3, §5.5) |
 
 ## Running

@@ -123,9 +123,9 @@ fn aliases_are_flattened_to_exactly_one_hop() {
     let archive = out(&dst, "p.wax");
     build_pack(src.path(), &archive, &cfg, &pinned()).unwrap();
 
-    let mut r = WaxReader::open(&archive).unwrap();
+    let r = WaxReader::open(&archive).unwrap();
     for alias in ["a.html", "b.html", "c.html"] {
-        let e = r.entry(alias).unwrap_or_else(|| panic!("{alias} missing"));
+        let e = r.entry(alias).unwrap_or_else(|_| panic!("{alias} missing"));
         assert_eq!(
             e.redirect_to.as_deref(),
             Some("articles/canonical.html"),
@@ -139,7 +139,7 @@ fn aliases_are_flattened_to_exactly_one_hop() {
     // No entry on disk redirects to another redirect.
     let redirect_targets: Vec<String> = r
         .entries()
-        .filter_map(|e| e.redirect_to.clone())
+        .filter_map(|e| e.unwrap().redirect_to)
         .collect();
     for t in redirect_targets {
         let target = r.entry(&t).expect("redirect target exists");
@@ -303,7 +303,7 @@ fn append_preserves_uuid_and_leaves_prior_bytes_untouched() {
     assert_eq!(r.segment_count(), 2);
     assert_eq!(r.header().archive_uuid, uuid_before);
 
-    let mut r = WaxReader::open(&archive).unwrap();
+    let r = WaxReader::open(&archive).unwrap();
     assert_eq!(r.read("a.txt").unwrap(), b"a-base", "base entry still readable");
     assert_eq!(r.read("shared.txt").unwrap(), b"v2", "append overrides base");
     assert_eq!(r.read("b.txt").unwrap(), b"b-append");
@@ -370,7 +370,7 @@ fn the_pack_config_is_not_archived_as_an_entry() {
     build_pack(src.path(), &archive, &cfg, &pinned()).unwrap();
 
     let r = WaxReader::open(&archive).unwrap();
-    assert!(r.entry("wax-pack.toml").is_none(), "config leaked into the archive");
+    assert!(!r.contains("wax-pack.toml").unwrap(), "config leaked into the archive");
     // ...but the config was read: its title landed on the entry
     assert_eq!(r.entry("a.txt").unwrap().title.as_deref(), Some("The A File"));
 }
@@ -418,7 +418,7 @@ fn every_entry_has_volume_id_zero() {
     let archive = out(&dst, "p.wax");
     build_pack(src.path(), &archive, &PackConfig::default(), &pinned()).unwrap();
     let r = WaxReader::open(&archive).unwrap();
-    assert!(r.entries().all(|e| e.volume_id == 0));
+    assert!(r.entries().all(|e| e.unwrap().volume_id == 0));
 }
 
 #[test]

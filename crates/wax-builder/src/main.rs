@@ -219,7 +219,7 @@ fn cmd_inspect(archive: PathBuf, list_entries: bool) -> Result<()> {
     println!("blob_section   : {}", h.blob_section_length);
     println!("search_index   : offset={} length={}", h.search_index_offset, h.search_index_length);
     println!("segments       : {}", reader.segment_count());
-    println!("entries        : {}", reader.entries().count());
+    println!("entries        : {}", reader.entry_count()?);
     println!("file_size      : {}", reader.file_size());
 
     let sidecar = sign::sidecar_path(&archive);
@@ -263,6 +263,7 @@ fn cmd_inspect(archive: PathBuf, list_entries: bool) -> Result<()> {
             "PATH", "SIZE", "STORED", "MIME", "CODEC"
         );
         for e in reader.entries() {
+            let e = e?;
             println!(
                 "{:<52} {:>10} {:>10}  {:<22} {:<6} {}",
                 e.path,
@@ -323,7 +324,7 @@ fn cmd_verify(
 
 fn cmd_read(archive: PathBuf, file: String) -> Result<()> {
     use std::io::Write;
-    let mut reader = WaxReader::open(&archive)?;
+    let reader = WaxReader::open(&archive)?;
     let data = reader.read(&file)?;
     std::io::stdout().write_all(&data)?;
     Ok(())

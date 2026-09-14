@@ -23,14 +23,14 @@ fn roundtrip_mixed_content_exact_bytes() {
         .collect();
 
     let f = valid(entries);
-    let mut r = WaxReader::open(&f.path).unwrap();
+    let r = WaxReader::open(&f.path).unwrap();
 
     for (path, expected, _) in &cases {
         let got = r.read(path).unwrap();
         assert_eq!(&got, expected, "content mismatch for {path}");
     }
 
-    let listed: Vec<String> = r.paths().map(|s| s.to_string()).collect();
+    let listed: Vec<String> = r.paths().map(|p| p.unwrap()).collect();
     assert_eq!(listed.len(), cases.len());
 }
 
@@ -42,7 +42,7 @@ fn roundtrip_redirect_chains_resolve() {
         EntryInput::redirect("hop2", "hop1"), // flattened to -> target.html
         EntryInput::redirect("hop3", "hop2"), // flattened to -> target.html
     ]);
-    let mut r = WaxReader::open(&f.path).unwrap();
+    let r = WaxReader::open(&f.path).unwrap();
     for alias in ["hop1", "hop2", "hop3"] {
         assert_eq!(r.resolve(alias).unwrap().entry.path, "target.html", "{alias}");
         assert_eq!(r.read(alias).unwrap(), b"TARGET", "{alias}");
@@ -76,7 +76,7 @@ fn roundtrip_append_preserves_earlier_bytes() {
             vec![EntryInput::data("added-2.txt", b"second append".to_vec(), Compression::Zstd)],
         ],
     );
-    let mut r = WaxReader::open(&f.path).unwrap();
+    let r = WaxReader::open(&f.path).unwrap();
     assert_eq!(r.segment_count(), 3);
     assert_eq!(r.read("keep.txt").unwrap(), b"KEEP ME EXACTLY");
     assert_eq!(r.read("also.txt").unwrap(), b"also kept");
@@ -90,9 +90,9 @@ fn signable_digest_is_stable_and_changes_on_append() {
         vec![EntryInput::data("a", b"a".to_vec(), Compression::None)],
         vec![],
     );
-    let mut r1 = WaxReader::open(&f.path).unwrap();
+    let r1 = WaxReader::open(&f.path).unwrap();
     let d1 = r1.signable_digest().unwrap();
-    let mut r2 = WaxReader::open(&f.path).unwrap();
+    let r2 = WaxReader::open(&f.path).unwrap();
     let d2 = r2.signable_digest().unwrap();
     assert_eq!(d1, d2, "digest is deterministic");
 
@@ -101,7 +101,7 @@ fn signable_digest_is_stable_and_changes_on_append() {
         .created_at(1_700_000_100)
         .append(&f.path, vec![EntryInput::data("b", b"b".to_vec(), Compression::None)])
         .unwrap();
-    let mut r3 = WaxReader::open(&f.path).unwrap();
+    let r3 = WaxReader::open(&f.path).unwrap();
     let d3 = r3.signable_digest().unwrap();
     assert_ne!(d1, d3, "digest changes when a segment is appended");
 }
@@ -114,12 +114,12 @@ fn checksum_verification_can_be_disabled() {
     let f2 = write_wax(&bytes);
 
     // default: rejected
-    let mut strict = WaxReader::open(&f2.path).unwrap();
+    let strict = WaxReader::open(&f2.path).unwrap();
     assert!(strict.read("p").is_err());
 
     // opt-out: bytes come back (caller took responsibility)
-    let mut loose =
-        WaxReader::open_with(&f2.path, wax_core::reader::ReadOptions { verify_checksums: false })
+    let loose =
+        WaxReader::open_with(&f2.path, wax_core::reader::ReadOptions { verify_checksums: false, ..Default::default() })
             .unwrap();
     assert_eq!(loose.read("p").unwrap().len(), 4);
 }

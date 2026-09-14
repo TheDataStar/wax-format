@@ -71,7 +71,7 @@ fn entries_stream_from_a_reader_and_read_back_exactly() {
     assert_eq!(b.uncompressed_length, 1000);
     assert!(b.offset > a.offset);
 
-    let mut r = WaxReader::open(&f.path).unwrap();
+    let r = WaxReader::open(&f.path).unwrap();
     assert_eq!(r.read("a.txt").unwrap(), b"hello streaming");
     assert_eq!(r.read("b.bin").unwrap(), vec![7u8; 1000]);
     assert_eq!(r.entry("a.txt").unwrap().mime.as_deref(), Some("text/plain"));
@@ -95,7 +95,7 @@ fn a_blob_larger_than_the_stream_buffer_is_never_materialized() {
     assert!(st.length < len, "zstd should compress the synthetic text");
     w.finish().unwrap();
     // reads back with the checksum verified
-    let mut r = WaxReader::open(&f.path).unwrap();
+    let r = WaxReader::open(&f.path).unwrap();
     let mut expect = Vec::new();
     Synthetic::new(len, 0x9E37_79B9).read_to_end(&mut expect).unwrap();
     assert_eq!(r.read("big").unwrap(), expect);
@@ -149,7 +149,7 @@ fn redirect_chains_are_flattened_in_sql_at_finish() {
     w.add_redirect("a", "real", None).unwrap();
     let st = w.finish().unwrap();
     assert_eq!(st.redirects, 4);
-    let mut r = WaxReader::open(&f.path).unwrap();
+    let r = WaxReader::open(&f.path).unwrap();
     for alias in ["a", "b", "c", "d"] {
         assert_eq!(r.entry(alias).unwrap().redirect_to.as_deref(), Some("real"), "{alias}");
         assert_eq!(r.read(alias).unwrap(), b"R");
@@ -238,7 +238,7 @@ fn streaming_append_follows_the_commit_protocol() {
     assert_eq!(&before[128..], &after[128..before.len()], "prior bytes untouched");
     assert_ne!(&before[..128], &after[..128], "header rewritten");
 
-    let mut r = WaxReader::open(&f.path).unwrap();
+    let r = WaxReader::open(&f.path).unwrap();
     assert_eq!(r.segment_count(), 2);
     assert_eq!(r.read("base").unwrap(), b"B");
     assert_eq!(r.read("added").unwrap(), b"A");
@@ -254,7 +254,7 @@ fn signable_digest_of_matches_the_reader_without_loading_entries() {
     }
     w.finish().unwrap();
     let (lazy, uuid, created) = wax_core::reader::signable_digest_of(&f.path).unwrap();
-    let mut r = WaxReader::open(&f.path).unwrap();
+    let r = WaxReader::open(&f.path).unwrap();
     assert_eq!(lazy, r.signable_digest().unwrap());
     assert_eq!(uuid, TEST_UUID);
     assert_eq!(created, 1_700_000_000);

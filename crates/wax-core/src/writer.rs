@@ -32,7 +32,7 @@ use crate::segment::SEGMENT_FORMAT_TAG;
 use crate::{Result, WaxError, FORMAT_VERSION_MAJOR, FORMAT_VERSION_MINOR, HEADER_LEN};
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -122,21 +122,17 @@ impl WaxWriter {
     /// rewritten in place as the final step of `finish`.
     ///
     /// Redirects added to this segment may target entries carried by earlier
-    /// segments; those paths are read from the archive up front.
+    /// segments; those are checked by point lookup through a reader held open
+    /// on the archive until the new segment is flattened, so append costs
+    /// nothing proportional to the entries already there.
     pub fn open_append(&self, archive: impl AsRef<Path>) -> Result<StreamingWriter> {
-        // Paths already in the archive count as valid redirect targets. This
-        // reads the merged index through the reader, which is O(existing
-        // entries) in memory — acceptable for append today (no converter uses
-        // it); a streaming variant would ATTACH the prior segments instead.
-        let existing: BTreeSet<String> = {
-            let reader = crate::reader::WaxReader::open_with(
-                archive.as_ref(),
-                crate::reader::ReadOptions {
-                    verify_checksums: false,
-                },
-            )?;
-            reader.paths().map(|s| s.to_string()).collect()
-        };
+        let existing = crate::reader::WaxReader::open_with(
+            archive.as_ref(),
+            crate::reader::ReadOptions {
+                verify_checksums: false,
+                lookup_cache_entries: 0,
+            },
+        )?;
 
         let mut file = OpenOptions::new()
             .read(true)
@@ -267,8 +263,9 @@ pub struct StreamingWriter {
     segment_index: u64,
     prev_segment: Option<(u64, u64)>,
     created_at: u64,
-    /// Paths in earlier segments (append only): valid redirect targets.
-    external_paths: Option<BTreeSet<String>>,
+    /// The archive as it stands (append only): earlier segments' paths are
+    /// valid redirect targets, resolved by point lookup.
+    external_paths: Option<crate::reader::WaxReader>,
     entries: u64,
     redirects: u64,
 }
@@ -400,10 +397,10 @@ impl StreamingWriter {
         if self.has_path(path)? {
             return Ok(true);
         }
-        Ok(self
-            .external_paths
-            .as_ref()
-            .is_some_and(|s| s.contains(normalize_path(path).unwrap_or_default().as_str())))
+        match &self.external_paths {
+            Some(r) => r.contains(&normalize_path(path).unwrap_or_default()),
+            None => Ok(false),
+        }
     }
 
     pub fn entries_added(&self) -> u64 {
@@ -421,6 +418,9 @@ impl StreamingWriter {
         // Redirect flattening + validation (SPEC §6.2), entirely in SQL.
         self.index
             .flatten_redirects(self.external_paths.as_ref())?;
+        // The reader on the prior segments is no longer needed; drop it
+        // before the file is extended and the header rewritten.
+        self.external_paths = None;
 
         // segment_meta (SPEC §4.2)
         let mut meta: Vec<(String, String)> = vec![
@@ -515,6 +515,9 @@ struct IndexBuilder {
     conn: Option<Connection>,
 }
 
+/// SPEC §5.2. `entries` is `WITHOUT ROWID` so the `path` primary key is the
+/// table itself: one B-tree descent per lookup, sequential pages per ordered
+/// walk (SPEC §12.23 has the numbers). Readers accept the older rowid layout.
 const SCHEMA: &str = "PRAGMA page_size=4096;
      PRAGMA journal_mode=OFF;
      PRAGMA synchronous=OFF;
@@ -529,7 +532,7 @@ const SCHEMA: &str = "PRAGMA page_size=4096;
         sha256 BLOB,
         volume_id INTEGER DEFAULT 0,
         redirect_to TEXT DEFAULT NULL
-     );
+     ) WITHOUT ROWID;
      CREATE TABLE segment_meta (key TEXT PRIMARY KEY, value TEXT);
      CREATE TABLE signatures (
         signer TEXT, algo TEXT, signature BLOB, signed_at INTEGER
@@ -603,9 +606,10 @@ impl IndexBuilder {
     /// `redirect_to` wherever the target is itself a redirect, so chain length
     /// halves per round. Anything still unresolved after [`FLATTEN_ROUNDS`]
     /// is a cycle. Then a terminus that is neither in this segment nor in
-    /// `external` is dangling. Both are the same errors the in-memory path
-    /// produced, so callers see no difference.
-    fn flatten_redirects(&self, external: Option<&BTreeSet<String>>) -> Result<()> {
+    /// `external` (the archive being appended to) is dangling; an external
+    /// terminus that is itself a redirect is replaced by its own target, so
+    /// the one-hop rule (SPEC §5.3) holds across segments too.
+    fn flatten_redirects(&self, external: Option<&crate::reader::WaxReader>) -> Result<()> {
         let conn = self.conn();
         conn.execute_batch("COMMIT; BEGIN;")?;
         // A temporary index on redirect_to keeps each round to an index probe
@@ -642,8 +646,8 @@ impl IndexBuilder {
             return Err(WaxError::RedirectChainTooDeep { from, via });
         }
 
-        // Dangling: terminus not in this segment. Check external paths for the
-        // survivors (append case).
+        // Dangling: terminus not in this segment. Check the archive being
+        // appended to for the survivors.
         let mut stmt = conn.prepare(
             "SELECT r.path, r.redirect_to FROM entries r
              WHERE r.redirect_to IS NOT NULL
@@ -651,13 +655,28 @@ impl IndexBuilder {
              ORDER BY r.path",
         )?;
         let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        let mut rehome: Vec<(String, String)> = Vec::new();
         for row in rows {
             let (from, to) = row?;
-            if !external.is_some_and(|s| s.contains(&to)) {
+            let Some(ext) = external else {
                 return Err(WaxError::DanglingRedirect { from, to });
+            };
+            match ext.entry(&to) {
+                Ok(e) => {
+                    if let Some(t) = e.redirect_to {
+                        rehome.push((from, t));
+                    }
+                }
+                Err(WaxError::EntryNotFound(_)) => {
+                    return Err(WaxError::DanglingRedirect { from, to });
+                }
+                Err(e) => return Err(e),
             }
         }
         drop(stmt);
+        for (from, to) in rehome {
+            conn.execute("UPDATE entries SET redirect_to = ?2 WHERE path = ?1", [from, to])?;
+        }
         conn.execute_batch("DROP INDEX tmp_redirect_idx")?;
         Ok(())
     }
