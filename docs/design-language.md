@@ -6,17 +6,22 @@ Visual & UX Design Language
 
 ## 1. Purpose & Scope
 
-The eight tracks (A-H) settle what DeltOS is made of and how the pieces fit together; none of them specify what it actually looks and feels like to touch. This document is that missing layer — a single, shared visual and interaction language every screen in the system draws from, whether it's a student picking a profile on a Pi Zero 2W or an administrator scanning forty devices' health in a Community Hub console. It doesn't introduce new components or daemons — every pattern here is implemented by a track already named in Tracks C, F, and G; this document says what those implementations should look like and why, and cross-references the owning track/section for each.
+The eight tracks (A–H) settle what DeltOS is made of and how the pieces fit together; none of them specify what it actually looks and feels like to touch. This document is that missing layer — a single, shared visual and interaction language every screen in the system draws from, whether it's a student picking a profile at the minimum spec or an administrator scanning forty devices' health in a Community Hub console. It doesn't introduce new components or daemons — every pattern here is implemented by a track already named in Tracks C, F and G; this document says what those implementations should look like and why, and cross-references the owning track/section for each.
 
-Two constraints shape every decision below more than aesthetic preference does. First, hardware range: the same visual language has to render acceptably on a 512MB Pi Zero 2W running Chromium kiosk mode (Track E §5's pi_zero_2w tier) and on a Community Hub mini-PC driving a multi-pane admin console — which rules out anything that depends on GPU-accelerated blur, heavy drop shadows, or animation-heavy transitions as a baseline requirement, not a later optimization. Second, offline-first: no font, icon, or asset in this language may load from a CDN or the open internet at runtime (matching the project's own no-internet-dependency posture, Track E §21) — everything ships in the image/pack.
+**DeltOS is one WebOS with one light visual language, admin through learner.** There is no dark theme and no separate admin look. High contrast is an accessibility setting, not a second theme.
+
+Two constraints shape every decision below more than aesthetic preference does. First, **the rendering client, not the box**: visitors' own phones and laptops render these pages, so what a design can afford is decided per client, at the client — and the floor a box itself must drive is the minimum spec of the cross-track contract §2.1, not a retired 512 MB board. Second, **offline-first**: no font, icon or asset in this language may load from a CDN or the open internet at runtime (matching the project's no-internet-dependency posture, Track E §21) — everything ships in the image or the pack.
 
 ## 2. Design Principles
 
-- **Flat over layered:** Solid color and sharp, deliberate edges instead of gradients, frosted-glass panels, or heavy drop shadows. This is a performance decision as much as a style one — flat rendering is cheap on the lowest hardware tier, and a design language that looks identical whether or not the GPU can afford translucency effects is one that doesn't quietly degrade in the field.
-- **One accent, used sparingly:** A single accent color carries every "this is active/important/actionable" signal — an underline, a filled tile, a status dot — against an otherwise neutral, warm-toned palette (§4). Restraint here is what makes the accent mean something; a screen with five competing colors has no visual hierarchy left to signal with a sixth.
-- **Single-focus for the person being taught; multi-pane for the person administering:** A kiosk launcher (C1) and an admin console (F1) are not the same kind of interface and shouldn't share a layout metaphor just because they share a color palette. The student/teacher-facing shell is single-app, full-screen, no overlapping windows — Track C's own settled model, and closer to Sugar's activity-first, one-thing-at-a-time posture (§3) than to a desktop metaphor. The admin/monitoring surfaces (F1, F6, G7) are where a genuine multi-pane, dashboard-style layout earns its place, because an administrator actually is coordinating several things at once.
-- **Calm institutional tone, not playful chrome:** Warm neutrals, clean geometric type, minimal ornamentation — a tone that reads as a trustworthy, considered piece of infrastructure for a school or library, not a consumer app chasing engagement. This also happens to be the cheapest tone to render well at every hardware tier, which is a rare case of taste and budget pointing the same direction.
-- **Every screen traceable to one owning track:** Nothing in this document exists free-floating — §17's ownership map is the enforcement mechanism. If a new screen doesn't fit any track's existing scope, that's a signal to raise the gap with the owning track (or flag it as unowned, per the master plan's own precedent for the download-time website configurator) rather than let this document quietly expand scope no track agreed to build.
+- **Layered by default, flat as the fallback.** The default look is frosted, translucent panels layered over a soft ambient ground. It falls back to flat — **the same layout**, solid surfaces, no blur — and the two must be indistinguishable in structure, differing only in surface treatment.
+  - **The box never decides this. The rendering client does.** The phone or laptop drawing the page picks the fallback when it cannot render blur or translucency acceptably, and it **honours that client's own `prefers-reduced-transparency` and `prefers-reduced-motion` settings**. A viewer who has asked their device for less motion or less transparency gets that answer from their own device, not from a server guessing on their behalf.
+  - This inverts an earlier principle in this document, "flat over layered", which justified flatness as a rendering-cost decision at the lowest hardware tier. That tier is retired, and the cost was never the box's to pay in the first place — the client renders.
+- **One accent, used sparingly:** A single accent hue carries every "this is active/important/actionable" signal — an underline, a filled tile, a status dot — against an otherwise neutral, warm-toned palette (§4). Restraint is what makes the accent mean something; a screen with five competing colours has no hierarchy left to signal with a sixth.
+- **The high-tech feel comes from the data, not from the chrome.** Live graphs, flow lines and dense data drawn in the light palette are what make this read as real infrastructure. The interface around them stays simple and intuitive; the sophistication belongs to what is being shown.
+- **Single-focus for the person being taught; multi-pane for the person administering:** A kiosk launcher (C1) and an admin console (F1) are not the same kind of interface and shouldn't share a layout metaphor. The student/teacher-facing shell is single-app, full-screen, no overlapping windows — Track C's settled model, closer to Sugar's activity-first posture (§3) than to a desktop metaphor. The admin and monitoring surfaces (F1, F6, G7) are where a genuine multi-pane dashboard layout earns its place, because an administrator really is coordinating several things at once. **They differ in layout, never in palette or theme.**
+- **Calm institutional tone, not playful chrome:** Warm neutrals, clean geometric type, minimal ornamentation — a tone that reads as trustworthy, considered infrastructure for a school or library, not a consumer app chasing engagement.
+- **Every screen traceable to one owning track:** Nothing here exists free-floating — §17's ownership map is the enforcement mechanism. A new screen fitting no track's scope is a gap to raise with the owning track, not licence for this document to expand scope no track agreed to build.
 
 ## 3. Competitive & Reference Survey
 
@@ -42,47 +47,92 @@ Because Kolibri is a component DeltOS ships, not just a reference point, consist
 
 Cockpit's Overview page groups a server's status into four fixed quadrants (Health, Usage, Configuration, System information) — a genuinely good one-glance mental model, though its actual navigation (Storage, Networking, Accounts, Services as top-level items) assumes a sysadmin audience DeltOS's admin console does not have; §14 borrows the quadrant structure but not the sysadmin vocabulary. balenaCloud's fleet-of-devices dashboard offers three ideas §15 adopts directly: a device-status vocabulary richer than online/offline (distinguishing degraded, updating, and fully dark states), free-form tags for ad hoc grouping instead of a rigid pre-built hierarchy, and saved/named filter views for a recurring query. Portainer's per-environment summary tile and its checkbox-select-then-bulk-action pattern for applying one action across many resources at once round out §15's fleet-dashboard specification.
 
-## 4. Color System
+## 4. Color System — Locked, AA-Verified Tokens
 
-A warm, parchment-toned neutral base with a single amber accent — chosen partly because it pairs naturally with DeltOS's own naming rationale (δέλτος, a wax writing tablet), and partly because flat warm neutrals with one accent are cheap to render and easy to keep legible in a classroom's ordinary fluorescent lighting. Defined as a light theme (the default, used everywhere on the student/teacher-facing shell) and a dark variant (used for admin/monitoring surfaces where extended screen time and lower ambient light are more likely — F1, F6, G7).
+One light theme, every surface, admin through learner. **These tokens are locked.** The contrast column is evidence from measurement, not a target still to be hit — an earlier revision of this document asserted blanket AA compliance it had never verified, and six of its pairings did not hold.
 
-### Light theme (default — C1 shell, wizard, all student/teacher-facing screens)
-
-| **Token** | **Hex** | **Usage** |
-|---|---|---|
-| Background | F2EEE6 | The base surface behind everything — launcher grid, wizard, dashboards. |
-| Surface | FAF8F4 | Cards, tiles, panels sitting slightly above the background. |
-| Text primary | 2B2926 | Body text, titles, icon fill — near-black, never pure black. |
-| Text secondary | 6B655C | Metadata, timestamps, breadcrumb trail, helper text. |
-| Accent | C1622A | Active state, selected tile underline, primary action, the one thing on a screen meant to draw the eye. |
-| Success | 4B7B4E | Completed/healthy status only — never used decoratively. |
-| Error | A83232 | Failed/blocked status and destructive-action confirmation only. |
-| Border/divider | DDD6C8 | Hairline separators between list rows, table cells, panel edges. |
-
-### Dark theme (F1 admin console, F6 fleet dashboard, G7 metrics)
+### Surfaces
 
 | **Token** | **Hex** | **Usage** |
 |---|---|---|
-| Background | 1E1C19 | Base surface for admin/monitoring screens. |
-| Surface | 2A2723 | Cards, panels, table rows above the background. |
-| Text primary | EDE8DF | Body text, titles — near-white, never pure white. |
-| Text secondary | A39B8E | Metadata, secondary labels. |
-| Accent | D9793D | Same role as light theme's accent, lightened slightly to hold contrast against a dark ground. |
-| Success | 5C9A60 | Same role as light theme, adjusted for dark-ground contrast. |
-| Error | C24545 | Same role as light theme, adjusted for dark-ground contrast. |
-| Border/divider | 3A362F | Hairline separators on dark surfaces. |
+| `bg` | `#E9E6DF` | The ambient ground everything sits over. |
+| `surface` | `#F2EEE6` | Panels and cards over the ground. |
+| `raised` | `#FAF8F4` | The layer above a panel — active tile, popover, floating panel. |
+| `line` | `#DDD6C8` | Hairline separators. |
+| `line-strong` | `#C7BFAE` | Input outlines, where an edge has to be found rather than merely implied. |
 
-*Every color pairing above meets or exceeds WCAG AA contrast (4.5:1 for body text) at the sizes it's specified for — a concrete validation pass against real component mockups is listed as an open item in §19, not asserted as already tested pixel-for-pixel.*
+### Ink
 
-## 5. Typography
+| **Token** | **Hex** | **Contrast** | **Usage** |
+|---|---|---|---|
+| `ink` | `#2B2926` | **12.5:1** | Primary text, titles, icon fill. Near-black, never pure black. |
+| `ink-2` | `#6B655C` | **5.0:1** | Secondary text — metadata, timestamps, breadcrumbs, helper text. |
+| `ink-3` | `#8E887E` | — | Faint labels. **Decorative only — never body text.** |
 
-- **System font stack, no web-font downloads:** The shell renders with the platform's own system UI font (Chromium's default sans-serif stack) rather than a bundled or CDN-loaded typeface — consistent with §1's offline-first constraint, and one less asset to budget against Kiosk-tier memory. A single bundled fallback (e.g. Inter, shipped in the image) covers the rare case a target platform's system font stack is unusually poor, but is not the default rendering path.
-- **A small, deliberate type scale:** Five sizes cover every screen in the system: Display (32px, onboarding/first-run headlines only), Title (24px, screen headers), Body (16px, the default for everything read at arm's length), Label (14px, metadata/breadcrumbs/table cells), and Caption (12px, timestamps and the least important text on a screen). No screen should need a sixth size — if one seems to, that's a sign the layout needs simplifying, not the scale extending.
-- **Weight, not size, carries most emphasis:** Semibold for titles and active states, regular for everything else — italics are reserved for the same "editorial aside" role they carry in the track documents themselves (a note, not primary content), and are never used for emphasis in body copy a student or teacher is expected to act on.
+### Accent — one hue, two shades
+
+This split is the fix for the pairings that previously failed. One hue was being asked to serve both as a fill and as text, and no single value can do both at AA.
+
+| **Token** | **Hex** | **Contrast** | **Usage** |
+|---|---|---|---|
+| `accent` | `#C1622A` | **3.6:1** — passes UI ≥3.0 | Fills, the active-tile block, underlines, icon glyphs. |
+| `accent-ink` | `#A4460C` | **5.3:1** text · **6.1:1** white on it — passes ≥4.5 | Accent-coloured *text*, links, the primary-button fill under white text, and the focus ring. |
+
+- **`accent` is never text. `accent-ink` is never a large fill behind white below its verified use.** These two rules are what keep the pairings passing; violating either re-creates the original defect.
+
+### State
+
+| **Token** | **Hex** | **Contrast** | **Usage** |
+|---|---|---|---|
+| `success` | `#3A7143` | **5.0:1** | Completed/healthy only — never decorative. |
+| `warn` | `#8A5A00` | **5.1:1** | Needs attention, not yet failed. |
+| `error` | `#9E2F2F` | **6.3:1** | Failed/blocked, and destructive-action confirmation. |
+
+- **Every state carries its dot *and* its word.** State never rests on colour alone — that is a correctness rule for colour-blind viewers, not a stylistic preference.
+
+### The three-segment motif
+
+| **Token** | **Hex** | **Usage** |
+|---|---|---|
+| `charcoal` | `#3A3834` | The dark segment of the rule. |
+| `rule-a` | `#A7A298` | The grey segment. |
+
+The rule is grey / charcoal / accent, topping panels and the dock, and **doubles as the progress indicator** — the accent segment's extent is the progress.
+
+### Verification note
+
+The contrast figures above are measured against **`surface` `#F2EEE6`**, the surface each token most often sits on. Measured against the darker `bg` `#E9E6DF`, every ratio is lower but **every token still passes its stated requirement**: `ink` 11.64, `ink-2` 4.63, `accent-ink` 4.87, `success` 4.65, `warn` 4.76, `error` 5.81, `accent` 3.34 (UI, ≥3.0). The headroom on `bg` is thinner than the quoted figures suggest, so **a new token is validated against `bg`, not against `surface`**. `ink-3` measures 2.82 on `bg`, which is why it is restricted to decoration.
+
+## 5. Typography, Spacing and Targets
+
+### 5.1 Type
+
+**Three bundled faces, shipped in the OS image, never fetched at runtime.**
+
+| **Face** | **Role** |
+|---|---|
+| Display — thin geometric | Names, headers, the clock. **Thin weights at large sizes only** — a thin face at Body size is a legibility failure. |
+| Body — readable | Everything read at arm's length. |
+| Mono | Data labels, and the small monospace annotations the data overlays use. |
+
+**Five sizes, and only five:** Display 32 · Title 24 · Body 16 · Label 14 · Caption 12.
+
+- **Weight, not size, carries emphasis.** Reaching for a sixth size is a sign a layout needs simplifying, not a scale that needs extending.
+- This replaces the previous "system font stack, no bundled faces" decision. Bundling is what makes one visual language hold across a school laptop, an Android phone and a kiosk display, none of which share a system font.
+
+### 5.2 Spacing and radius
+
+- **Spacing: a 4px base scale — 4 · 8 · 12 · 16 · 24 · 32 · 48 · 64.** Every margin, padding and gap is a value on it.
+- **Radius: 0 for tiles · 4px for cards, buttons and inputs · 8px for floating panels.** Crisp, never fully rounded.
+
+### 5.3 Focus and touch targets
+
+- **Focus: 2px solid `accent-ink`, 2px offset, on every interactive element. Never removed.** Not "never removed without a replacement" — never removed. At 4.87:1 against `bg` it clears the 3:1 non-text requirement comfortably.
+- **Touch targets: 44×44px minimum, 48px preferred.** Above the WCAG AA floor deliberately, and sized for young hands on shared touch devices rather than for the specification's minimum.
 
 ## 6. Iconography & Content-Type Badging
 
-- **Flat, single-weight line icons:** No gradients, no skeuomorphic shading, one consistent stroke weight across every icon in the system — matching §2's flat-over-layered principle and keeping the icon set cheap to render at any size.
+- **Flat, single-weight line icons:** No gradients, no skeuomorphic shading, one consistent stroke weight across every icon in the system — icons stay flat and single-weight even though panels are layered (§2): a glyph carries meaning by silhouette, and shading it costs legibility at Caption size for nothing.
 - **Content-type badges, generalized from Kolibri's convention:** Every content tile (a WAX pack, a Track H service, a Kolibri resource) carries one small type badge before a person reads its title: Read (text/reference), Watch (video), Listen (audio), Practice (interactive exercise), Explore (an app or tool), and Tool (a Track G/H service that isn't content at all — office suite, chat, email). This mirrors Kolibri's own five-category convention (§3) so a resource looks the same whether it's rendered by Kolibri's own UI or by C2's launcher grid — one visual vocabulary for "what kind of thing is this" across the whole system, not two competing ones.
 - **Status icons are a fixed, shared vocabulary:** Exactly the states named in §15's fleet-status table and nowhere else invented ad hoc per screen: a filled accent dot (active/healthy), a filled success-color dot (completed), a hollow/outlined dot (idle/not yet started), a spinning ring (in progress), and a filled error-color dot (failed/needs attention) — reused identically across C8's progress view, F5's device health, F6's fleet dashboard, and G7's metrics.
 
@@ -204,17 +254,21 @@ Modeled directly on Kolibri's own published coach-dashboard redesign (§3) — n
 
 ## 18. Accessibility Summary
 
-- Every color pairing in §4 is chosen to meet WCAG AA contrast at its specified use (validation against final component mockups is an open item, §19).
+- Every colour pairing in §4 is **measured** against WCAG 2.2 AA at its specified use, on both `surface` and the darker `bg`, and the ratios are recorded in §4 as evidence. A new token is validated against `bg`. Composition-level validation against rendered mockups remains listed in §19.
 - §12 consolidates every accessibility feature into one panel, reachable identically from the dock and from first-boot onboarding — never a feature a person has to already know exists to find.
 - §9's passwordless student flow and §7's role-gated dock items exist partly as accessibility decisions in their own right — a shared classroom device should not require reading and typing a password to become usable for a student who can't yet do either reliably.
 - Nothing in this document assumes an always-on internet connection to render, translate, or narrate — TTS (Piper) and translation both run locally per Track C §9, matching this document's own §1 offline-first constraint.
 
 ## 19. Open Decisions Needed Before Implementation
 
-- Formal WCAG contrast validation against real rendered component mockups, not just the token pairings listed in §4 — colors read correctly in isolation don't guarantee every actual composition (small label text over a tinted card, say) holds the same ratio.
-- Resolved since first draft: the product owner settled the walk-in-visitor question raised in Track C §22 — see §21 below rather than an open item here.
-- The exact icon set (a specific icon library or a custom-drawn set) implementing §6's flat, single-weight style — this document specifies the visual rule, not the concrete asset source.
-- Whether a bundled fallback font (§5) is actually necessary once real target hardware's default Chromium font rendering is evaluated, or whether the system stack alone is sufficient everywhere DeltOS ships.
+- **The exact icon set** — a specific icon library or a custom-drawn set — implementing §6's flat, single-weight style. This document specifies the visual rule, not the asset source, and **nothing in §4's locked tokens depends on the answer.** Listed as open in cross-track contract §13.2.
+- Composition-level WCAG validation against real rendered mockups. §4's token pairings are measured and recorded; what measurement cannot pre-empt is a specific composition — small Label text over a tinted card, an accent glyph on `raised` inside a translucent panel — where the effective background is not the token it nominally sits on. This checks compositions, not tokens.
+
+**Closed since the previous revision:**
+
+- *Design-system accessibility values* — the palette, type scale, spacing, radius, focus indicator and touch-target minimum are settled and recorded in §4 and §5. This was blocking decision 8 in cross-track contract §13; it is closed there too.
+- *Whether a bundled fallback font is necessary* — settled the other way. §5.1 bundles **three** faces and does not use a system stack at all, because one visual language cannot hold across a school laptop, an Android phone and a kiosk display when each supplies a different default.
+- *The walk-in-visitor question* raised in Track C §22 — settled by the product owner; see §21.
 
 ## 20. Competitive Gap-Check — Findings and Resolutions
 
@@ -231,3 +285,33 @@ The product owner settled §19's walk-in-visitor question directly: every user g
 
 - **Why a shared identity, not a per-visitor one:** A named, per-person profile is the right model for anyone whose progress or files matter across sessions (§16's whole reason for existing); a walk-in visitor has neither. Modeling Guest as one shared, admin-toggled identity — rather than inventing lightweight per-visitor accounts — keeps the system's identity model to exactly two shapes (a real profile, or the one shared Guest profile), not three.
 - **Visually, Guest is deliberately unremarkable:** No distinct color, badge, or special chrome marks a Guest session as such beyond the tile it was entered from — a smaller launcher grid (filtered to guest_accessible content, Track B §2) is the only visible difference from any other profile's experience. A student or teacher shouldn't need to think about who's using the box next to them; a design that made Guest visually distinct (a warning color, a persistent banner) would frame ordinary public-computer access as suspect, which isn't the tone §2's principles call for.
+
+## 22. Amendment (per product direction on the visual language)
+
+Settled direction, recorded here because it changes what §7 and §8 render rather than which track owns them. §4 and §5 hold the tokens; this section holds the form.
+
+### 22.1 Surfaces
+
+- **Frosted, layered panels over a soft blurred backdrop.** The ambient ground is `bg`; panels are `surface` with translucency and blur over it; the layer above a panel is `raised`. The **flat fallback keeps the identical layout** and substitutes solid `surface` and `raised` with a `line` edge, per §2 — and the **client** decides which it draws, honouring its own reduced-transparency and reduced-motion settings.
+- **The three-segment rule** — `rule-a` grey, `charcoal`, `accent` — tops panels and the dock, and **doubles as the progress indicator**: the accent segment's extent is the progress. One motif serving both jobs is why progress never needs a separate bar competing for attention.
+
+### 22.2 The launcher (C1)
+
+- **A mosaic of square tiles in varied sizes**, not a uniform grid. Size carries editorial weight — what matters most is bigger — and the varied mosaic is what stops a wall of packs reading as an undifferentiated list.
+- **Accent-coloured tiles mark what is new or active**, using `accent` as a fill (never as text — §4).
+- Tile radius is **0** (§5.2). Tiles are the one element in the system with square corners, which is what makes the mosaic read as a mosaic.
+
+### 22.3 The dock (§7)
+
+- **A labelled dock along the bottom edge** — labels, not icons alone. An unlabelled icon row is a guessing game for a learner meeting the system for the first time, and labels cost one Label-size line.
+- Topped by the same three-segment rule.
+
+### 22.4 Navigation and window furniture
+
+- **Chevron breadcrumbs** for the browse trail (§8), in `ink-2`, with the current level in `ink`.
+- **Hexagonal window controls** on the admin surfaces' panes — the one deliberately distinctive piece of chrome in the system, and the reason it is allowed is that it appears on the multi-pane admin layout only, where a pane genuinely needs controls.
+- **Small monospace data labels** (§5.1's mono face, Caption or Label size) for every number, identifier, rate and timestamp — the annotation style that makes the data overlays of §13 read as instrumentation rather than as decoration.
+
+### 22.5 What this does not change
+
+The ownership map in §17 is unaffected: every surface named here is still rendered by the track that already owned it. This amendment changes appearance, not ownership.

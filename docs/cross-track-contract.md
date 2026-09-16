@@ -21,40 +21,70 @@ This document is the remedy. It owns those vocabularies as normative values. Whe
 
 Every value in this document is normative and literal. Where a value was collected from an existing document, the source is cited. Where the sweep found no value anywhere and one had to be chosen, it is marked as a new decision — those are the entries most worth a second opinion, and they are listed together again in §12 so they can be reviewed as a set rather than hunted through the document.
 
-## 2. Hardware Tiers
+## 2. Hardware — Minimum and Preferred Spec, Measured
 
-The single most load-bearing table in the project. Track B's min_hw_tier, Track C's requirement calculator, Track D's feature gating and Track H's service placement all key off it.
+The single most load-bearing section in the project. Track B's pack requirements, Track C's requirement calculator, Track D's feature gating and Track H's service placement all key off it.
 
-Track E's original table stated RAM and storage as ranges (pi_4 as "2–8GB"), which made the tier name useless as a gate — a pack declaring min_hw_tier: pi_4 could land on a 2GB or an 8GB board. Restated here as guaranteed floors. The floor is what any other track may assume; headroom above it is discovered at runtime and never inferred from the tier name.
+**DeltOS is hardware-agnostic. Capability follows measured resources. No document may gate a feature on a device model.** This replaces the four device-named tiers (`pi_zero_2w`, `pi_4`, `pi_5`, `mini_pc`) that earlier revisions of this section owned. Board names may appear as *examples of a resource class*, never as the gate.
 
-| **Tier** | **Min RAM** | **Min storage** | **Arch** | **Notes** |
-|---|---|---|---|---|
-| pi_zero_2w | 512 MB | 16 GB | aarch64 | Kiosk-profile floor. No Track G or Track H services. |
-| pi_4 | 2 GB | 32 GB | aarch64 | A 1 GB Pi 4 SKU exists and is below this floor — it is not this tier. |
-| pi_5 | 4 GB | 64 GB | aarch64 | First tier meeting Track D's local-LLM floor (§6 below). |
-| mini_pc | 16 GB | 256 GB | x86_64 | Community Hub and Field Ops floor. |
-| generic | declared | declared | either | Installable-stack path only — see below. |
+### 2.1 The two reference specs
 
-- **Total ordering:** pi_zero_2w < pi_4 < pi_5 < mini_pc. A pack or feature declaring a min_hw_tier runs on that tier and every tier above it. The word "tier" always refers to this axis and never to a Deployment Profile.
-- **[New decision]** The installable-stack path gets a generic tier rather than being forced into a board name. A host that is not one of the four boards reports tier generic plus its measured RAM, storage and architecture, and is treated as equivalent to the highest preset tier whose floors it meets. This closes the sweep's finding that every tier-gated decision in three tracks was undecidable on a deployment path the project has already committed to as co-equal.
-- **[New decision]** generic is a value a box reports, never one a pack declares. min_hw_tier is drawn from the four board tiers only — a floor of "declared" would be meaningless as a gate, which is exactly why generic is absent from the ordering above. A generic box decides whether it can run a pack by comparing its own measured resources against the floors of the tier the pack declares, not by placing itself in the ordering.
-- **[New decision]** Tier name is a coarse floor for catalog filtering only. Runtime feature gating uses measured resources, not the tier name — because a tier is a floor, a box at pi_5 may have 4 GB or 16 GB, and a feature needing 8 GB must ask what the box actually has. Every box publishes both its tier and its measured RAM/storage/arch through the capability record in §9. Gating on the tier name alone is what produced the sweep's D5-on-a-2GB-Pi-4 finding.
+| | **RAM** | **Storage** | **Arch** | **GPU** | Example machine |
+|---|---|---|---|---|---|
+| **Minimum spec** | 2 GB | 32 GB | `aarch64` | none assumed | Raspberry Pi 4/5-class ARM64 board |
+| **Preferred spec** | 16 GB | 256 GB | `x86_64` | optional, discovered | x86 mini-PC |
+
+The example column is descriptive. A machine qualifies by meeting the resource figures, whatever it is.
+
+- **The Pi Zero 2 W is retired as a target** and appears nowhere as a tier, a floor, or a profile minimum.
+- Minimum spec is the floor the whole system must run at. Preferred spec is what the resource-hungry features need. Everything between is decided by measurement, not by naming.
+
+### 2.2 What a box measures, and when
+
+A box measures its own resources **at first boot** and unlocks capability from what it measures. The measured values are published in the box capability record (§9), which is the single place any component asks what this box actually is.
+
+Four dimensions, and only these four, are measured and compared: **RAM**, **storage**, **CPU architecture**, and **GPU presence**.
+
+### 2.3 The resource requirement — what replaces `min_hw_tier`
+
+A pack, feature or app declares the resources it needs. The box runs it when the capability record meets them. This is the replacement vocabulary; it is a **declaration of need**, never a device name.
+
+| **Field** | **Required** | **Meaning** |
+|---|---|---|
+| `min_ram_bytes` | Required | Steady-state RAM the thing needs to run at all. |
+| `min_storage_bytes` | Required | Storage it needs beyond its own archive. |
+| `arch` | Required | `aarch64` · `x86_64` · `any`. `any` means architecture-independent content. |
+| `gpu` | Optional | Omit when irrelevant. `required` — will not run without one. `preferred` — runs either way, uses one when measured. |
+
+- **The comparison rule:** a box runs a thing when every declared field is met by the capability record. There is no ordering to place a box in and no name to match — a comparison of numbers, and nothing else.
+- **Omission is not zero.** An optional field that does not apply is omitted, never written as `0` or `false`. This matches §11's rule for the pack manifest.
+- **`gpu: preferred` never gates.** It selects an execution path, which is how Track D's local model degrades from GPU to CPU to absent without a second declaration.
+
+### 2.4 Code currently disagrees — a recorded, deliberate lag
+
+`wax-builder` enforces the retired vocabulary: `MIN_HW_TIERS` is a closed set of the four board names in `crates/wax-builder/src/config.rs`, asserted by fifteen checks across three tests in `crates/wax-builder/tests/manifest_schema.rs`, and present in the example manifest and the `zim2wax` fixtures.
+
+**This document states the target; the code has not moved yet.** Migrating the enum, the validator messages, the tests and the fixtures to §2.3 is **the first implementation directive after this one** and is deliberately out of scope here. Until it lands, a built pack still carries `min_hw_tier` and §11 records both states. This lag is recorded rather than hidden precisely because an undocumented disagreement between a document and its implementation is the failure class this document exists to remove.
 
 ## 3. Deployment Profiles
 
-Profiles and tiers are deliberately separate axes: a profile says what a box runs, a tier says what the hardware is. The sweep found the two conflated in four documents despite an earlier review pass having corrected several instances — they kept recurring because no mapping between the axes was ever published. It is published here.
+Profiles and hardware are deliberately separate axes: a profile says **what a box runs**, the capability record (§9) says **what the hardware is**. The sweep found the two conflated in four documents; the mapping is published here so they stop drifting apart.
 
-| **Profile** | **Wire value** | **Min tier** | **What it adds** |
-|---|---|---|---|
-| Kiosk | kiosk | pi_zero_2w | Tracks A–D core plus Track F's baseline daemons. No Track G, no Track H. |
-| Classroom | classroom | pi_4 | Full Track C; G1/G2; Standard-tier Track H; captive portal. |
-| Community Hub | community_hub | mini_pc | Full Track G; most of Track H. |
-| Field Ops | field_ops | mini_pc | Community Hub plus the opt-in IoT/SDR/RF and smart-grid modules. |
+Each profile states the **minimum resources** it needs — never a device, and no longer a tier name.
 
-- **Total ordering:** kiosk < classroom < community_hub < field_ops. "Classroom and above" and similar phrasings resolve against this ordering and no other.
-- **Profile is chosen; tier is detected:** A profile is selected at provisioning or pre-seeded onto an image; a tier is measured at first boot. A profile may not be selected on hardware below its minimum tier.
-- **[New decision]** "Advanced" is not a profile. It appears in Track E §9 and §13 as though it were one, in a document whose own enumeration lists only four. Field Ops already carries the opt-in modules the phrase was reaching for. Track E's two uses should be reworded to field_ops.
+| **Profile** | **Wire value** | **Min RAM** | **Min storage** | **What it adds** |
+|---|---|---|---|---|
+| Kiosk | `kiosk` | 2 GB | 32 GB | Tracks A–D core plus Track F's baseline daemons. No Track G, no Track H. |
+| Classroom | `classroom` | 2 GB | 32 GB | Full Track C; G1/G2; Standard Track H; captive portal. |
+| Community Hub | `community_hub` | 16 GB | 256 GB | Full Track G; most of Track H. |
+| Field Ops | `field_ops` | 16 GB | 256 GB | Community Hub plus the opt-in IoT/SDR/RF and smart-grid modules. |
 
+- **Total ordering:** `kiosk` < `classroom` < `community_hub` < `field_ops`. "Classroom and above" and similar phrasings resolve against this ordering and no other.
+- **Profile is chosen; resources are measured.** A profile is selected at provisioning or pre-seeded onto an image; resources are measured at first boot. A profile may not be selected on a box below its stated floor.
+- **Kiosk now floors at the minimum spec.** Its previous floor was the retired `pi_zero_2w` at 512 MB. Kiosk and Classroom therefore share the §2.1 minimum spec; they differ in what they run, not in what they demand. Kiosk remains the profile with no Track G and no Track H, which is what makes it the cheap one — not a smaller board.
+- **Community Hub and Field Ops** carry forward the RAM and storage floors their previous `mini_pc` mapping guaranteed. Only the device name was dropped; the numbers are unchanged.
+- **[Open — this document owns it]** Whether `community_hub` and `field_ops` additionally require `x86_64`. Their previous floor, `mini_pc`, bundled 16 GB of RAM with an x86 architecture in a single name, so the repo has never recorded whether the architecture was a real requirement or an artefact of the example machine. A 16 GB ARM64 board meets the stated numbers. Resolving this by assumption would re-introduce exactly the device-shaped gate §2 removes, so it is listed in §13 instead.
+- **[New decision]** "Advanced" is not a profile. It appears in Track E §9 and §13 as though it were one, in a document whose own enumeration lists only four. Field Ops already carries the opt-in modules the phrase was reaching for; Track E's two uses are reworded to `field_ops`.
 ## 4. Roles and Permission Defaults
 
 Track F defines these properly and both consuming tracks can build against it. Collected here because Track C and Track E each gate privileged operations on a vocabulary neither document could see, which is exactly the shape this contract exists to fix.
@@ -96,17 +126,20 @@ Three components share this: Track C's shell emits, Track H's Kolibri bridge wri
 
 ## 6. Feature Resource Floors
 
-The sweep found the hardware budget perfectly circular: Tracks D, G and H each defer to Track E's consolidated budget, and Track E is waiting for numbers from exactly those tracks. Someone has to state numbers first. These are the floors a feature needs, independent of tier, so a box gates on measured resources per §2.
+The sweep found the hardware budget perfectly circular: Tracks D, G and H each defer to Track E's consolidated budget, and Track E waits for numbers from exactly those tracks. Someone has to state numbers first. These are the floors a feature needs, expressed the only way §2 permits — **as measured resources**, never as a device or a tier name.
 
-| **Feature** | **RAM floor** | **Disk floor** | **Gate** |
-|---|---|---|---|
-| Shell + baseline daemons | 384 MB | 4 GB | Every profile. Fits pi_zero_2w's 512 MB floor with headroom for one pack. |
-| G1 + G2 (orchestrator, proxy) | 768 MB | 8 GB | classroom and above. Previously uncosted at the lowest tier that runs it. |
-| D5 small model (1–3B, Q4) | 3 GB | 6 GB | Measured RAM ≥ 4 GB — i.e. pi_5 floor, not pi_4. |
-| D5 larger model (7–8B, Q4) | 8 GB | 12 GB | Measured RAM ≥ 16 GB — mini_pc. |
+| **Feature** | **`min_ram_bytes`** | **`min_storage_bytes`** | **`gpu`** | **Gate** |
+|---|---|---|---|---|
+| Shell + baseline daemons | 384 MB | 4 GB | — | Every profile. Leaves headroom for one pack within the §2.1 minimum spec. |
+| G1 + G2 (orchestrator, proxy) | 768 MB | 8 GB | — | `classroom` and above. Previously uncosted at the cheapest profile that runs it. |
+| D5 small model (1–3B, Q4) | 3 GB | 6 GB | `preferred` | Measured RAM ≥ 4 GB. |
+| D5 larger model (7–8B, Q4) | 8 GB | 12 GB | `preferred` | Measured RAM ≥ 16 GB. |
 
-*These are stated as provisional floors so that Tracks D, G, H and E have a concrete number to argue with rather than a blank. Each owning track should replace its own row with a measured figure once its component runs; the per-service Track H floors are still missing entirely and are listed as open in §13.*
+- **The D5 rows are why the tier names had to go.** Both were previously written as "`pi_5` floor, not `pi_4`" and "`mini_pc`" — but a tier is a floor, so a `pi_5` box may carry 4 GB or 16 GB, and the name answered the wrong question. The gate is the measured number and always was.
+- **`gpu: preferred` on both D5 rows** is what lets Track D's local model use a measured GPU where one exists and degrade to CPU where it doesn't, without a second declaration. It never gates.
+- **Per-service floors are no longer this table's problem.** §15's app contract requires every app and service to declare its own measured floor in its manifest. The consolidated budget is therefore **the sum of declared floors**, computed from the installed set, rather than one number blocked on every track reporting at once. This closes the circularity at its cause.
 
+*The four rows above remain provisional until each owning track measures its own component on real hardware, per the measure-don't-estimate rule. A provisional figure is marked as such and is a number to argue with, not evidence.*
 ## 7. Service and Install State Vocabularies
 
 ### 7.1 Service health
@@ -139,23 +172,30 @@ The sweep's most consequential security finding sits here, and it is a cross-tra
 | Pack content, post-proxy | https://pack-<pack_index>-slot-<profile_slot>.deltos-packs.lan |
 | Admin, service surfaces | https://<service>.deltos.lan (admin, git, flows, cloud, wiki, mail, code, blog) |
 
-- **Variable ranges:** pack_index is an integer 0–511, allocated by the on-device catalog at install time and never reused. profile_slot is an integer 0–31, assigned at profile creation and stable for that profile's life. The resulting port range is 41000–57383, and no other DeltOS service may bind inside it.
+- **Variable ranges:** `pack_index` is an integer 0–511, allocated by the on-device catalog at install time. `profile_slot` is an integer 0–31, assigned at profile creation and stable for that profile's life. The resulting port range is 41000–57383, and no other DeltOS service may bind inside it.
+- **[Amended decision] A `pack_index` may be reused, but only after its stored browser data is cleared.** This document previously said an index was *never* reused. That was a security-motivated rule with an unacceptable consequence: 512 installs over a box's whole life exhausted the space permanently, and a long-lived classroom box would eventually refuse to install anything. The rule is therefore bounded rather than absolute — an address returns to the pool only once everything the previous occupant stored against that origin (cookies, `localStorage`, IndexedDB, cache storage, service-worker registrations) has been cleared. Until the clear completes the address stays allocated. Reuse without the clear would hand a new pack the previous pack's origin-scoped state, which is the outcome the original rule existed to prevent; clearing first preserves the guarantee without the exhaustion. Owned here; Track C's catalog performs the clear.
 - **deltos.lan is normative:** Track E gives the DNS suffix as "e.g. deltos.lan" and Track E §17 then treats it as settled. It is settled: deltos.lan and deltos-packs.lan, both served by the local resolver, both covered by the internal CA.
 - **[New decision]** Two wildcard certificates, not one. *.deltos.lan and *.deltos-packs.lan are issued separately, so the certificate fronting admin surfaces is not also the certificate fronting untrusted pack content. Track C cites a single shared wildcard certificate that Track G never actually defines, and Track G's only stated issuance model — per-hostname on demand — contradicts it. Track G owns closing that gap; this document fixes the shape it must close to.
 - **Profile-slot exhaustion:** A device supports 32 concurrent profiles. Creation beyond that fails with a stated error rather than sharing or recycling a live profile's slot; slots are never shared between live profiles.
 
 ## 9. The Box Capability Record
 
-Four tracks need to ask what a box actually is, and no document defines where that answer lives. §2's measured-resources rule depends on it existing.
+Four tracks need to ask what a box actually is, and no document defined where that answer lives. **§2's measured-resources rule depends entirely on this record existing** — with the device-name tiers retired, this is now the *only* place a component can learn what hardware it is running on.
 
-- **[New decision]** Every box publishes one capability record, written at first boot and readable by any local component.
+- **[New decision]** Every box publishes one capability record, written at first boot from its own measurements and readable by any local component.
 
-{ "profile": "classroom", "tier": "pi_5", "ram_bytes": 8589934592,
-  "storage_bytes": 128849018880, "arch": "aarch64",
+```json
+{ "profile": "classroom",
+  "ram_bytes": 8589934592, "storage_bytes": 128849018880,
+  "arch": "aarch64", "gpu": "none",
   "has_wifi": true, "can_ap": true, "has_rtc": false }
+```
 
-- **Path:** /var/lib/deltos/capability.json — see §10.
-- **Who writes it:** Track E's provisioning tool for the appliance path; the installer for the installable-stack path. The installable-stack case is why has_wifi and can_ap are present: the sweep found a single onboarding wizard performing Wi-Fi setup on a path that explicitly targets a VPS, which has no radio. Onboarding reads this record and skips the radio-dependent steps rather than failing.
+- **`tier` is gone.** Earlier revisions carried a `"tier": "pi_5"` field alongside the measurements. It is removed, not deprecated: a name that summarised the numbers beside it could only ever disagree with them, and gating on it is what produced the sweep's "D5 on a 2 GB Pi 4" finding. Components compare the measured fields (§2.3).
+- **`gpu`** is `none` or the class of accelerator measured. A feature declaring `gpu: preferred` reads this to choose an execution path; a feature declaring `gpu: required` will not start against `none`.
+- **Path:** `/var/lib/deltos/capability.json` — see §10.
+- **Who writes it:** Track E's provisioning tool for the appliance path; the installer for the installable-stack path. The installable-stack case is why `has_wifi` and `can_ap` are present: the sweep found a single onboarding wizard performing Wi-Fi setup on a path that explicitly targets a VPS, which has no radio. Onboarding reads this record and skips the radio-dependent steps rather than failing.
+- **The installable-stack path needs no special case now.** It previously required a `generic` tier so that a non-board host had a name to report. With names gone, such a host simply publishes its measurements like any other box, and the `generic` tier is retired along with the other four.
 
 ## 10. Filesystem Paths
 
@@ -185,7 +225,7 @@ This table was previously written out in full in two documents — Track B §2, 
 | license | Required | SPDX identifier or free text — see the licensing rules below. |
 | attribution | Required | Human-readable credit line. |
 | version | Required | CalVer YYYY.MM.N — see below. |
-| min_hw_tier | Required | One of: pi_zero_2w · pi_4 · pi_5 · mini_pc (§2). Never generic, never a Deployment Profile name. |
+| min_hw_tier | Required *(retiring)* | **Target: replaced by `min_ram_bytes`, `min_storage_bytes`, `arch` and optional `gpu` (§2.3).** Still emitted today as one of: pi_zero_2w · pi_4 · pi_5 · mini_pc, because `wax-builder` has not migrated yet — see the note below the table. |
 | entry_point | Required | Path within the archive to the launch target; must resolve to a real entry at build time. |
 | guest_accessible | Optional | Boolean, default false. Whether the pack appears in a Guest profile's launcher grid. The author's default only — an admin's per-pack override lives in the on-device catalog, since the manifest is inside the signed archive and an admin cannot alter it. |
 | runtime_ram_bytes | Optional | Steady-state memory this pack's own services need once running. Omit when negligible rather than writing 0. |
@@ -194,6 +234,9 @@ This table was previously written out in full in two documents — Track B §2, 
 | depends_on | Optional | Comma-separated archive_uuid values — see below. |
 
 - **Eight required, five optional, nothing else:** Any key outside this table is a build error. There is no id field — archive_uuid is the only identity a pack carries. There is no total_size_bytes — archive size lives in the catalog (Track A §17, Track B §19). Adding a key here is a change to this document, and to this document only.
+
+- **[New decision] The hardware requirement becomes four measured fields, and the field count changes with it.** `min_hw_tier` is replaced by `min_ram_bytes`, `min_storage_bytes` and `arch` as required fields, plus optional `gpu` — the §2.3 vocabulary, identical to what a feature or an app declares, so one comparison rule serves packs, features and apps alike. After migration the manifest is **ten required, six optional**. The "eight required, five optional" count above describes what ships today and is superseded the moment the migration lands.
+- **The code has not moved, and that is deliberate.** `wax-builder` still enforces the closed four-name set. Migrating the enum, its validator messages, its fifteen test assertions and the fixtures is the first implementation directive after this document's pass; no tier code was touched while writing this. A pack built today carries `min_hw_tier` and is valid; a pack built after the migration carries the four fields. Both states are recorded here so neither reads as a defect.
 - **[New decision]** guest_accessible is added to the normative list. It existed in Track B §2 and in no other document, which made every conforming builder reject it. Its admin-override half is explicitly relocated to the catalog, because an admin cannot modify a field sealed inside a signed archive — the same trap that removed total_size_bytes.
 
 ### Field formats
@@ -247,12 +290,10 @@ Introducing license_review_required as "a build-report outcome" created a cross-
 
 ## 12. Every New Decision in One Place
 
-Fourteen values in this document had no defensible source anywhere and were chosen rather than collected. They are the entries most worth disagreeing with, so they are listed together rather than left scattered.
+Every value in this document that had no defensible source anywhere — chosen rather than collected — is listed here. These are the entries most worth disagreeing with, so they sit together rather than scattered. **The list is stated by enumeration, not by count:** an earlier revision opened with a fixed total that the table had already outgrown.
 
 | **§** | **Decision** | **What it resolves** |
 |---|---|---|
-| 2 | generic tier for installable-stack hosts | Tier gating was undecidable on a committed deployment path. |
-| 2 | Tier gates catalog filtering; measured resources gate runtime | A tier is a floor, so the name alone cannot answer whether a feature fits. |
 | 3 | "Advanced" is not a profile | Used as one in a document listing only four. |
 | 4 | Default deny for unlisted operations | Two tracks gate on a table with no stated default. |
 | 5.1 | localpart = p + 12 hex of profile_id | Deprovisioning could not locate accounts in 5 of 6 services. |
@@ -268,7 +309,6 @@ Fourteen values in this document had no defensible source anywhere and were chos
 | 11 | The B3 field table moves here, guest_accessible included | Two copies drifted; a valid manifest was rejected as unknown-key. |
 | 11 | archive_uuid is canonical lowercase hyphenated | Four tracks serialize it; the repo already held two spellings. |
 | 11 | license_review_required is a build report, not a manifest key | In the manifest it would repeat the total_size_bytes trap exactly. |
-| 2 | generic is box-reported, never declared by a pack | A floor of "declared" cannot gate anything. |
 | 1 | SPEC.md owns container bytes; this document owns text renderings | The two collided over archive_uuid in a signature's trusted comment. |
 | 11 | CalVer digits pinned (zero-padded month, unpadded counter) | YYYY.MM.N admitted four readings; ZIM's own Date reformats cleanly into one. |
 | 11 | SPDX matching is case-insensitive | Exact matching sent every lowercase-licensed Wikipedia pack to a moderator. |
@@ -278,18 +318,47 @@ Fourteen values in this document had no defensible source anywhere and were chos
 | 11 | attribution stays required; --attribution supplies it | §20 derived an empty string, which §11 rejects. CC-BY needs the credit line. |
 | 11 | N may be a counter or a source date's day | Day-of-month is the only reading under which a version derivation stays a reformat. |
 | 11 | Warning codes are a closed, listed vocabulary | Intake branches on them; an invented code is a silently misrouted pack. |
+| 2 | **Device-name tiers retired entirely; capability follows measured resources** | A tier name summarised numbers sitting beside it and could only disagree with them. Supersedes the three `generic`/tier-gating decisions this register previously carried. |
+| 2.3 | **`min_ram_bytes` / `min_storage_bytes` / `arch` / optional `gpu` replace `min_hw_tier`** | A pack, feature and app now declare need in one vocabulary, compared by numbers with no ordering to place a box in. |
+| 3 | **Profiles floor on measured resources, not a tier** | Kiosk's floor was the retired Pi Zero 2 W; the mapping had to be restated without it. |
+| 8 | **`pack_index` may be reused once its stored browser data is cleared** | "Never reused" exhausted 512 addresses over a box's life and eventually refused all installs. |
+| 9 | **`tier` removed from the capability record** | A name beside the measurements could only ever contradict them. |
+| 13 | **The blocking decisions are enumerated here, with answers** | They were referred to as a known set that no document held. |
+| 15 | **The app contract — one manifest five platform components read** | Adding an app was five edits in five components, so catalogue cost grew with catalogue size. |
+| 15 | **Each app declares its own measured resource floor** | The consolidated hardware budget was circular across four tracks. |
+| 16 | **No telemetry, with F14 aggregate-local as the sole exception** | Stated in no document, and an unstated privacy property erodes one track at a time. |
+| 16 | **Plain HTTP for unmanaged visitors; the secure-context cost is recorded** | Features needing a secure context are unavailable to visitors' phones, which is a design constraint, not a deployment detail. |
 
-## 13. Still Open — Not Invented Here
+## 13. The Blocking Decisions — Enumerated, With Their Answers
 
-The sweep found these unspecified and no value could be derived from existing material. They are listed so they are tracked rather than silently filled in by whoever implements first.
+**This is the list.** The project referred to "the blocking decisions" as a known set for some time without any document holding it; this section is that list, and it is the only one. A decision that blocks more than one track belongs here, answered or explicitly open.
 
-- Per-service RAM and disk floors for all ten Track H services — the numbers Track E's consolidated budget is waiting for, and which only Track H can supply.
-- The shell's IPC surface: wire format, argument types, response and error shapes for every privileged operation. This is a design session, not a value to pin, and it is the largest single gap in the set.
-- The passage/chunk unit for embedding, retrieval and citation — size, overlap, boundary rule and chunk identifier. Track D's citations cannot locate anything inside a large article until this exists.
-- The cross-source search ranking rule. Scores from separately-built indexes are not comparable, so a normalization must be chosen; Reciprocal Rank Fusion is the obvious candidate but it is Track D's call.
-- What binds a Track H service session to the active profile, and what a profile switch does to an open one. Currently a profile switch leaves the previous profile's service session authenticated.
-- The update-failure detection rule: what "known-good" means and what triggers rollback. Track E specifies the rollback boundary but never its trigger.
-- Design Language: the focus-indicator token, the spacing scale, touch-target minimums, the interaction-state palette, and a reconciled status-icon vocabulary. Plus five color pairings that fail the document's own WCAG AA claim and need new values, the primary-action accent among them.
+Each entry carries the settled direction. **Where an entry still needs its own design session, it says so** — a recorded direction is not a finished design, and reading one as final is the mistake this section exists to prevent.
+
+| # | Decision | Answer | State |
+|---|---|---|---|
+| 1 | **Search-index ownership** | **Track A owns the index bytes**, as an *additive minor version* of the format. A pack declares the tokenizer it was indexed with; a reader **refuses a tokenizer it does not recognise** rather than guessing. | Settled |
+| 2 | **Shell privilege boundary** | A **loopback WebSocket**, a **per-boot token**, a **strict origin check**, and a **closed list** of allowed privileged operations. | **Direction only — needs its own design session before C1 is built.** |
+| 3 | **Per-service resource floors** | Settled by the app contract (§15): **each app declares its own measured floor**, so the consolidated budget is the sum of declared floors rather than a number waiting on every track at once. | Settled |
+| 4 | **Service sessions vs profile switching** | The kiosk browser keeps a **separate storage partition per `profile_slot`**, so switching profile switches cookies. Phones are single-user and unaffected. | Settled |
+| 5 | **Passage unit for search & citation** | Chunks are cut **deterministically at build time along heading structure**. A chunk id is **the pack path plus the chunk's position**. Chunks live **in the pack**, so the format owns them. | Settled |
+| 6 | **Cross-source ranking** | **Reciprocal Rank Fusion.** | Settled |
+| 7 | **Rollback trigger** | A boot counts as healthy when **the required services report healthy within a set window**; repeated failures roll back. | Settled in shape. **The window and the failure count are numbers the implementer measures on real hardware** — they are not guessed here. |
+| 8 | **Design-system accessibility values** | **Closed.** The locked, AA-verified tokens in `design-language.md` §4 — palette, type scale, spacing, radius, focus indicator and touch-target minimum. | Settled |
+
+### 13.1 The constraint decision 1 carries
+
+The query side must run **the same tokenizer** the pack was indexed with, on every box, at the minimum spec. That bounds the tokenizer choices — CJK segmentation in particular, where the usable approaches differ sharply in dictionary size and memory cost. **Track A owns choosing within that bound**; this document only records that the bound exists, because a tokenizer chosen for build-side quality alone can be one the minimum spec cannot run.
+
+Decision 1 unblocks every pack already built, all of which are browse-only today.
+
+### 13.2 Still genuinely open
+
+Not answered, and not to be filled in by whoever implements first:
+
+- **Whether `community_hub` and `field_ops` require `x86_64`** in addition to their stated RAM and storage floors (§3). Their previous `mini_pc` mapping bundled the two, so the repo has never recorded which was meant. **Owned by this document.**
+- **The exact icon set** implementing the design language's icon rule. `design-language.md` specifies the visual rule, not the asset source, and nothing in the locked token set depends on the answer. **Owned by `design-language.md`.**
+- **Per-service measured floors for the ten existing Track H services.** The *mechanism* is settled (decision 3) — each service declares its own. The *numbers* still have to be measured, service by service, by Track H.
 
 ## 14. Amendment Rule
 
@@ -298,3 +367,41 @@ A value in this document changes here, in this document, and nowhere else. A tra
 Adding a value is the same operation as changing one: if a second track begins consuming something a track document currently owns privately, it moves here at that moment, not later.
 
 *A document like this goes stale the moment implementation outruns it. The practical guard is the same one the sweep used: any prompt written against a track document should cite this document alongside it, and anything an implementer has to invent that belongs in one of these tables is a defect report against this document, not a decision for the implementer to make quietly.*
+
+## 15. The App Contract — One Manifest Every Platform Service Reads
+
+**This is the most important addition in this document.** Every app and service — the ten already in Track H, and every addition the catalogue gains — is wired into the platform through one declared contract, not by hand.
+
+An **app manifest** is distinct from the **pack manifest** of §11: a pack is content, an app is a running service. They share §2.3's resource vocabulary and nothing else.
+
+### 15.1 What an app manifest declares
+
+| **Group** | **Declares** |
+|---|---|
+| Resources | `min_ram_bytes`, `min_storage_bytes`, `arch`, optional `gpu` — the §2.3 fields, unchanged. This is the app's **own measured floor**. |
+| Reachability | Its address under the service zone (§8), and **which roles may reach it** — drawn from §4's closed role set, default-deny. |
+| Identity | Its sign-in method, so the identity bridge provisions it rather than each service inventing a login. |
+| Liveness | Its health check — the probe whose result drives §7.1's health vocabulary and the self-healing model. |
+| Durability | **What of its data gets backed up**, so F10 does not need per-service knowledge. |
+| Participation | Whether it contributes to **unified search**, **notifications** and **progress tracking** — each independently, each opt-in. |
+
+### 15.2 Why it is worth this much
+
+Five platform components read this one manifest and nothing else: **the launcher**, **the reverse proxy**, **backup/restore**, **health monitoring**, and **the app store**.
+
+- **[New decision] Adding an app or a tool is writing one manifest and changing no core code.** That property is what makes a large catalogue affordable. Without it, every addition is five edits in five components, and the catalogue's cost grows with its size — which is precisely how a feature list becomes unbuildable.
+- **It closes the resource-budget circularity at its cause** (§6): the consolidated budget is the sum of declared floors over the installed set, computed on the box, not a figure blocked on every track reporting at once.
+- **Participation is opt-in per capability.** An app that contributes to search but not to progress tracking says exactly that. A service that appears in no launcher still declares its health check, so nothing runs unwatched.
+
+*The manifest's wire format, field names beyond the §2.3 group, and its schema version are the implementing track's to settle. This document owns what must be declared and who reads it; it does not invent the serialization.*
+
+## 16. Cross-Cutting Properties — Stated Once, Here
+
+Each of these holds across every track. They are stated here so no track document restates them differently.
+
+- **No telemetry. Ever.** DeltOS reports nothing outward — no usage, no diagnostics, no crash reports, no phone-home of any kind. **The sole exception is F14 usage insights**, which is local to the box and aggregate-only: which packs get used, never which learner used them. Nothing leaves the box. A track needing an exception raises it here rather than adding one locally.
+- **The interface itself is translatable, not only the content.** The WebOS shell — admin console included — is localizable to the same standard as the content packs. A string baked into a component is a defect against this property.
+- **Backups cover everything people create.** F10 backup/restore covers hosted sites, security-lab work and code-studio projects alongside the existing content and progress data. Any new surface where a person creates something durable declares it under §15's durability group, which is how F10 learns about it without per-service knowledge.
+- **One licence check, for everything DeltOS distributes.** Games, depot software and security tools pass through the **same build-time licence validator** that packs already use (§11's licensing rules). There is not a second validator with second rules.
+- **LAN transport: plain HTTP for visitors, HTTPS only where the CA can be installed.** Visitors' own phones reach the box over plain HTTP, with every pack and every hosted site isolated **by hostname** (§8). HTTPS applies only to managed devices, where the box's certificate authority can be installed.
+  - **[New decision] The cost is recorded, not glossed.** Browser features that require a **secure context** are unavailable to plain-HTTP visitors. That excludes service workers and therefore offline caching of the shell, the Web Crypto API's `subtle` interface, geolocation, camera and microphone capture, and the clipboard API, among others. Any feature specified against an unmanaged visitor's phone must work without them — a track discovering it needs one has found a design problem, not a deployment problem, and raises it here.
