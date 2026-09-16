@@ -11,3 +11,7 @@
 # editor / OS
 *.swp
 .DS_Store
+
+# wax-builder emits a build report beside every archive it writes;
+# the committed legacy fixtures do not need theirs tracked.
+*.wax.build-report.json
