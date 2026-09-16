@@ -232,8 +232,10 @@ fn every_manifest_field_derives_from_the_zim_or_the_flags() {
     assert_eq!(m.get("languages").map(String::as_str), Some("en"), "languages ← Language (eng→en)");
     assert_eq!(m.get("license").map(String::as_str), Some("CC-BY-SA-4.0"));
     assert_eq!(m.get("category").map(String::as_str), Some("reference"), "← --category");
-    assert_eq!(m.get("min_hw_tier").map(String::as_str), Some("pi_zero_2w"), "← --min-hw-tier");
-    assert_eq!(m.len(), 9, "8 required + languages; got {:?}", m.keys().collect::<Vec<_>>());
+    assert_eq!(m.get("arch").map(String::as_str), Some("any"), "← --arch");
+    assert_eq!(m.get("min_ram_bytes").map(String::as_str), Some("2147483648"), "← --min-ram-bytes");
+    assert_eq!(m.get("min_storage_bytes").map(String::as_str), Some("34359738368"), "← --min-storage-bytes");
+    assert_eq!(m.len(), 11, "10 required + languages; got {:?}", m.keys().collect::<Vec<_>>());
 }
 
 #[test]
@@ -379,19 +381,23 @@ fn bad_category_or_tier_is_rejected_before_any_conversion() {
     assert!(convert(&fx.zim, &fx.wax, &o).unwrap_err().to_string().contains("--category"));
     assert!(!fx.wax.exists(), "nothing written");
     let mut o = opts();
-    o.min_hw_tier = "generic".into();
+    o.arch = "pi_5".into();
     let e = convert(&fx.zim, &fx.wax, &o).unwrap_err().to_string();
-    assert!(e.contains("--min-hw-tier") && e.contains("generic"), "{e}");
+    assert!(e.contains("--arch") && e.contains("pi_5"), "{e}");
     let mut o = opts();
-    o.min_hw_tier = "Kiosk".into();
+    o.arch = "Kiosk".into();
     assert!(convert(&fx.zim, &fx.wax, &o).is_err());
+    let mut o = opts();
+    o.min_storage_bytes = 0;
+    let e = convert(&fx.zim, &fx.wax, &o).unwrap_err().to_string();
+    assert!(e.contains("--min-storage-bytes"), "{e}");
 }
 
 #[test]
 fn cli_refuses_to_run_without_the_required_flags() {
     let fx = fixture(&wiki());
     let bin = env!("CARGO_BIN_EXE_zim2wax");
-    // no --category, no --min-hw-tier
+    // no --category, no resource flags
     let out = std::process::Command::new(bin)
         .args(["convert", "--input"])
         .arg(&fx.zim)
@@ -401,7 +407,7 @@ fn cli_refuses_to_run_without_the_required_flags() {
         .unwrap();
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("--category") && stderr.contains("--min-hw-tier"), "{stderr}");
+    assert!(stderr.contains("--category") && stderr.contains("--min-ram-bytes"), "{stderr}");
     assert!(!fx.wax.exists());
     // with only --category
     let out = std::process::Command::new(bin)
@@ -413,7 +419,7 @@ fn cli_refuses_to_run_without_the_required_flags() {
         .output()
         .unwrap();
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("--min-hw-tier"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--min-ram-bytes"));
 }
 
 // ===========================================================================

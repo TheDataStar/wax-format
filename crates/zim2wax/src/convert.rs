@@ -17,7 +17,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::collections::{BTreeMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use wax_builder::config::{ManifestConfig, CATEGORIES, MIN_HW_TIERS};
+use wax_builder::config::{ManifestConfig, ARCHES, CATEGORIES, GPU_MODES};
 use wax_builder::{BuildContext, EntryMeta, PackStream, Warnings, WriteOptions, WriteReport};
 use wax_core::Compression;
 use zim::{MimeType, Namespace, Target, Zim};
@@ -154,12 +154,17 @@ fn compression_for(bare: &str) -> Compression {
     }
 }
 
-/// What the operator supplies. `category` and `min_hw_tier` have no source in
+/// What the operator supplies. `category` and the resource requirement have no source in
 /// a ZIM (§20) and are required; nothing is defaulted.
 #[derive(Debug, Clone)]
 pub struct ConvertOptions {
     pub category: String,
-    pub min_hw_tier: String,
+    /// Contract §2.3. A ZIM states nothing about the resources its content
+    /// needs, so the operator declares them.
+    pub min_ram_bytes: i64,
+    pub min_storage_bytes: i64,
+    pub arch: String,
+    pub gpu: Option<String>,
     /// Used **only** when the ZIM carries no `License` metadata. Real Wikipedia
     /// ZIMs (mwoffliner 1.17) omit it, and Contract §11 makes a blank license
     /// a hard failure — so without this the flagship content cannot convert.
@@ -184,13 +189,33 @@ impl ConvertOptions {
                 CATEGORIES.join(", ")
             );
         }
-        if !MIN_HW_TIERS.contains(&self.min_hw_tier.as_str()) {
+        if !ARCHES.contains(&self.arch.as_str()) {
             bail!(
-                "--min-hw-tier {:?} is not permitted; must be one of: {} (Contract §2). \
-                 `generic` is box-reported only and never declarable by a pack.",
-                self.min_hw_tier,
-                MIN_HW_TIERS.join(", ")
+                "--arch {:?} is not permitted; must be one of: {} (Contract §2.3). \
+                 Converted web content is normally architecture-independent: `any`.",
+                self.arch,
+                ARCHES.join(", ")
             );
+        }
+        if let Some(g) = self.gpu.as_deref() {
+            if !GPU_MODES.contains(&g) {
+                bail!(
+                    "--gpu {g:?} is not permitted; must be one of: {} (Contract §2.3). \
+                     Omit the flag entirely when an accelerator is irrelevant.",
+                    GPU_MODES.join(", ")
+                );
+            }
+        }
+        for (flag, v) in [
+            ("--min-ram-bytes", self.min_ram_bytes),
+            ("--min-storage-bytes", self.min_storage_bytes),
+        ] {
+            if v <= 0 {
+                bail!(
+                    "{flag} is {v}; it must be a positive byte count. A floor of zero \
+                     gates nothing (Contract §2.3)."
+                );
+            }
         }
         Ok(())
     }
@@ -554,7 +579,10 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
         license: Some(derived.license.clone()),
         attribution: Some(derived.attribution.clone()),
         version: Some(derived.version.clone()),
-        min_hw_tier: Some(opts.min_hw_tier.clone()),
+        min_ram_bytes: Some(opts.min_ram_bytes),
+        min_storage_bytes: Some(opts.min_storage_bytes),
+        arch: Some(opts.arch.clone()),
+        gpu: opts.gpu.clone(),
         entry_point: Some(derived.entry_point.clone()),
         languages: derived.languages.clone(),
         ..ManifestConfig::default()
@@ -811,7 +839,10 @@ mod tests {
     fn option_validation_uses_contract_enums() {
         let mut o = ConvertOptions {
             category: "reference".into(),
-            min_hw_tier: "pi_4".into(),
+            min_ram_bytes: 2 * 1024 * 1024 * 1024,
+            min_storage_bytes: 32 * 1024 * 1024 * 1024,
+            arch: "any".into(),
+            gpu: None,
             license_if_absent: None,
             attribution_if_absent: None,
             created_at: None,
@@ -819,11 +850,32 @@ mod tests {
             sign_key: None,
         };
         assert!(o.validate().is_ok());
+
         o.category = "science".into();
         assert!(o.validate().unwrap_err().to_string().contains("--category"));
         o.category = "reference".into();
-        o.min_hw_tier = "generic".into();
+
+        // A retired board tier is no longer a hardware vocabulary anywhere.
+        o.arch = "pi_5".into();
         let e = o.validate().unwrap_err().to_string();
-        assert!(e.contains("--min-hw-tier") && e.contains("generic"), "{e}");
+        assert!(e.contains("--arch") && e.contains("pi_5"), "{e}");
+        o.arch = "any".into();
+
+        // A Deployment Profile is still a different axis.
+        o.arch = "Kiosk".into();
+        assert!(o.validate().is_err());
+        o.arch = "any".into();
+
+        // gpu is a closed set when present.
+        o.gpu = Some("maybe".into());
+        let e = o.validate().unwrap_err().to_string();
+        assert!(e.contains("--gpu"), "{e}");
+        o.gpu = Some("preferred".into());
+        assert!(o.validate().is_ok());
+
+        // A floor of zero gates nothing.
+        o.min_ram_bytes = 0;
+        let e = o.validate().unwrap_err().to_string();
+        assert!(e.contains("--min-ram-bytes"), "{e}");
     }
 }

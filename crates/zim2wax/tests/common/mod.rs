@@ -293,7 +293,10 @@ pub fn committed(name: &str) -> PathBuf {
 pub fn opts() -> zim2wax::ConvertOptions {
     zim2wax::ConvertOptions {
         category: "reference".into(),
-        min_hw_tier: "pi_zero_2w".into(),
+        min_ram_bytes: 2 * 1024 * 1024 * 1024,
+        min_storage_bytes: 32 * 1024 * 1024 * 1024,
+        arch: "any".into(),
+        gpu: None,
         license_if_absent: None,
         attribution_if_absent: None,
         created_at: Some(1_789_000_000),

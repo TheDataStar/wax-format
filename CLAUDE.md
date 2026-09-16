@@ -26,12 +26,12 @@ _Last updated: 2026-09-15, Directive 01._
 | Component | State | Evidence |
 |---|---|---|
 | `wax-core` | Streaming reader (A1b) + streaming writer (A2e), both memory-bounded. Segment-chain merge, one-hop redirects, checksum verification. | 60 tests |
-| `wax-builder` | `build` / `append` / `inspect` / `verify` / `ls` / `read`; manifest, aliases, compression policy, UUIDv4 identity, minisign hook (A7). | 84 tests |
+| `wax-builder` | `build` / `append` / `inspect` / `verify` / `ls` / `read`; manifest, aliases, compression policy, UUIDv4 identity, minisign hook (A7). | 93 tests |
 | `zim2wax` | Track B v0, text + image. §20 canonical paths, href rewriting, redirect flattening, manifest derivation, §11 licensing + build report. | 61 tests |
 | `fuzz/` | 3 `cargo-fuzz` targets: `header-parse`, `index-loader`, `segment-merge`. | seed corpora committed |
 | WAX format | **v0.9 frozen.** `SPEC.md` is normative and byte-exact. | — |
 
-**Test suite: 205 tests.** Platform results and all measured figures live in
+**Test suite: 214 tests.** Platform results and all measured figures live in
 `docs/baseline.md` and the Directive 01 report. Read `docs/baseline.md` before
 quoting any performance number.
 
@@ -70,7 +70,7 @@ rely on anyone reading the skip line.
 Directive 02 wrote all of this into the design set. These are no longer "supersedes until someone rewrites it" notes — **the documents say it**, and the document named is the owner.
 
 - **DeltOS is hardware-agnostic.** Device-name tiers are **retired entirely**. Capability follows measured **RAM, storage, CPU architecture and GPU presence**. Minimum spec 2 GB / 32 GB / `aarch64`; preferred 16 GB / 256 GB / `x86_64`. Board names are examples, never gates. The Pi Zero 2 W is not a target anywhere. → **contract §2**
-- **`min_hw_tier` is replaced** by `min_ram_bytes` / `min_storage_bytes` / `arch` / optional `gpu`. → **contract §2.3**
+- **`min_hw_tier` is replaced** by `min_ram_bytes` / `min_storage_bytes` / `arch` / optional `gpu`. **Shipped** — `wax-builder` and `zim2wax` validate and emit them, and a pack built before the migration still opens via a read-time mapping. → **contract §2.3, §11**
 - **One WebOS, one light visual language**, admin through learner. No dark theme, no separate admin look. Layered by default, flat fallback **decided by the rendering client**, honouring its reduced-transparency and reduced-motion settings. → **design-language §2, §4, §5, §22**
 - **The app contract** — one manifest declaring resources, address and roles, sign-in, health check, backup set and participation, read by the launcher, proxy, backup, health monitoring and store. Adding an app changes no core code. → **contract §15**
 - **No telemetry, ever**, with F14 aggregate-local as the sole exception; the shell itself is translatable; backups cover hosted sites, security-lab work and code-studio projects; one licence check for everything DeltOS distributes; **plain HTTP for unmanaged visitors with the secure-context cost recorded**. → **contract §16**
@@ -101,14 +101,11 @@ The previous palette's blanket AA claim was false: six pairings failed 4.5:1, wo
 
 ### What comes next
 
-**Still blocking, unchanged:** the Directive 01 rig work. Linux x86 and ARM64 runs, the real-content measurements, the WAX-vs-ZIM output sizes and two of three determinism legs all wait on the two machines being reachable. **The read-only SQLite VFS behind every pack open has still only ever run on Windows.** Windows determinism anchor: `374dab8385e07a35b1baa3ebb4a837105a60758406317cb64552ee7c66a12892`.
+**Still blocking, unchanged:** the Directive 01 rig work. Linux x86 and ARM64 runs, the real-content measurements, the WAX-vs-ZIM output sizes and two of three determinism legs all wait on the two machines being reachable. **The read-only SQLite VFS behind every pack open has still only ever run on Windows.** Windows determinism anchor: `bdc3bc4df07447306dfc8b02d04b51c3d5b0927004115ab7a5c3157ae6983a11`.
 
-**The next implementation directive — two migrations, sequenced together.** Both are code catching up to a documented model, and they touch overlapping surfaces, so they go in one pass:
+**Migration 1 of 2 is done.** `min_hw_tier` → measured resources shipped in Directive 03: `MIN_HW_TIERS` is gone, `zim2wax` emits the resource fields, and every enum assertion was migrated rather than deleted. Legacy packs open via a read-time mapping, proven against real pre-migration artifacts committed at `crates/wax-builder/tests/fixtures/legacy-tier-*.wax`.
 
-1. **`min_hw_tier` → measured resources** (contract §2.3). `MIN_HW_TIERS` in `crates/wax-builder/src/config.rs`, the validator messages, **fifteen assertions across three tests** in `crates/wax-builder/tests/manifest_schema.rs`, the example manifest, and the `zim2wax` fixtures.
-2. **The role enum → data-driven permissions** (contract §4). Retire the closed role literal, the `query_role` shape, and the fixed operations table in favour of the permission catalogue, stored role bundles and effective-permission checks.
-
-Neither has been started. The documents state the target; **no code has moved.**
+**Migration 2 of 2 is not started: the role enum → data-driven permissions** (contract §4). It rides with the Track F identity build rather than standing alone, since the identity service is largely unbuilt.
 
 **Directive 04 — measurement.** The three compression options — per-article, grouped, and per-article with a shared dictionary — measured on the real archives for size, read speed **on SD and on SSD**, and one-month delta size. Needs the rigs and the §5.7 output-size baseline that does not exist yet.
 

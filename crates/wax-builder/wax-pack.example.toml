@@ -40,17 +40,34 @@ attribution = "Nairobi Community Trust"
 # number. Not semver — "1.0.0" is rejected.
 version = "2026.09.1"
 
-# The lowest board tier the pack runs on. One of exactly:
-#   pi_zero_2w | pi_4 | pi_5 | mini_pc
-# Never "generic" (that is a tier a box reports about itself, never one a pack
-# declares) and never a Deployment Profile name (Kiosk / Classroom /
-# Community Hub / Field Ops — a different axis).
-min_hw_tier = "pi_zero_2w"
+# What the pack needs, as measured resources — never a device name.
+# Capability follows what a box measures about itself, so a pack declares its
+# requirement and the box compares (docs/cross-track-contract.md §2.3).
+#
+# The retired board tiers (pi_zero_2w | pi_4 | pi_5 | mini_pc) are a build
+# error here. Packs already built with `min_hw_tier` still open — the value is
+# mapped to its resource floor on read.
+
+# Steady-state RAM the pack needs to run at all. Bytes.
+min_ram_bytes = 2147483648        # 2 GiB — the minimum spec (§2.1)
+
+# Storage needed beyond the archive itself. Bytes.
+min_storage_bytes = 34359738368   # 32 GiB
+
+# One of exactly: aarch64 | x86_64 | any.
+# Most web packs are architecture-independent and declare "any".
+arch = "any"
 
 # Path to the launch target inside this archive. Same rules as `icon`.
 entry_point = "index.html"
 
 # --- Optional fields (§11) ------------------------------------------------
+#
+# gpu = "preferred"                     # "required" or "preferred". Omit the
+#                                       # key entirely when an accelerator is
+#                                       # irrelevant -- never write "none" or
+#                                       # false. "preferred" selects an
+#                                       # execution path and never gates (2.3).
 # Omitted entirely from the manifest when unset — never written as 0, "" or
 # false. Uncomment only what actually applies to the pack.
 #

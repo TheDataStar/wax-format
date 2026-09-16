@@ -24,10 +24,21 @@ enum Commands {
         /// media, tools, civic, health (Contract §11).
         #[arg(long)]
         category: String,
-        /// REQUIRED — a ZIM carries no analog. The lowest board tier the pack
-        /// runs on: pi_zero_2w, pi_4, pi_5, mini_pc (Contract §2). Never generic.
+        /// REQUIRED — a ZIM carries no analog. Steady-state RAM the pack needs,
+        /// in bytes (Contract §2.3). e.g. 2147483648 for 2 GiB.
         #[arg(long)]
-        min_hw_tier: String,
+        min_ram_bytes: i64,
+        /// REQUIRED — storage the pack needs beyond the archive, in bytes.
+        #[arg(long)]
+        min_storage_bytes: i64,
+        /// REQUIRED — aarch64, x86_64 or any. Converted web content is normally
+        /// architecture-independent: any (Contract §2.3).
+        #[arg(long)]
+        arch: String,
+        /// Optional — required or preferred. Omit when an accelerator is
+        /// irrelevant; preferred selects a path and never gates.
+        #[arg(long)]
+        gpu: Option<String>,
         /// License to record when the ZIM has NO License metadata (current
         /// Wikipedia ZIMs omit it and a blank license is a hard failure,
         /// Contract §11). Ignored when the ZIM states one. SPDX id or text.
@@ -63,14 +74,18 @@ fn main() -> Result<()> {
             input,
             output,
             category,
-            min_hw_tier,
+            min_ram_bytes,
+            min_storage_bytes,
+            arch,
+            gpu,
             license,
             attribution,
             sign_key,
             created_at,
             archive_uuid,
         } => cmd_convert(
-            input, output, category, min_hw_tier, license, attribution, sign_key, created_at, archive_uuid,
+            input, output, category, min_ram_bytes, min_storage_bytes, arch, gpu, license,
+            attribution, sign_key, created_at, archive_uuid,
         ),
         Commands::Probe { input } => cmd_probe(input),
     }
@@ -81,7 +96,10 @@ fn cmd_convert(
     input: PathBuf,
     output: PathBuf,
     category: String,
-    min_hw_tier: String,
+    min_ram_bytes: i64,
+    min_storage_bytes: i64,
+    arch: String,
+    gpu: Option<String>,
     license: Option<String>,
     attribution: Option<String>,
     sign_key: Option<PathBuf>,
@@ -90,7 +108,10 @@ fn cmd_convert(
 ) -> Result<()> {
     let opts = ConvertOptions {
         category,
-        min_hw_tier,
+        min_ram_bytes,
+        min_storage_bytes,
+        arch,
+        gpu,
         license_if_absent: license,
         attribution_if_absent: attribution,
         created_at: created_at.or_else(|| {
@@ -188,6 +209,7 @@ fn cmd_probe(input: PathBuf) -> Result<()> {
         p.languages.as_deref().unwrap_or("(omitted)")
     );
     println!("    entry_point  ← main page  = {}", p.main_page.as_deref().unwrap_or("(none)"));
-    println!("    category, min_hw_tier      = supplied by --category / --min-hw-tier (no ZIM source)");
+    println!("    category, resources       = supplied by --category, --min-ram-bytes,
+           --min-storage-bytes, --arch (no ZIM source)");
     Ok(())
 }

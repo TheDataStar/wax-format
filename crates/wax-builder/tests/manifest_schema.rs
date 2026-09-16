@@ -24,7 +24,9 @@ category = "reference"
 license = "CC-BY-SA-4.0"
 attribution = "Nairobi Community Trust"
 version = "2026.09.1"
-min_hw_tier = "pi_zero_2w"
+min_ram_bytes = 2147483648
+min_storage_bytes = 34359738368
+arch = "any"
 entry_point = "index.html"
 "#;
 
@@ -76,6 +78,12 @@ fn manifest_without(key: &str) -> String {
         .filter(|l| !l.trim_start().starts_with(&format!("{key} ")))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// `VALID_MANIFEST` with an extra line appended. Needed for keys that are not
+/// in the canonical manifest at all — an optional field, or a retired one.
+fn manifest_plus(extra: &str) -> String {
+    format!("{}{extra}\n", VALID_MANIFEST)
 }
 
 /// `VALID_MANIFEST` with the line for `key` replaced by `replacement`.
@@ -139,7 +147,9 @@ required_field_case!(missing_category_is_rejected, "category");
 required_field_case!(missing_license_is_rejected, "license");
 required_field_case!(missing_attribution_is_rejected, "attribution");
 required_field_case!(missing_version_is_rejected, "version");
-required_field_case!(missing_min_hw_tier_is_rejected, "min_hw_tier");
+required_field_case!(missing_min_ram_bytes_is_rejected, "min_ram_bytes");
+required_field_case!(missing_min_storage_bytes_is_rejected, "min_storage_bytes");
+required_field_case!(missing_arch_is_rejected, "arch");
 required_field_case!(missing_entry_point_is_rejected, "entry_point");
 
 #[test]
@@ -149,7 +159,7 @@ fn an_empty_required_value_counts_as_missing() {
 }
 
 #[test]
-fn all_eight_required_fields_are_reported_together() {
+fn all_ten_required_fields_are_reported_together() {
     // a manifest with only optional keys names every missing required field
     let msg = build_err("[manifest]\nlanguages = \"en\"\n");
     for f in [
@@ -159,7 +169,9 @@ fn all_eight_required_fields_are_reported_together() {
         "license",
         "attribution",
         "version",
-        "min_hw_tier",
+        "min_ram_bytes",
+        "min_storage_bytes",
+        "arch",
         "entry_point",
     ] {
         assert!(msg.contains(f), "error should name {f}: {msg}");
@@ -188,35 +200,69 @@ fn every_permitted_category_is_accepted() {
 }
 
 #[test]
-fn bad_min_hw_tier_is_rejected() {
-    let msg = build_err(&manifest_with("min_hw_tier", r#"min_hw_tier = "banana""#));
-    assert!(msg.contains("min_hw_tier") && msg.contains("not permitted"), "{msg}");
-    assert!(msg.contains("pi_zero_2w"), "error should list the domain: {msg}");
+fn bad_arch_is_rejected() {
+    let msg = build_err(&manifest_with("arch", "arch = \"banana\""));
+    assert!(msg.contains("arch") && msg.contains("not permitted"), "{msg}");
+    assert!(msg.contains("aarch64"), "error should list the domain: {msg}");
 }
 
 #[test]
-fn every_permitted_min_hw_tier_is_accepted() {
-    for t in ["pi_zero_2w", "pi_4", "pi_5", "mini_pc"] {
-        let cfg = manifest_with("min_hw_tier", &format!(r#"min_hw_tier = "{t}""#));
+fn every_permitted_arch_is_accepted() {
+    for a in ["aarch64", "x86_64", "any"] {
+        let cfg = manifest_with("arch", &format!("arch = \"{a}\""));
         let (_dir, archive) = build_ok(&cfg);
         let r = WaxReader::open(&archive).unwrap();
-        assert_eq!(r.manifest().get("min_hw_tier").map(String::as_str), Some(t));
+        assert_eq!(r.manifest().get("arch").map(String::as_str), Some(a));
     }
 }
 
 #[test]
+fn a_retired_board_tier_in_arch_is_diagnosed_as_such() {
+    // The four names are gone as a vocabulary, so someone reaching for the old
+    // field may put a board name in `arch`. Say what happened.
+    for tier in ["pi_zero_2w", "pi_4", "pi_5", "mini_pc"] {
+        let msg = build_err(&manifest_with("arch", &format!("arch = \"{tier}\"")));
+        assert!(
+            msg.contains("retired hardware tier"),
+            "{tier:?} should be diagnosed as a retired tier, got: {msg}"
+        );
+        assert!(msg.contains("min_ram_bytes"), "should name the replacement: {msg}");
+    }
+}
+
+#[test]
+fn the_two_resource_floors_must_be_positive() {
+    for field in ["min_ram_bytes", "min_storage_bytes"] {
+        let msg = build_err(&manifest_with(field, &format!("{field} = 0")));
+        assert!(msg.contains(field) && msg.contains("positive"), "{msg}");
+        assert!(msg.contains("gates nothing"), "should say why zero is wrong: {msg}");
+    }
+}
+
+#[test]
+fn gpu_is_a_closed_set_when_present() {
+    for ok in ["required", "preferred"] {
+        let cfg = manifest_plus(&format!("gpu = \"{ok}\""));
+        let (_dir, archive) = build_ok(&cfg);
+        let r = WaxReader::open(&archive).unwrap();
+        assert_eq!(r.manifest().get("gpu").map(String::as_str), Some(ok));
+    }
+    let msg = build_err(&manifest_plus("gpu = \"none\""));
+    assert!(msg.contains("gpu") && msg.contains("not permitted"), "{msg}");
+    assert!(msg.contains("Omit the key"), "should say to omit, not write none: {msg}");
+}
+
+#[test]
 fn deployment_profile_names_are_rejected_with_a_targeted_message() {
-    // §16: an earlier draft used these; they are a different axis entirely.
+    // §16: an earlier draft used these for the hardware field; they are a
+    // different axis entirely. Now checked against `arch`.
     for profile in ["Kiosk", "Classroom", "Community Hub", "Field Ops", "community_hub"] {
-        let msg = build_err(&manifest_with(
-            "min_hw_tier",
-            &format!(r#"min_hw_tier = "{profile}""#),
-        ));
+        let msg = build_err(&manifest_with("arch", &format!("arch = \"{profile}\"")));
         assert!(
             msg.contains("Deployment Profile"),
             "{profile:?} should be diagnosed as a Deployment Profile name, got: {msg}"
         );
-        assert!(msg.contains("pi_zero_2w"), "should point at the real tiers: {msg}");
+        assert!(msg.contains("aarch64"), "should point at the real domain: {msg}");
     }
 }
 
@@ -723,21 +769,28 @@ fn append_report_carries_the_archives_licensing_outcome() {
 }
 
 // ---------------------------------------------------------------------------
-// min_hw_tier — generic is box-reported, never declared (Contract §2)
+// min_hw_tier — retired; a build that still declares it gets a migration path
 // ---------------------------------------------------------------------------
 
 #[test]
-fn generic_tier_is_rejected_with_a_targeted_message() {
-    for spelling in ["generic", "Generic", "GENERIC"] {
-        let msg = build_err(&manifest_with(
-            "min_hw_tier",
-            &format!(r#"min_hw_tier = "{spelling}""#),
-        ));
+fn retired_min_hw_tier_is_rejected_with_a_migration_message() {
+    // Replaces the old `generic is box-reported` case: there is no tier axis
+    // left for `generic` to be excluded from. What matters now is that a
+    // wax-pack.toml carried over from before the migration fails with the
+    // fields to use, not with "unknown key".
+    for spelling in ["pi_zero_2w", "pi_4", "pi_5", "mini_pc", "generic"] {
+        let msg = build_err(&manifest_plus(&format!("min_hw_tier = \"{spelling}\"")));
         assert!(
-            msg.contains("a box reports") && msg.contains("never one a pack declares"),
-            "{spelling:?} should be diagnosed as the box-only tier, got: {msg}"
+            msg.contains("was retired"),
+            "{spelling:?} should be diagnosed as the retired field, got: {msg}"
         );
-        assert!(msg.contains("pi_zero_2w"), "should point at the board tiers: {msg}");
+        for field in ["min_ram_bytes", "min_storage_bytes", "arch"] {
+            assert!(msg.contains(field), "migration message should name {field}: {msg}");
+        }
+        assert!(
+            msg.contains("still open"),
+            "message should say existing packs are unaffected: {msg}"
+        );
     }
 }
 
@@ -922,7 +975,9 @@ fn a_valid_manifest_round_trips_unchanged() {
         ("license", "CC-BY-SA-4.0"),
         ("attribution", "Nairobi Community Trust"),
         ("version", "2026.09.1"),
-        ("min_hw_tier", "pi_zero_2w"),
+        ("min_ram_bytes", "2147483648"),
+        ("min_storage_bytes", "34359738368"),
+        ("arch", "any"),
         ("entry_point", "index.html"),
     ];
     for (k, v) in expected {

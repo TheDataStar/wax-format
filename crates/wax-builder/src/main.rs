@@ -242,10 +242,52 @@ fn cmd_inspect(archive: PathBuf, list_entries: bool) -> Result<()> {
         }
     }
     if !manifest.is_empty() {
+        // Resolve the hardware requirement, mapping a retired `min_hw_tier`
+        // where a pack predates the measured-resource migration.
+        if let Some(hw) = wax_builder::config::resolve_hw_requirement(manifest) {
+            let gib = |b: i64| b as f64 / (1024.0 * 1024.0 * 1024.0);
+            match &hw.from_legacy_tier {
+                None => println!(
+                    "  -> requires {:.0} GiB RAM, {:.0} GiB storage, arch {}{}",
+                    gib(hw.min_ram_bytes),
+                    gib(hw.min_storage_bytes),
+                    hw.arch,
+                    hw.gpu.as_deref().map(|g| format!(", gpu {g}")).unwrap_or_default()
+                ),
+                Some(tier) => {
+                    println!(
+                        "  -> legacy `min_hw_tier = {tier}` mapped to {:.0} GiB RAM, \
+                         {:.0} GiB storage, arch {} (pack predates the measured-resource \
+                         migration; the value is mapped on read, not rewritten)",
+                        gib(hw.min_ram_bytes),
+                        gib(hw.min_storage_bytes),
+                        hw.arch
+                    );
+                    if hw.weakened {
+                        println!(
+                            "  WARNING: `{tier}` guaranteed more than the floor it maps to. \
+                             The resource point it carried is stated in no current document, \
+                             so the mapping resolves DOWN to the minimum spec and this pack \
+                             may be judged runnable on hardware it was not built for. \
+                             Re-build it with declared resource fields to state its real \
+                             floor (docs/cross-track-contract.md §2.1, §2.3)."
+                        );
+                    }
+                }
+            }
+        }
+
+        // Absent-field warning. A legacy pack is missing the three resource
+        // fields by definition, and saying so adds nothing once the mapping
+        // above has reported what it resolved to.
+        let legacy = manifest.contains_key("min_hw_tier");
         let missing: Vec<&str> = wax_builder::config::REQUIRED_FIELDS
             .iter()
             .copied()
             .filter(|k| !manifest.contains_key(*k))
+            .filter(|k| {
+                !(legacy && matches!(*k, "min_ram_bytes" | "min_storage_bytes" | "arch"))
+            })
             .collect();
         if !missing.is_empty() {
             println!(

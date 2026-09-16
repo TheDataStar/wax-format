@@ -10,14 +10,17 @@
 //! Track A §16 and Track B §2 cite it rather than restating it, and this module
 //! enforces it — presence, requiredness, value domain and format.
 //!
-//! * **Eight required:** `name`, `icon`, `category`, `license`, `attribution`,
-//!   `version`, `min_hw_tier`, `entry_point`. `icon` and `entry_point` must name
-//!   entries that exist in the pack.
-//! * **Five optional**, omitted when unset rather than defaulted:
-//!   `guest_accessible` (bool), `runtime_ram_bytes`, `runtime_storage_bytes`,
-//!   `languages` (BCP-47), `depends_on` (archive_uuids).
-//! * **Closed enums:** [`CATEGORIES`]; [`MIN_HW_TIERS`], the Contract §2 board
-//!   tiers — never `generic` (box-reported only) and never a Deployment Profile.
+//! * **Ten required:** `name`, `icon`, `category`, `license`, `attribution`,
+//!   `version`, `min_ram_bytes`, `min_storage_bytes`, `arch`, `entry_point`.
+//!   `icon` and `entry_point` must name entries that exist in the pack.
+//! * **Six optional**, omitted when unset rather than defaulted:
+//!   `guest_accessible` (bool), `gpu`, `runtime_ram_bytes`,
+//!   `runtime_storage_bytes`, `languages` (BCP-47), `depends_on` (archive_uuids).
+//! * **Closed enums:** [`CATEGORIES`]; [`ARCHES`]; [`GPU_MODES`].
+//! * **Capability follows measured resources, never a device name.** The retired
+//!   `min_hw_tier` board tiers are a hard error at build time and are mapped to
+//!   their resource floor on read, so nothing built earlier becomes unopenable
+//!   — see [`LEGACY_HW_TIERS`] and [`legacy_tier_floor`].
 //! * **Formats:** `version` is CalVer `YYYY.MM.N`; each `languages` element is
 //!   a well-formed BCP-47 tag; each `depends_on` element is a UUID, normalized
 //!   to the canonical lowercase-hyphenated form on write.
@@ -35,12 +38,72 @@ use std::path::Path;
 /// `category` domain (Contract §11). Closed set.
 pub const CATEGORIES: [&str; 6] = ["reference", "education", "media", "tools", "civic", "health"];
 
-/// `min_hw_tier` domain — the four board tiers of Contract §2. Closed set.
-/// `generic` is a value a box reports, never one a pack declares.
-pub const MIN_HW_TIERS: [&str; 4] = ["pi_zero_2w", "pi_4", "pi_5", "mini_pc"];
+/// `arch` domain (Contract §2.3). Closed set. `any` means the content is
+/// architecture-independent, which is the normal case for a web pack.
+pub const ARCHES: [&str; 3] = ["aarch64", "x86_64", "any"];
 
-/// Deployment Profile names. A different axis entirely from the hardware tier;
-/// an earlier draft used these for `min_hw_tier`, so they get a targeted error.
+/// `gpu` domain (Contract §2.3). Optional field; omitted when irrelevant.
+/// `preferred` selects an execution path and never gates.
+pub const GPU_MODES: [&str; 2] = ["required", "preferred"];
+
+/// The retired device-name tiers, and the resource floor each one mapped to.
+///
+/// Kept for **reading** packs built before the measured-resource migration:
+/// such a pack declares a board name, and nothing built before this change may
+/// become unopenable (Directive 03 §2). It is never a build-time vocabulary —
+/// `min_hw_tier` in a `wax-pack.toml` is now a hard error with a migration
+/// message.
+///
+/// Floors are taken from Contract §2.1's two reference specs, which are the
+/// only resource points any current document states:
+///
+/// * `pi_zero_2w` → the minimum spec. The board is retired as a target, and
+///   Directive 03 §3 fixes that a legacy pack does not become unrunnable
+///   because the device it named is gone.
+/// * `pi_4`, `pi_5` → the minimum spec. §2.1 places both in one resource class
+///   ("Raspberry Pi 4/5-class"). **See [`legacy_tier_weakens_guarantee`]: for
+///   `pi_5` this is a widening, and it is reported rather than hidden.**
+/// * `mini_pc` → the preferred spec's RAM and storage. Its `arch` is **not**
+///   carried over: the old name bundled 16 GB with x86, and Directive 02a
+///   settled that only the numbers were ever the requirement.
+pub const LEGACY_HW_TIERS: [(&str, i64, i64); 4] = [
+    ("pi_zero_2w", MIN_SPEC_RAM, MIN_SPEC_STORAGE),
+    ("pi_4", MIN_SPEC_RAM, MIN_SPEC_STORAGE),
+    ("pi_5", MIN_SPEC_RAM, MIN_SPEC_STORAGE),
+    ("mini_pc", PREFERRED_SPEC_RAM, PREFERRED_SPEC_STORAGE),
+];
+
+/// Contract §2.1 minimum spec: 2 GB RAM, 32 GB storage.
+pub const MIN_SPEC_RAM: i64 = 2 * 1024 * 1024 * 1024;
+pub const MIN_SPEC_STORAGE: i64 = 32 * 1024 * 1024 * 1024;
+/// Contract §2.1 preferred spec: 16 GB RAM, 256 GB storage.
+pub const PREFERRED_SPEC_RAM: i64 = 16 * 1024 * 1024 * 1024;
+pub const PREFERRED_SPEC_STORAGE: i64 = 256 * 1024 * 1024 * 1024;
+
+/// Resolve a retired tier name to its resource floor, for reading old packs.
+pub fn legacy_tier_floor(tier: &str) -> Option<(i64, i64)> {
+    LEGACY_HW_TIERS
+        .iter()
+        .find(|(n, _, _)| *n == tier)
+        .map(|(_, r, s)| (*r, *s))
+}
+
+/// True when mapping this retired tier onto Contract §2.1's floors **loses a
+/// guarantee the old value carried**.
+///
+/// `pi_5` is the case. The table Directive 02 removed gave it 4 GB / 64 GB;
+/// §2.1 now places Pi 4 and Pi 5 in one class at 2 GB / 32 GB. A legacy `pi_5`
+/// pack therefore resolves to a floor *below* the one it was built against, so
+/// a 2 GB box would be judged able to run it. The correct resource point is a
+/// value no current document states, and inventing one here is exactly what
+/// this project's contract exists to prevent — so the loss is surfaced instead.
+pub fn legacy_tier_weakens_guarantee(tier: &str) -> bool {
+    tier == "pi_5"
+}
+
+/// Deployment Profile names. A different axis entirely from hardware; an
+/// earlier draft used these for the retired tier field, so they get a targeted
+/// error.
 const DEPLOYMENT_PROFILES: [&str; 4] = ["kiosk", "classroom", "communityhub", "fieldops"];
 
 /// SPDX identifiers that build clean (Contract §11). Literal, exact-match.
@@ -57,21 +120,27 @@ pub const LICENSE_ALLOWLIST: [&str; 10] = [
     "GPL-3.0-or-later",
 ];
 
-/// The eight required §11 fields, in table order.
-pub const REQUIRED_FIELDS: [&str; 8] = [
+/// The ten required §11 fields, in table order.
+///
+/// `min_hw_tier` was retired here and replaced by the three resource fields
+/// (Contract §2.3, §11): a pack declares what it needs, not what it runs on.
+pub const REQUIRED_FIELDS: [&str; 10] = [
     "name",
     "icon",
     "category",
     "license",
     "attribution",
     "version",
-    "min_hw_tier",
+    "min_ram_bytes",
+    "min_storage_bytes",
+    "arch",
     "entry_point",
 ];
 
-/// The five optional §11 fields, in table order.
-pub const OPTIONAL_FIELDS: [&str; 5] = [
+/// The six optional §11 fields, in table order.
+pub const OPTIONAL_FIELDS: [&str; 6] = [
     "guest_accessible",
+    "gpu",
     "runtime_ram_bytes",
     "runtime_storage_bytes",
     "languages",
@@ -129,13 +198,20 @@ pub struct ManifestConfig {
     pub license: Option<String>,
     pub attribution: Option<String>,
     pub version: Option<String>,
-    pub min_hw_tier: Option<String>,
+    /// Contract §2.3. Steady-state RAM the pack needs to run at all.
+    pub min_ram_bytes: Option<i64>,
+    /// Contract §2.3. Storage needed beyond the archive itself.
+    pub min_storage_bytes: Option<i64>,
+    /// Contract §2.3. `aarch64` · `x86_64` · `any`.
+    pub arch: Option<String>,
     pub entry_point: Option<String>,
 
     // --- optional; omitted entirely when unset, never defaulted ---
     /// Author's default for Guest-profile visibility. The admin override lives
     /// in the catalog, not here (§11).
     pub guest_accessible: Option<bool>,
+    /// Contract §2.3. `required` or `preferred`; omitted when irrelevant.
+    pub gpu: Option<String>,
     pub runtime_ram_bytes: Option<i64>,
     pub runtime_storage_bytes: Option<i64>,
     /// Comma-separated BCP-47 tags.
@@ -147,6 +223,9 @@ pub struct ManifestConfig {
     //     rejected with a specific message rather than a generic "unknown" ---
     pub id: Option<toml::Value>,
     pub total_size_bytes: Option<toml::Value>,
+    /// Retired by the measured-resource migration. Captured so a build fails
+    /// with a migration message rather than "unknown key".
+    pub min_hw_tier: Option<toml::Value>,
 
     /// Anything not in the §11 table.
     #[serde(flatten)]
@@ -162,7 +241,7 @@ impl ManifestConfig {
             ("license", &self.license),
             ("attribution", &self.attribution),
             ("version", &self.version),
-            ("min_hw_tier", &self.min_hw_tier),
+            ("arch", &self.arch),
             ("entry_point", &self.entry_point),
         ]
     }
@@ -172,13 +251,17 @@ impl ManifestConfig {
     /// pack that declares a manifest.
     pub fn is_empty(&self) -> bool {
         self.required_pairs().iter().all(|(_, v)| v.is_none())
+            && self.min_ram_bytes.is_none()
+            && self.min_storage_bytes.is_none()
             && self.guest_accessible.is_none()
+            && self.gpu.is_none()
             && self.runtime_ram_bytes.is_none()
             && self.runtime_storage_bytes.is_none()
             && self.languages.is_none()
             && self.depends_on.is_none()
             && self.id.is_none()
             && self.total_size_bytes.is_none()
+            && self.min_hw_tier.is_none()
             && self.unknown.is_empty()
     }
 
@@ -206,27 +289,50 @@ impl ManifestConfig {
                  wax-pack.toml (see docs/cross-track-contract.md §11, track-a-refinement.md §17)."
             );
         }
+        if self.min_hw_tier.is_some() {
+            bail!(
+                "manifest key `min_hw_tier` was retired: capability follows measured \
+                 resources, not a device name, and the four board tiers \
+                 (pi_zero_2w, pi_4, pi_5, mini_pc) are gone as a vocabulary. Declare what \
+                 the pack needs instead:\n\
+                 \x20   min_ram_bytes     = 2147483648   # 2 GB\n\
+                 \x20   min_storage_bytes = 34359738368  # 32 GB\n\
+                 \x20   arch              = \"any\"        # aarch64 | x86_64 | any\n\
+                 \x20   # gpu             = \"preferred\"  # optional\n\
+                 Packs already built with `min_hw_tier` still open — the value is mapped to \
+                 its resource floor on read (docs/cross-track-contract.md §2.3, §11)."
+            );
+        }
         if !self.unknown.is_empty() {
             let mut keys: Vec<&str> = self.unknown.keys().map(String::as_str).collect();
             keys.sort_unstable();
             bail!(
                 "unknown manifest key(s): {}. Contract §11's field table is exhaustive — \
-                 eight required, five optional, nothing else; permitted keys are: {}",
+                 ten required, six optional, nothing else; permitted keys are: {}",
                 keys.join(", "),
                 allowed_keys().join(", ")
             );
         }
 
         // Required presence.
-        let missing: Vec<&str> = self
+        let mut missing: Vec<&str> = self
             .required_pairs()
             .iter()
             .filter(|(_, v)| v.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true))
             .map(|(k, _)| *k)
             .collect();
+        // The two resource floors are required and numeric, so they are not in
+        // required_pairs (which is string-typed). Contract §2.3.
+        if self.min_ram_bytes.is_none() {
+            missing.push("min_ram_bytes");
+        }
+        if self.min_storage_bytes.is_none() {
+            missing.push("min_storage_bytes");
+        }
+        missing.sort_by_key(|k| REQUIRED_FIELDS.iter().position(|f| f == k).unwrap_or(usize::MAX));
         if !missing.is_empty() {
             bail!(
-                "manifest is missing required field(s): {}. All eight of {} are required \
+                "manifest is missing required field(s): {}. All ten of {} are required \
                  (docs/cross-track-contract.md §11)",
                 missing.join(", "),
                 REQUIRED_FIELDS.join(", ")
@@ -241,34 +347,67 @@ impl ManifestConfig {
                 CATEGORIES.join(", ")
             );
         }
-        let tier = self.min_hw_tier.as_deref().unwrap_or_default();
-        if !MIN_HW_TIERS.contains(&tier) {
-            let squashed: String = tier
+        // arch: closed set (Contract §2.3).
+        let arch = self.arch.as_deref().unwrap_or_default();
+        if !ARCHES.contains(&arch) {
+            let squashed: String = arch
                 .chars()
                 .filter(|c| c.is_ascii_alphanumeric())
                 .map(|c| c.to_ascii_lowercase())
                 .collect();
-            if squashed == "generic" {
+            if legacy_tier_floor(arch).is_some() || legacy_tier_floor(&squashed).is_some() {
                 bail!(
-                    "manifest min_hw_tier {tier:?}: `generic` is a tier a box reports about \
-                     itself, never one a pack declares — a floor of \"declared\" cannot gate \
-                     anything (docs/cross-track-contract.md §2). Declare the lowest board \
-                     tier the pack runs on: {}",
-                    MIN_HW_TIERS.join(", ")
+                    "manifest arch {arch:?} is a retired hardware tier name, not an \
+                     architecture. Device-name tiers were replaced by measured resources: \
+                     declare `min_ram_bytes`, `min_storage_bytes` and `arch` \
+                     (docs/cross-track-contract.md §2.3). Permitted arch values: {}",
+                    ARCHES.join(", ")
                 );
             }
             if DEPLOYMENT_PROFILES.contains(&squashed.as_str()) {
                 bail!(
-                    "manifest min_hw_tier {tier:?} is a Deployment Profile name, not a \
-                     hardware tier — they are different axes (docs/cross-track-contract.md \
-                     §2–§3). Use one of the board tiers: {}",
-                    MIN_HW_TIERS.join(", ")
+                    "manifest arch {arch:?} is a Deployment Profile name — a different axis \
+                     entirely (docs/cross-track-contract.md §2–§3). Permitted arch values: {}",
+                    ARCHES.join(", ")
                 );
             }
             bail!(
-                "manifest min_hw_tier {tier:?} is not permitted; must be one of: {}",
-                MIN_HW_TIERS.join(", ")
+                "manifest arch {arch:?} is not permitted; must be one of: {}. Most web packs \
+                 are architecture-independent and declare `any` \
+                 (docs/cross-track-contract.md §2.3)",
+                ARCHES.join(", ")
             );
+        }
+
+        // gpu: optional, closed set. `preferred` selects a path and never gates.
+        if let Some(g) = self.gpu.as_deref() {
+            if !GPU_MODES.contains(&g) {
+                bail!(
+                    "manifest gpu {g:?} is not permitted; must be one of: {}. Omit the key \
+                     entirely when an accelerator is irrelevant — never write `none` or \
+                     `false` (docs/cross-track-contract.md §2.3, §11)",
+                    GPU_MODES.join(", ")
+                );
+            }
+        }
+
+        // The two resource floors must be positive. A zero floor declares
+        // nothing, which is the `total_size_bytes` trap in a new place.
+        for (key, val) in [
+            ("min_ram_bytes", self.min_ram_bytes),
+            ("min_storage_bytes", self.min_storage_bytes),
+        ] {
+            if let Some(v) = val {
+                if v <= 0 {
+                    bail!(
+                        "manifest {key} is {v}; it must be a positive byte count. A floor of \
+                         zero gates nothing — if the pack genuinely needs no {} beyond the \
+                         archive, that is still a real number, not zero \
+                         (docs/cross-track-contract.md §2.3)",
+                        if key == "min_ram_bytes" { "memory" } else { "storage" }
+                    );
+                }
+            }
         }
 
         // version: CalVer YYYY.MM.N (Contract §11).
@@ -384,6 +523,17 @@ impl ManifestConfig {
         // An allowlisted license is written in SPDX's canonical casing (§11).
         if let Some(l) = &self.license {
             rows.insert("license".to_string(), classify_license(l).license().to_string());
+        }
+        // The two required resource floors (Contract §2.3), written as decimal
+        // byte counts so the stored form needs no unit parsing to compare.
+        if let Some(v) = self.min_ram_bytes {
+            rows.insert("min_ram_bytes".to_string(), v.to_string());
+        }
+        if let Some(v) = self.min_storage_bytes {
+            rows.insert("min_storage_bytes".to_string(), v.to_string());
+        }
+        if let Some(v) = &self.gpu {
+            rows.insert("gpu".to_string(), v.clone());
         }
         if let Some(v) = self.guest_accessible {
             rows.insert("guest_accessible".to_string(), v.to_string());
@@ -559,4 +709,58 @@ impl PackConfig {
         }
         Ok(())
     }
+}
+
+/// A pack's hardware requirement, as the reader resolves it.
+///
+/// Either declared directly (Contract §2.3) or recovered from a retired
+/// `min_hw_tier` on a pack built before the measured-resource migration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HwRequirement {
+    pub min_ram_bytes: i64,
+    pub min_storage_bytes: i64,
+    pub arch: String,
+    pub gpu: Option<String>,
+    /// `Some(tier)` when these values were mapped from a retired board name
+    /// rather than declared. Present so a caller can say so rather than
+    /// presenting a derived floor as an authored one.
+    pub from_legacy_tier: Option<String>,
+    /// True when the legacy mapping **lost a guarantee** the old value carried.
+    /// See [`legacy_tier_weakens_guarantee`].
+    pub weakened: bool,
+}
+
+/// Resolve a pack's hardware requirement from its stored manifest rows.
+///
+/// Declared fields win. A pack carrying only the retired `min_hw_tier` is
+/// mapped through [`legacy_tier_floor`], so **nothing built before the
+/// migration becomes unreadable** (Directive 03 §2). Returns `None` only when
+/// the manifest states neither.
+pub fn resolve_hw_requirement(manifest: &BTreeMap<String, String>) -> Option<HwRequirement> {
+    let parse = |k: &str| manifest.get(k).and_then(|v| v.trim().parse::<i64>().ok());
+
+    if let (Some(ram), Some(storage)) = (parse("min_ram_bytes"), parse("min_storage_bytes")) {
+        return Some(HwRequirement {
+            min_ram_bytes: ram,
+            min_storage_bytes: storage,
+            arch: manifest.get("arch").cloned().unwrap_or_else(|| "any".to_string()),
+            gpu: manifest.get("gpu").cloned(),
+            from_legacy_tier: None,
+            weakened: false,
+        });
+    }
+
+    let tier = manifest.get("min_hw_tier")?;
+    let (ram, storage) = legacy_tier_floor(tier)?;
+    Some(HwRequirement {
+        min_ram_bytes: ram,
+        min_storage_bytes: storage,
+        // The retired tiers bundled an architecture with their resource point.
+        // Only the numbers were ever the requirement (Directive 02a), and a WAX
+        // pack is web content, so the mapped arch is `any`.
+        arch: "any".to_string(),
+        gpu: None,
+        from_legacy_tier: Some(tier.clone()),
+        weakened: legacy_tier_weakens_guarantee(tier),
+    })
 }
