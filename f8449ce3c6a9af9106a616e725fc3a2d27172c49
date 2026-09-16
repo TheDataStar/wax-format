@@ -1,0 +1,32 @@
+Directive 02a (2026-09-15) - the role model. Documents only; 205 tests pass
+untouched.
+
+The closed four-role literal is retired. Contract section 4 now owns
+authorization: permissions as the unit of "may do this", roles as editable
+data bundles over a permission catalogue assembled from app manifests,
+default-deny against effective permissions, the four existing names reframed
+as the shipped default bundles rather than deleted.
+
+The reasoning worth keeping: the security lab's "a permission, not a fifth
+role" wording from Directive 02 was not a neat workaround, it was evidence the
+model failed on first extension. Every later authority would have needed the
+same carve-out.
+
+Authentication and authorization are now separate axes in the document -
+section 5.1 owns sign-in shape and account derivation, section 4 owns what an
+identity may do. That split is what lets a passwordless profile hold any
+bundle, which matters most at the minimum spec where passwordless is the
+normal case.
+
+Deliberately NOT done: no closed permission catalogue. Representative examples
+only. Freezing the list here would have rebuilt the same rigidity one layer
+down, and the directive said so.
+
+Closed: H13 = Community broadcast (H11 owns audio as content, H13 owns the
+station). community_hub/field_ops do not require x86_64 - the floor is the
+resources, so a 16 GB ARM64 box qualifies.
+
+Still outstanding and unchanged: the Directive 01 rig work. The read-only
+SQLite VFS has still only ever run on Windows. Next implementation directive
+carries TWO migrations sequenced together - min_hw_tier and the role enum -
+because both are code catching up to documented models on overlapping surfaces.
