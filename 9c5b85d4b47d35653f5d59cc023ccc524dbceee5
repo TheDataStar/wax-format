@@ -1,0 +1,36 @@
+Directive 03 (2026-09-15) - min_hw_tier migrated to measured resources.
+214 passed, 0 failed, 0 ignored, 0 signing skips. Fuzz clean.
+
+The pre-flight question that shaped everything: SPEC.md 5.6 deliberately does
+NOT specify the manifest key set - it fixes only the table shape, and wax-core
+exposes manifest() as an opaque map. So this was an application-level change,
+not format-visible. No SPEC bump, no conformance-corpus change, no bytes moved.
+
+Legacy proof used REAL artifacts, not fixtures written for the test: the two
+legacy-tier-*.wax packs were built by the previous builder before any code
+changed, so they carry a genuine min_hw_tier row.
+
+The finding that matters most, and it is unresolved by design:
+mapping a legacy pi_5 LOSES a guarantee. The table Directive 02 deleted gave
+pi_5 4 GB / 64 GB; contract 2.1 now puts Pi 4 and Pi 5 in one class at
+2 GB / 32 GB. A legacy pi_5 pack therefore resolves BELOW the floor it was
+built against, so a 2 GB box would be judged able to run it. No current
+document states the right resource point, and inventing one is exactly what
+the contract exists to prevent - so inspect reports the loss, a test pins that
+it is reported, and contract 11 carries it as an open item the contract owns.
+Do not quietly close this by picking 4 GB.
+
+Determinism anchor MOVED to
+bdc3bc4df07447306dfc8b02d04b51c3d5b0927004115ab7a5c3157ae6983a11
+because the manifest content changed. That is not a determinism break - the
+build is still bit-identical run to run. The old 374dab83... is void.
+
+Two bugs my own new tests caught before commit: the retired-tier diagnostic
+never fired (the squashing filter strips the underscores the tier names
+contain), and the test helper only REPLACED manifest lines, so keys absent
+from the canonical manifest were silently never injected - which had quietly
+made two new tests vacuous.
+
+Still blocking, unchanged: the Directive 01 rig work. The read-only SQLite VFS
+has still only ever run on Windows. Migration 2 of 2 (the role enum) rides
+with the Track F identity build.
