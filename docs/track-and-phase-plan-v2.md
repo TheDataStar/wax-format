@@ -228,10 +228,11 @@ This plan's inventory (§3) previously implied a fixed set, and `INDEX.md` descr
 | E7 configurator and install parity; E10 name registry; E8 radio Q&A; the OS-supervisor half of self-healing | `track-e-refinement.md` §23 |
 | F14 usage insights; F15 network defense; F1 visible benchmark; the remote bridge; F10's widened backup set | `track-f-refinement.md` §23 |
 | G8 print; G9 software depot; self-healing in full | `track-g-refinement.md` §14 |
-| H11, H12, H14–H19; H2 plug-in media | `track-h-refinement.md` §19 |
+| H11–H19 (including **H13 Community broadcast**, §19.10); H2 plug-in media | `track-h-refinement.md` §19 |
 | Search-index ownership; the passage unit; A5 hostname routing | `track-a-refinement.md` §20 |
+| The role and permission model | `cross-track-contract.md` §4, implemented by `track-f-refinement.md` §24 |
 
-**H13 is unassigned.** The settled catalogue skips it. It is left visibly empty rather than filled or closed by renumbering.
+**H13 is assigned: Community broadcast** — a local radio and podcast station for Community Hub and Field Ops (`track-h-refinement.md` §19.10). It was left visibly vacant in the first pass rather than filled speculatively or closed by renumbering; leaving the gap visible is what made it easy to fill correctly rather than forgotten.
 
 ### 8.2 The download-time configurator now has an owner
 

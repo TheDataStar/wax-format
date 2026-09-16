@@ -23,6 +23,9 @@ Track G's pattern for its own admin-only tools — gate everyone out behind G2's
 | student | Learner / User / Regular user / Contributor group (edit own only, where supported) | user / editor (no finer-grained role available) |
 | guest | Not provisioned — see §18's amendment | Not provisioned — see §18's amendment |
 
+- **The left column names the contract's shipped default bundles (§4.2); this document does not define them.** Third-party services carry their own closed role vocabularies, so a mapping is unavoidable here — but it maps *into* those vocabularies, it does not constitute a DeltOS role list.
+- **An admin-composed role bridges via a declared base bundle.** A `librarian` or `moderator` role composed from the permission catalogue (contract §4.2) declares which built-in it most resembles for provisioning purposes, and the adapter maps that. **This is a deliberate coarsening and it is recorded as one:** the backends cannot express DeltOS's permission granularity, so a composed role necessarily provisions as one of the four above. The alternative — refusing to provision anything but a built-in — would make composed roles useless for exactly the services people most want them for.
+
 - **Two eras, one mechanism early, a better one later — and the Gitea contradiction this corrects:** Before F12/SSO exists (P0-P3, when H1/H5/H6/H8 land, §15), each provisioned account still needs its own password — the provisioning event carries a one-time credential the adapter sets on the new account. Once F12 lands (P4), Nextcloud and Wiki.js can instead auto-provision per-user from Authelia's forward-auth headers on first login, since both keep their own login/session machinery active and simply trust a validated header to fill it — a materially different integration shape from Gitea's, corrected here: Track G's own review settled that Gitea's built-in login is disabled entirely, with every request running under one shared internal service account behind G2's forward-auth gate (Track G §3, §4) — there is no per-user identity inside Gitea to auto-provision, and Gitea is not a Track H service in any case. The earlier draft of this section wrongly listed Gitea alongside Nextcloud/Wiki.js as supporting this; that claim is withdrawn. Matrix's own registration protocol (§8) is not header-based regardless of F12 and keeps using the explicit provisioning event indefinitely, not just as an interim fallback.
 - **Credential disclosure — an actual channel, not an assumed one:** F2's password disclosure happens inside deltos-shelld itself, at first boot, before anything else exists (Track F §2) — a different situation from a Track H adapter, running behind G2 and never part of deltos-shell, needing to reach the shell's UI on an ordinary running box, for which no channel previously existed. Resolved the same way C2 already learns about B4 changes without a push channel into the shell (Track C §2): identityd records a pending-disclosure flag per profile when a one-time credential is set; deltos-shell polls for any pending disclosure belonging to the currently active profile and surfaces it as a one-time in-shell notification the next time that profile is actually in use, rather than assuming an inbound-push mechanism into the shell that was never built.
 - **Adapter credentials, routed through F13 — not left in local config files:** Each adapter (Kolibri sync, Nextcloud, Conduit, Wiki.js, and the two file-based adapters) necessarily holds a privileged admin credential for its own backend — exactly the class of shared service-account credential Track F's F13 (Vaultwarden) exists to hold (Track F §11). These are machine-retrieved secrets, not a teacher-facing use of the vault, so they don't reopen F13's admin-only scoping question (Track F §15) — each adapter fetches its own credential from F13 via Vaultwarden's own CLI/API at startup rather than keeping it in a local config file no one is tracking.
@@ -154,7 +157,7 @@ Track F's own companion amendment (Track F §22) adds a fourth role, guest, for 
 
 Each component states its **goal**, the **property that must hold**, and **why**. Every one is subject to the app contract (cross-track contract §15) — declaring its own measured resource floor, address and roles, sign-in method, health check, backup set, and whether it joins unified search, notifications and progress tracking — plus the single licence check (§16) where it carries third-party content, and measured-resource gating (§2).
 
-**On numbering:** this amendment adds H11, H12 and H14–H19. **H13 is not assigned.** The product direction that settled this catalogue skipped it, and inventing an occupant or renumbering H14 to close the gap would both be worse than leaving it visible. H13 is unallocated and available.
+**On numbering:** this amendment adds H11–H19. **H13 was left deliberately vacant** in the first pass, because the settled catalogue skipped it and inventing an occupant or renumbering H14 would both have been worse than a visible gap. **It is now assigned** — see §19.10.
 
 ### 19.1 E-book & Audio Library (H11)
 
@@ -192,9 +195,9 @@ Each component states its **goal**, the **property that must hold**, and **why**
 
 **Goal.** Announcements, a lightweight forum, and community Q&A.
 
-**Property.** Moderated through the **existing role set** — admin / teacher / student / guest (contract §4). No new roles, and no per-component moderator concept.
+**Property.** Moderated through the **`community.moderate` permission** (cross-track contract §4). This document holds no role list. An admin puts that permission in whichever bundle suits the deployment — the shipped `teacher` default, or a `moderator` role composed for the purpose.
 
-**Why.** A shared box is a community before it is a library. Reusing the role set keeps moderation comprehensible: a teacher is already a teacher everywhere else on the box.
+**Why.** A shared box is a community before it is a library. Moderation by permission rather than by role is what lets a deployment decide *who* moderates without DeltOS deciding for it — a school puts `community.moderate` in the teacher bundle, a public library composes a `moderator` role for volunteers who are neither staff nor learners. Under the old closed role set the second deployment had no expressible answer.
 
 ### 19.6 Classroom Tools (H17)
 
@@ -227,7 +230,7 @@ Plus a **closed practice range** of deliberately vulnerable targets, and **offli
 **The properties that must hold. These are part of the specification, not an afterthought:**
 
 - **Off by default.**
-- **Granted to named people through an admin-granted permission — not a fifth role.** The closed role set stays admin / teacher / student / guest (contract §4). A capability granted per person is revocable per person; a role is not.
+- **Gated by the `security_lab.use` permission**, grantable to any role bundle an admin chooses (cross-track contract §4). A previous revision of this bullet read "granted through an admin-granted permission — **not a fifth role**", written that way to work around a closed four-role literal. **That literal is gone and the carve-out with it**: the lab needs no special case, because a permission grantable into any bundle is simply what the model now does. The workaround was the tell that the old model was wrong.
 - **Scans may target only admin-authorised addresses.** Never a visitor's device, and never the box's own admin surfaces.
 - **The practice range is closed** — the deliberately vulnerable targets are reachable from the lab and from nowhere else.
 - **Every action is logged.**
@@ -242,3 +245,15 @@ Plus a **closed practice range** of deliberately vulnerable targets, and **offli
 **Property.** **An admin approves before anything is ingested** — detection is automatic, ingestion is not. **Direct play by default**, with on-the-fly transcode **only where measured resources allow** (contract §2.3), never at the minimum spec. **Per-role age ratings gate what each profile sees.**
 
 **Why.** A USB drive of films is how media actually arrives in these deployments. The approval step stops an unattended box ingesting whatever is plugged into it; the transcode gate stops it trying and failing at the minimum spec; the age ratings are what make a shared family or school box usable at all.
+
+### 19.10 Community Broadcast (H13)
+
+**Goal.** A local radio and podcast station the community itself runs — scheduled programmes, live segments, and published episodes — on **Community Hub and Field Ops**.
+
+**Property.** Broadcast is **publishing, not playback**: a station produces episodes that become content, and those episodes land in **H11's library** like any other audio. **H11 owns audio as content; H13 owns the station that makes it.** The two are one pipeline and not one component — the split is what stops a listener needing to know whether a recording came from a broadcast or a book.
+
+**Why.** This was named in the alignment brief and then lost: when audio folded into H11's e-book and audiobook library, the *station* went with it, and what survived was a way to listen to audio with no way for a community to make any. Those are different capabilities with different audiences — one serves a reader, the other serves a broadcaster — and collapsing them removed the only feature in the catalogue that lets a community speak to itself rather than read what someone else published.
+
+- **Profile-gated, not merely resource-gated.** Community Hub and Field Ops, per its manifest's declared floor (contract §2.3). Field Ops matters here specifically: a radio station is most valuable exactly where the mesh and the low-bandwidth links already are.
+- **Publishing is permission-gated** through the app contract (contract §15.1) — a station operator holds the permission, whichever bundle an admin puts it in. There is no broadcaster role, because there are no role literals any more.
+- **Every published episode passes the licence check** (contract §16), like all other content DeltOS distributes.

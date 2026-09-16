@@ -75,7 +75,9 @@ Directive 02 wrote all of this into the design set. These are no longer "superse
 - **The app contract** — one manifest declaring resources, address and roles, sign-in, health check, backup set and participation, read by the launcher, proxy, backup, health monitoring and store. Adding an app changes no core code. → **contract §15**
 - **No telemetry, ever**, with F14 aggregate-local as the sole exception; the shell itself is translatable; backups cover hosted sites, security-lab work and code-studio projects; one licence check for everything DeltOS distributes; **plain HTTP for unmanaged visitors with the secure-context cost recorded**. → **contract §16**
 - **Self-healing specified in full** — five properties, including that a *frozen* service is healed and that the minimum profile heals through the OS supervisor. → **track-g §14.3** and **track-e §23.5**
-- **The catalogue is enumerated, never totalled.** No fixed component count survives. **H13 is deliberately unassigned.** → **plan §8.1**
+- **Authorization is a permission model, not a role enum.** A **permission** is the unit of "may do this"; a **role is a named bundle of permissions, stored as data**, not a code literal. The four names ship as **built-in default bundles** (`admin` holds everything); an admin composes more — librarian, moderator, lab operator — with no code change. **Default-deny against effective permissions.** **Authentication is a separate axis**: sign-in shape never determines what an identity may do, so a passwordless profile can hold any bundle. → **contract §4**, implemented by **track-f §24**
+- **`deltos-identityd` owns the model and runs at the minimum spec; F12 enforces and does not define.** A full open-source IdP is **optional, named, gated on measured resources, never on the floor** — the built-in model is complete without it. No package pinned. → **track-f §24.2**
+- **The catalogue is enumerated, never totalled.** No fixed component count survives. **H13 is Community broadcast** — a local radio and podcast station for Community Hub and Field Ops. → **plan §8.1**, **track-h §19.10**
 
 ### Blocking decisions — answered
 
@@ -85,7 +87,9 @@ Seven are settled: search-index ownership (Track A owns the bytes, additive mino
 
 **One is direction only, not a finished design:** the shell privilege boundary — loopback WebSocket, per-boot token, strict origin check, closed operation list. **It still needs its own design session before C1 is built.** Reading it as final is the mistake §13 exists to prevent.
 
-**Still genuinely open** (§13.2): whether `community_hub`/`field_ops` require `x86_64`; the exact icon set; and the measured per-service floors for the ten existing Track H services.
+**Answered since** (§13.2): `community_hub` and `field_ops` do **not** require `x86_64` — the floor is the resources, so a 16 GB ARM64 box qualifies for both. x86 stays the preferred spec, never a gate.
+
+**Still genuinely open** (§13.2): the exact icon set, and the measured per-service floors for the ten existing Track H services.
 
 ### Design tokens are locked and verified
 
@@ -99,7 +103,12 @@ The previous palette's blanket AA claim was false: six pairings failed 4.5:1, wo
 
 **Still blocking, unchanged:** the Directive 01 rig work. Linux x86 and ARM64 runs, the real-content measurements, the WAX-vs-ZIM output sizes and two of three determinism legs all wait on the two machines being reachable. **The read-only SQLite VFS behind every pack open has still only ever run on Windows.** Windows determinism anchor: `374dab8385e07a35b1baa3ebb4a837105a60758406317cb64552ee7c66a12892`.
 
-**Directive 03 — implementation.** Migrate `min_hw_tier` and its tests from the device-name enum to the measured-resource model of contract §2.3. Concretely: `MIN_HW_TIERS` in `crates/wax-builder/src/config.rs`, the validator messages, **fifteen assertions across three tests** in `crates/wax-builder/tests/manifest_schema.rs`, the example manifest, and the `zim2wax` fixtures. The docs already state the target; this is the code catching up.
+**The next implementation directive — two migrations, sequenced together.** Both are code catching up to a documented model, and they touch overlapping surfaces, so they go in one pass:
+
+1. **`min_hw_tier` → measured resources** (contract §2.3). `MIN_HW_TIERS` in `crates/wax-builder/src/config.rs`, the validator messages, **fifteen assertions across three tests** in `crates/wax-builder/tests/manifest_schema.rs`, the example manifest, and the `zim2wax` fixtures.
+2. **The role enum → data-driven permissions** (contract §4). Retire the closed role literal, the `query_role` shape, and the fixed operations table in favour of the permission catalogue, stored role bundles and effective-permission checks.
+
+Neither has been started. The documents state the target; **no code has moved.**
 
 **Directive 04 — measurement.** The three compression options — per-article, grouped, and per-article with a shared dictionary — measured on the real archives for size, read speed **on SD and on SSD**, and one-month delta size. Needs the rigs and the §5.7 output-size baseline that does not exist yet.
 

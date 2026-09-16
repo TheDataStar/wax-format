@@ -83,20 +83,87 @@ Each profile states the **minimum resources** it needs — never a device, and n
 - **Profile is chosen; resources are measured.** A profile is selected at provisioning or pre-seeded onto an image; resources are measured at first boot. A profile may not be selected on a box below its stated floor.
 - **Kiosk now floors at the minimum spec.** Its previous floor was the retired `pi_zero_2w` at 512 MB. Kiosk and Classroom therefore share the §2.1 minimum spec; they differ in what they run, not in what they demand. Kiosk remains the profile with no Track G and no Track H, which is what makes it the cheap one — not a smaller board.
 - **Community Hub and Field Ops** carry forward the RAM and storage floors their previous `mini_pc` mapping guaranteed. Only the device name was dropped; the numbers are unchanged.
-- **[Open — this document owns it]** Whether `community_hub` and `field_ops` additionally require `x86_64`. Their previous floor, `mini_pc`, bundled 16 GB of RAM with an x86 architecture in a single name, so the repo has never recorded whether the architecture was a real requirement or an artefact of the example machine. A 16 GB ARM64 board meets the stated numbers. Resolving this by assumption would re-introduce exactly the device-shaped gate §2 removes, so it is listed in §13 instead.
+- **[Answered] `community_hub` and `field_ops` do *not* require `x86_64`.** The floor is the resources above and nothing else: **a 16 GB ARM64 box meeting the RAM and storage numbers qualifies for both profiles.** Their previous `mini_pc` mapping bundled 16 GB with an x86 architecture in a single label, so the repo never recorded which was actually required — only the numbers ever were. **x86 remains the preferred spec (§2.1), never a gate.** Requiring it would reintroduce precisely the device-shaped gate §2 exists to remove.
 - **[New decision]** "Advanced" is not a profile. It appears in Track E §9 and §13 as though it were one, in a document whose own enumeration lists only four. Field Ops already carries the opt-in modules the phrase was reaching for; Track E's two uses are reworded to `field_ops`.
-## 4. Roles and Permission Defaults
+## 4. Authorization — Permissions, and Roles as Data
 
-Track F defines these properly and both consuming tracks can build against it. Collected here because Track C and Track E each gate privileged operations on a vocabulary neither document could see, which is exactly the shape this contract exists to fix.
+**This section owns the authorization model. No other document holds a role list.**
 
-- **Closed set:** admin, teacher, student, guest — lowercase ASCII literals, stored in profiles.role.
-- **none is not a role:** It is the sentinel query_role returns when no profile matches. It is never stored, and never appears in profiles.role's permitted values.
-- **[New decision]** Default deny. Any privileged operation not listed in Track F §22's permission table is admin-only until that table adds a row. Track F states the table but never its default, leaving every operation outside the nine listed rows undecided for the two tracks that gate on it.
-- **Passwordless roles:** password_hash is nullable for student and guest, never for admin or teacher, enforced as a table-level CHECK. Track F §21 states this for student only and §22 later makes guest passwordless without revisiting it.
+**Authentication and authorization are two axes and this document keeps them apart.** §5.1 owns *who you are and how you sign in* — the identity archetypes, the account derivation, which archetypes carry a password. **This section owns what you may do.** Conflating the two is what produced the closed four-role literal that this section previously held: a sign-in shape was being used as a permission set, so every new authority needed either a new sign-in shape or a carve-out.
+
+### 4.1 A permission is the unit of "may do this"
+
+A **permission** is a named capability. Representative examples, drawn from the catalogue the current components imply:
+
+`content.install` · `pack.publish` · `site.host` · `security_lab.use` · `community.moderate` · `service.restart` · `fleet.manage` · `profile.manage` · `benchmark.view`
+
+- **These are illustrative, not the catalogue.** The catalogue is **assembled at runtime from app manifests** (§15) — each app contributes the permissions it defines. Freezing a closed list here would recreate, one layer down, exactly the rigidity this section removes.
+- The permission catalogue is **owned by the identity service**, which is the component that can see every installed app's declarations at once.
+
+### 4.2 A role is a named bundle of permissions, stored as data
+
+- **A role is data, never a code literal.** It is a named set of permissions, stored and editable, not an enum member a compiler knows about.
+- **The four existing roles ship as built-in default bundles** — `admin`, `teacher`, `student`, `guest`. They are not deleted and not special-cased; they are the bundles DeltOS ships so a box is usable the moment it boots. `admin` holds every permission; the others hold sensible defaults.
+- **An admin composes additional roles from the catalogue, with no code change.** Librarian, moderator, author, IT operator, parent, lab operator — each is a bundle an administrator assembles, and none requires a release.
+
+#### The shipped default bundles
+
+What the four built-ins hold on a fresh box. **These are seed values, not a schema** — an admin may edit any of them, and the catalogue they draw from grows as apps are installed (§4.1).
+
+| **Capability** | `admin` | `teacher` | `student` | `guest` |
+|---|---|---|---|---|
+| `content.install` (install/remove packs, mount removable media) | ✓ | | | |
+| `network.configure` (join network, configure AP) | ✓ | | | |
+| `profile.manage` — own class or group | ✓ | ✓ | | |
+| `progress.view` — across own class or group | ✓ | ✓ | | |
+| `progress.view.self` | ✓ | ✓ | ✓ | |
+| `admin.console` (F1) | ✓ | | | |
+| `fleet.manage` (F6 pairing) · `vault.access` (F13) | ✓ | | | |
+| Content browsing | ✓ | ✓ | ✓ | ✓ (manifest-permitted packs only) |
+
+- **`admin` holds every permission in the catalogue**, including permissions contributed by apps installed later. That is a property of the bundle, not a list to maintain.
+- **This table replaces the fixed operations matrix Track F previously held.** The operations are unchanged; what changed is that they are now permissions in a catalogue rather than columns against a closed enum, so adding a ninth capability no longer requires a new row in a central table that two other tracks gate on.
+- **The teacher surface stays in-shell.** `profile.manage` and `progress.view` are class-scoped and reached through the shell, never through F1's console — which is why `admin.console` is a separate permission rather than something implied by holding the others.
+- **`none` is not a role.** It remains the sentinel meaning no profile matched. It is never stored and never appears among a profile's roles.
+
+### 4.3 Default-deny, now general
+
+**An identity holds only the permissions its roles grant. Anything ungranted is denied.**
+
+This is the same posture the previous permission table implied, made explicit and made extensible. Previously the rule read "any privileged operation not listed in Track F's table is admin-only until that table adds a row" — which was default-deny with a central table as the only way to grant anything. The rule is now general: the check is against the identity's **effective permissions** — the union of its roles' bundles — and a new authority arrives by an app declaring it, not by an edit to a central table.
+
+### 4.4 Sign-in shape and permission set are independent
+
+**A passwordless identity can hold any role bundle.** A passwordless student profile simply carries the `student` bundle; nothing about being passwordless constrains what a bundle may contain. §5.1's rules about which archetypes carry a password are unchanged and are about authentication only.
+
+This independence is what makes the model work at the floor. The minimum spec runs passwordless profiles for good reasons — shared devices, young learners, no keyboard — and under the old literal that shape also fixed what those profiles could do.
+
+### 4.5 What this replaces, and why
+
+The previous model was a **closed set of four lowercase literals** stored in `profiles.role`, with a fixed eight-row operation table.
+
+It broke on the catalogue. Hosting owners, community moderators, security-lab operators, content authors, IT staff and cross-org fleet managers are **more distinct authorities than four names can carry**, and the first attempt to add one — the security lab — had to be written as "a permission, not a fifth role." That carve-out was the tell: the model was already being worked around the first time it was extended. Hardcoding each new authority is precisely the rigidity §15's app contract removed everywhere else in the system.
 
 ## 5. Identity and Progress
 
-### 5.1 Profile identity and derived account names
+### 5.1 Identity: how a person signs in, and how their account is derived
+
+**This subsection owns authentication only. What an identity may *do* is §4's, and the two are deliberately separate.** An identity archetype describes a sign-in experience; it does not describe a permission set. A passwordless profile can hold any role bundle §4 defines.
+
+#### Identity archetypes
+
+These are unchanged, and they are about sign-in shape alone:
+
+| **Archetype** | **Sign-in** | **Notes** |
+|---|---|---|
+| Passworded | `admin`, `teacher` | `password_hash` is **never** null, enforced as a table-level CHECK. |
+| Passwordless | `student`, `guest` | `password_hash` is nullable. Chosen for shared devices, young learners and hardware with no comfortable keyboard. |
+
+- **Guest emits nothing.** `identityd` rejects any `progress_events` insert whose profile resolves to guest, so "nothing about a Guest session is remembered" holds regardless of which component emits. This is a property of the guest identity, not of a permission.
+- **These archetype names coincide with the four built-in role bundles (§4.2), and that coincidence is not the model.** A box that composes a `librarian` role assigns it to an identity whose sign-in shape is still one of the two above. Adding a role never adds an archetype.
+
+#### Derived account names
+
 
 Track H provisions an account in up to eight third-party services per profile, and the sweep found a derivation rule specified for exactly one of them — so deprovisioning and role changes could not locate the account in the others.
 
@@ -122,7 +189,7 @@ Three components share this: Track C's shell emits, Track H's Kolibri bridge wri
 | payload | TEXT | UTF-8 JSON object, 4 KiB serialized maximum. Oversized rows are rejected at write. |
 
 - **[New decision]** The event_type enum, the millisecond-UTC timestamp, the monotonic seq companion, the 4 KiB payload cap, the kolibri pack_id encoding, and the event_id uniqueness constraint are all new. None existed anywhere. The uniqueness constraint is the consequential one: without it, the Kolibri sync is a poll loop with no idempotency key and duplicates every row it has already written on any re-run.
-- **Guest emits nothing:** identityd rejects any progress_events insert whose profile_id resolves to role guest, so the Design Language's "nothing about a Guest session is remembered" holds regardless of which component emits.
+- **Guest emits nothing** — owned by §5.1 and not restated here. It is a property of the guest identity, which is why it lives with the archetypes rather than with this schema.
 
 ## 6. Feature Resource Floors
 
@@ -328,6 +395,11 @@ Every value in this document that had no defensible source anywhere — chosen r
 | 15 | **Each app declares its own measured resource floor** | The consolidated hardware budget was circular across four tracks. |
 | 16 | **No telemetry, with F14 aggregate-local as the sole exception** | Stated in no document, and an unstated privacy property erodes one track at a time. |
 | 16 | **Plain HTTP for unmanaged visitors; the secure-context cost is recorded** | Features needing a secure context are unavailable to visitors' phones, which is a design constraint, not a deployment detail. |
+| 4 | **Roles become data bundles over a permission catalogue; the closed four-role literal is retired** | Four names could not carry the authorities the catalogue needs, and the first extension attempt had to be written as a carve-out. |
+| 4 | **Default-deny generalised to effective permissions** | The previous rule made a central table the only way to grant anything. |
+| 5.1 | **Authentication and authorization separated explicitly** | A sign-in shape was doing duty as a permission set, which is what produced the closed literal. |
+| 15 | **Apps declare permissions required and defined, never roles** | A new app introducing an authority had no way to do so without a central edit. |
+| 3, 13.2 | **`community_hub` / `field_ops` floor is resources, not architecture** | The `mini_pc` label bundled 16 GB with x86; only the numbers were ever the requirement. |
 
 ## 13. The Blocking Decisions — Enumerated, With Their Answers
 
@@ -356,7 +428,7 @@ Decision 1 unblocks every pack already built, all of which are browse-only today
 
 Not answered, and not to be filled in by whoever implements first:
 
-- **Whether `community_hub` and `field_ops` require `x86_64`** in addition to their stated RAM and storage floors (§3). Their previous `mini_pc` mapping bundled the two, so the repo has never recorded which was meant. **Owned by this document.**
+- ~~Whether `community_hub` and `field_ops` require `x86_64`~~ — **answered: no.** The floor is the resources, not the architecture. A 16 GB ARM64 box meeting the RAM and storage numbers **qualifies for both profiles**. The old `mini_pc` label bundled 16 GB with x86 in one name, and only the numbers were ever the requirement. **x86 remains the preferred spec (§2.1), never a gate** — treating it as one would reintroduce exactly the device-shaped gate §2 removes.
 - **The exact icon set** implementing the design language's icon rule. `design-language.md` specifies the visual rule, not the asset source, and nothing in the locked token set depends on the answer. **Owned by `design-language.md`.**
 - **Per-service measured floors for the ten existing Track H services.** The *mechanism* is settled (decision 3) — each service declares its own. The *numbers* still have to be measured, service by service, by Track H.
 
@@ -379,7 +451,8 @@ An **app manifest** is distinct from the **pack manifest** of §11: a pack is co
 | **Group** | **Declares** |
 |---|---|
 | Resources | `min_ram_bytes`, `min_storage_bytes`, `arch`, optional `gpu` — the §2.3 fields, unchanged. This is the app's **own measured floor**. |
-| Reachability | Its address under the service zone (§8), and **which roles may reach it** — drawn from §4's closed role set, default-deny. |
+| Reachability | Its address under the service zone (§8), and **the permissions required to reach it** — never a role list. |
+| Authority | **The permissions it defines.** An app that introduces a new authority — a moderator capability, a publish capability — contributes it to the catalogue (§4.1) here, and an admin can then put it in any role bundle. |
 | Identity | Its sign-in method, so the identity bridge provisions it rather than each service inventing a login. |
 | Liveness | Its health check — the probe whose result drives §7.1's health vocabulary and the self-healing model. |
 | Durability | **What of its data gets backed up**, so F10 does not need per-service knowledge. |
@@ -392,6 +465,7 @@ Five platform components read this one manifest and nothing else: **the launcher
 - **[New decision] Adding an app or a tool is writing one manifest and changing no core code.** That property is what makes a large catalogue affordable. Without it, every addition is five edits in five components, and the catalogue's cost grows with its size — which is precisely how a feature list becomes unbuildable.
 - **It closes the resource-budget circularity at its cause** (§6): the consolidated budget is the sum of declared floors over the installed set, computed on the box, not a figure blocked on every track reporting at once.
 - **Participation is opt-in per capability.** An app that contributes to search but not to progress tracking says exactly that. A service that appears in no launcher still declares its health check, so nothing runs unwatched.
+- **[New decision] An app declares permissions, never roles.** It states the permissions it *requires* to be reached and the permissions it *defines*. The reverse proxy and forward-auth enforce against the identity's **effective permissions** (§4.3). This is what lets a new app introduce its own authority without an edit to any central role list — the same property, applied to authorization, that §15.2 gives the rest of the platform.
 
 *The manifest's wire format, field names beyond the §2.3 group, and its schema version are the implementing track's to settle. This document owns what must be declared and who reads it; it does not invent the serialization.*
 
