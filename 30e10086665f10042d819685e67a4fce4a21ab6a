@@ -1,0 +1,31 @@
+Directive 02 (2026-09-15) - the docs revision. Documents only; 205 tests still
+pass untouched.
+
+Two corrections to what Directive 01 reported, both material:
+
+1. The blocking decisions WERE enumerated all along, in cross-track contract
+   section 13. Directive 01 said no document listed them, and Directive 02's
+   own stated premise rested on that. The error came from grepping for the
+   phrase rather than reading the section. Corrected in ca58e1d.
+
+2. The sweep's five Critical cross-cutting findings are a defect REGISTER, not
+   an open to-do list. The contract had already fixed tier floors, both total
+   orderings, the profile mapping and the installable-stack path before this
+   directive began.
+
+Measured rather than assumed: the locked design tokens' stated contrast ratios
+are correct, against surface #F2EEE6. Against the darker bg #E9E6DF every
+ratio is lower -- ink-2 4.63, accent-ink 4.87, accent 3.34 -- all still
+passing, but with less headroom than the quoted figures imply, so section 4
+now says to validate a new token against bg. The palette this replaced claimed
+blanket AA and had six pairings below 4.5:1, worst at 2.99.
+
+One value was NOT invented and is recorded open instead: whether community_hub
+and field_ops require x86_64. Their old mini_pc floor bundled 16 GB with an
+architecture and the repo never recorded which was meant. Contract 13.2.
+
+H13 is deliberately unassigned - the settled catalogue skips it.
+
+Next: Directive 03 migrates min_hw_tier and its 15 test assertions to the
+measured-resource model. The Directive 01 rig work still blocks the storage
+proof; the read-only SQLite VFS has still only ever run on Windows.
