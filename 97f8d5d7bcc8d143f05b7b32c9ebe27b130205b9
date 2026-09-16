@@ -1,0 +1,28 @@
+Directive 01b (2026-09-15) - the three hygiene findings, closed.
+
+1. real_wikipedia_zim can no longer pass without running. Same mechanism as the
+   signing tests: ZIM2WAX_REQUIRE_REAL_ZIM=1 makes the absent archive a hard
+   failure; unset, it skips with the same SKIPPED ( marker. A ZIM2WAX_REAL_ZIM
+   pointing at a non-file fails either way.
+
+   Caveat found while validating and recorded in CLAUDE.md: cargo captures a
+   PASSING test's stderr, so the loud skip line is invisible without
+   --nocapture -- true of the signing path too. Depend on the flags, not the
+   message.
+
+2. fuzz/smoke.sh runs all three targets against a git-ignored scratch corpus
+   (written to) plus the committed seeds (read only), then asserts the tree is
+   clean. Verified: 261 discoveries landed in scratch, 0 dirty paths in fuzz/.
+
+3. fuzz/README.md documents the Windows sanitizer-runtime PATH requirement;
+   smoke.sh locates it via vswhere. Also corrected a stale line claiming
+   zim2wax does not exist.
+
+Plus .gitattributes pinning *.sh to LF -- smoke.sh is the repo's first shell
+script and core.autocrlf=true would have shipped CRLF to the Linux rigs.
+
+Windows after these changes: 205 passed, 0 failed, 0 ignored, 0 signing skips.
+With both require flags and no archive: exit 101, as CI should.
+
+Still outstanding, unchanged: Directive 01 scope 4-8. The read-only SQLite VFS
+has still only ever run on Windows.
