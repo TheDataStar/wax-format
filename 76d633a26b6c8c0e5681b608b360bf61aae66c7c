@@ -1,0 +1,21 @@
+Directive 03a (2026-09-15) - the legacy pi_5 floor, closed. 216 tests pass.
+
+The contract now owns three legacy floors: pi_zero_2w and pi_4 to 2 GB/32 GB,
+pi_5 to 4 GB/64 GB. Read-time compatibility only; no tier is buildable again.
+
+The principle worth carrying forward, because it generalises beyond this field:
+a compatibility mapping may resolve level or UPWARD, never downward. Resolving
+downward silently widens what a box will accept, and the failure appears only
+at the moment someone opens the content. Directive 03 was right to refuse to
+invent 4 GB and to park the decision here instead.
+
+A second bug found while closing this: the absent-field warning in inspect was
+suppressed for ANY pack carrying min_hw_tier, whether or not the value actually
+mapped. So a pack with an unmappable tier printed nothing at all about its
+hardware requirement. Now it reports the requirement as unknown, and the
+suppression is keyed on the mapping having succeeded.
+
+Still blocking, unchanged: the Directive 01 rig work. The read-only SQLite VFS
+has still only ever run on Windows. Determinism anchor unchanged at
+bdc3bc4df07447306dfc8b02d04b51c3d5b0927004115ab7a5c3157ae6983a11 -- this
+directive changed no manifest content.
