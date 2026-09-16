@@ -7,7 +7,8 @@
 //! unopenable (Directive 03 §2).
 
 use wax_builder::config::{
-    resolve_hw_requirement, MIN_SPEC_RAM, MIN_SPEC_STORAGE,
+    resolve_hw_requirement, MIN_SPEC_RAM, MIN_SPEC_STORAGE, PI_5_LEGACY_RAM,
+    PI_5_LEGACY_STORAGE,
 };
 use wax_core::WaxReader;
 
@@ -46,24 +47,59 @@ fn a_legacy_tier_resolves_to_a_supported_floor() {
     assert_eq!(hw.min_ram_bytes, MIN_SPEC_RAM);
     assert_eq!(hw.min_storage_bytes, MIN_SPEC_STORAGE);
     assert_eq!(hw.arch, "any", "only the numbers were ever the requirement");
-    assert!(!hw.weakened, "pi_zero_2w mapped up to the floor, so nothing was lost");
+    assert!(
+        hw.min_ram_bytes >= MIN_SPEC_RAM,
+        "a legacy pack must never resolve BELOW the minimum spec"
+    );
 }
-
 #[test]
-fn a_legacy_pi_5_reports_that_the_mapping_lost_a_guarantee() {
+fn a_legacy_pi_5_resolves_to_its_own_historical_floor() {
     let r = WaxReader::open(fixture("legacy-tier-pi_5.wax")).unwrap();
     let hw = resolve_hw_requirement(r.manifest()).expect("a legacy tier must resolve");
 
     assert_eq!(hw.from_legacy_tier.as_deref(), Some("pi_5"));
-    assert_eq!(hw.min_ram_bytes, MIN_SPEC_RAM);
-    // The point of this test: the resolution is a WIDENING, and it says so.
-    // `pi_5` guaranteed more than the minimum spec, and the resource point it
-    // carried is stated in no current document — so the loss is surfaced
-    // rather than silently absorbed.
+    // `pi_5` is the one retired tier that sat ABOVE today's minimum, so it
+    // maps to its own historical point rather than to the minimum spec.
+    // Resolving it downward would let a 2 GB box install content built for a
+    // 4 GB one — a failure that surfaces only when someone opens the pack.
+    assert_eq!(hw.min_ram_bytes, PI_5_LEGACY_RAM, "pi_5 resolves to 4 GiB, not the minimum");
+    assert_eq!(hw.min_storage_bytes, PI_5_LEGACY_STORAGE, "pi_5 resolves to 64 GiB");
     assert!(
-        hw.weakened,
-        "mapping pi_5 down to the minimum spec loses a guarantee and must be reported"
+        hw.min_ram_bytes > MIN_SPEC_RAM,
+        "the whole point: pi_5's floor is above the minimum spec"
     );
+    assert_eq!(hw.arch, "any", "only the numbers were ever the requirement");
+}
+
+#[test]
+fn no_retired_tier_resolves_below_the_floor_it_was_built_against() {
+    // The rule the legacy floors encode, checked directly: mapping level or
+    // upward is safe, mapping downward never is.
+    for (tier, expect_ram) in [
+        ("pi_zero_2w", MIN_SPEC_RAM),
+        ("pi_4", MIN_SPEC_RAM),
+        ("pi_5", PI_5_LEGACY_RAM),
+    ] {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("min_hw_tier".to_string(), tier.to_string());
+        let hw = resolve_hw_requirement(&m).unwrap_or_else(|| panic!("{tier} must map"));
+        assert_eq!(hw.min_ram_bytes, expect_ram, "{tier} RAM floor");
+        assert!(hw.min_ram_bytes >= MIN_SPEC_RAM, "{tier} never resolves below the minimum");
+    }
+}
+
+#[test]
+fn an_unmappable_tier_value_is_not_guessed_at() {
+    // The one case still genuinely unresolvable. Guessing a floor here is
+    // exactly what the mapping rule exists to prevent.
+    for bogus in ["pi_6", "generic", "banana", ""] {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("min_hw_tier".to_string(), bogus.to_string());
+        assert!(
+            resolve_hw_requirement(&m).is_none(),
+            "{bogus:?} is not a retired tier and must not resolve to any floor"
+        );
+    }
 }
 
 #[test]

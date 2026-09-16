@@ -20,7 +20,9 @@
 //! * **Capability follows measured resources, never a device name.** The retired
 //!   `min_hw_tier` board tiers are a hard error at build time and are mapped to
 //!   their resource floor on read, so nothing built earlier becomes unopenable
-//!   — see [`LEGACY_HW_TIERS`] and [`legacy_tier_floor`].
+//!   — see [`LEGACY_HW_TIERS`] and [`legacy_tier_floor`]. Each maps to its own
+//!   historical floor, so a legacy pack never resolves below the one it was
+//!   built against.
 //! * **Formats:** `version` is CalVer `YYYY.MM.N`; each `languages` element is
 //!   a well-formed BCP-47 tag; each `depends_on` element is a UUID, normalized
 //!   to the canonical lowercase-hyphenated form on write.
@@ -50,26 +52,32 @@ pub const GPU_MODES: [&str; 2] = ["required", "preferred"];
 ///
 /// Kept for **reading** packs built before the measured-resource migration:
 /// such a pack declares a board name, and nothing built before this change may
-/// become unopenable (Directive 03 §2). It is never a build-time vocabulary —
-/// `min_hw_tier` in a `wax-pack.toml` is now a hard error with a migration
-/// message.
+/// become unopenable. It is never a build-time vocabulary — `min_hw_tier` in a
+/// `wax-pack.toml` is a hard error with a migration message, and the four
+/// names stay retired for authoring.
 ///
-/// Floors are taken from Contract §2.1's two reference specs, which are the
-/// only resource points any current document states:
+/// **Each tier maps to its own historical floor, not to the current minimum**
+/// (Contract §11, "Legacy tier floors"). The rule those values encode:
+/// *a legacy pack must never resolve to a floor lower than the one it was
+/// built against* — that would let a box install content it cannot run, and
+/// the failure surfaces only when someone opens the pack. Mapping level or
+/// upward is safe; mapping downward never is.
 ///
-/// * `pi_zero_2w` → the minimum spec. The board is retired as a target, and
-///   Directive 03 §3 fixes that a legacy pack does not become unrunnable
-///   because the device it named is gone.
-/// * `pi_4`, `pi_5` → the minimum spec. §2.1 places both in one resource class
-///   ("Raspberry Pi 4/5-class"). **See [`legacy_tier_weakens_guarantee`]: for
-///   `pi_5` this is a widening, and it is reported rather than hidden.**
-/// * `mini_pc` → the preferred spec's RAM and storage. Its `arch` is **not**
-///   carried over: the old name bundled 16 GB with x86, and Directive 02a
-///   settled that only the numbers were ever the requirement.
+/// * `pi_zero_2w` → the minimum spec. It sat *below* today's minimum, and
+///   nothing below the minimum is supported, so mapping up is the only option
+///   and is safe.
+/// * `pi_4` → the minimum spec. Already that point.
+/// * `pi_5` → **4 GB / 64 GB**, its real historical point, above the minimum.
+///   The only retired tier that needs a floor of its own.
+/// * `mini_pc` → the preferred spec's RAM and storage.
+///
+/// `arch` is **not** carried over from any of them: the old names bundled an
+/// architecture with their resource point, and only the numbers were ever the
+/// requirement.
 pub const LEGACY_HW_TIERS: [(&str, i64, i64); 4] = [
     ("pi_zero_2w", MIN_SPEC_RAM, MIN_SPEC_STORAGE),
     ("pi_4", MIN_SPEC_RAM, MIN_SPEC_STORAGE),
-    ("pi_5", MIN_SPEC_RAM, MIN_SPEC_STORAGE),
+    ("pi_5", PI_5_LEGACY_RAM, PI_5_LEGACY_STORAGE),
     ("mini_pc", PREFERRED_SPEC_RAM, PREFERRED_SPEC_STORAGE),
 ];
 
@@ -79,26 +87,22 @@ pub const MIN_SPEC_STORAGE: i64 = 32 * 1024 * 1024 * 1024;
 /// Contract §2.1 preferred spec: 16 GB RAM, 256 GB storage.
 pub const PREFERRED_SPEC_RAM: i64 = 16 * 1024 * 1024 * 1024;
 pub const PREFERRED_SPEC_STORAGE: i64 = 256 * 1024 * 1024 * 1024;
+/// The retired `pi_5` tier's historical floor (Contract §11). **Read-time
+/// compatibility only** — it is not a spec a box or a pack may target, and
+/// `pi_5` is not buildable.
+pub const PI_5_LEGACY_RAM: i64 = 4 * 1024 * 1024 * 1024;
+pub const PI_5_LEGACY_STORAGE: i64 = 64 * 1024 * 1024 * 1024;
 
 /// Resolve a retired tier name to its resource floor, for reading old packs.
+///
+/// `None` for anything outside the four retired names: such a value cannot be
+/// mapped, and guessing a floor for it is the exact failure the mapping rule
+/// exists to prevent. Callers report it as unresolvable.
 pub fn legacy_tier_floor(tier: &str) -> Option<(i64, i64)> {
     LEGACY_HW_TIERS
         .iter()
         .find(|(n, _, _)| *n == tier)
         .map(|(_, r, s)| (*r, *s))
-}
-
-/// True when mapping this retired tier onto Contract §2.1's floors **loses a
-/// guarantee the old value carried**.
-///
-/// `pi_5` is the case. The table Directive 02 removed gave it 4 GB / 64 GB;
-/// §2.1 now places Pi 4 and Pi 5 in one class at 2 GB / 32 GB. A legacy `pi_5`
-/// pack therefore resolves to a floor *below* the one it was built against, so
-/// a 2 GB box would be judged able to run it. The correct resource point is a
-/// value no current document states, and inventing one here is exactly what
-/// this project's contract exists to prevent — so the loss is surfaced instead.
-pub fn legacy_tier_weakens_guarantee(tier: &str) -> bool {
-    tier == "pi_5"
 }
 
 /// Deployment Profile names. A different axis entirely from hardware; an
@@ -725,9 +729,6 @@ pub struct HwRequirement {
     /// rather than declared. Present so a caller can say so rather than
     /// presenting a derived floor as an authored one.
     pub from_legacy_tier: Option<String>,
-    /// True when the legacy mapping **lost a guarantee** the old value carried.
-    /// See [`legacy_tier_weakens_guarantee`].
-    pub weakened: bool,
 }
 
 /// Resolve a pack's hardware requirement from its stored manifest rows.
@@ -746,7 +747,6 @@ pub fn resolve_hw_requirement(manifest: &BTreeMap<String, String>) -> Option<HwR
             arch: manifest.get("arch").cloned().unwrap_or_else(|| "any".to_string()),
             gpu: manifest.get("gpu").cloned(),
             from_legacy_tier: None,
-            weakened: false,
         });
     }
 
@@ -761,6 +761,5 @@ pub fn resolve_hw_requirement(manifest: &BTreeMap<String, String>) -> Option<HwR
         arch: "any".to_string(),
         gpu: None,
         from_legacy_tier: Some(tier.clone()),
-        weakened: legacy_tier_weakens_guarantee(tier),
     })
 }

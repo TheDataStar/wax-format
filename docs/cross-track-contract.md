@@ -307,8 +307,25 @@ This table was previously written out in full in two documents — Track B §2, 
 
 - **[New decision] The hardware requirement is four measured fields.** `min_hw_tier` is replaced by `min_ram_bytes`, `min_storage_bytes` and `arch` as required fields, plus optional `gpu` — the §2.3 vocabulary, identical to what a feature or an app declares, so one comparison rule serves packs, features and apps alike. **This has shipped:** the manifest is ten required, six optional.
 - **The code has migrated.** `wax-builder` and `zim2wax` now validate and emit the four measured fields; the closed board-tier set is gone from shipped code. `min_hw_tier` in a `wax-pack.toml` is a build error carrying the replacement fields.
-- **A pack built before the migration still opens**, and this is tested against real pre-migration artifacts rather than fixtures written for the test. On read, a retired `min_hw_tier` is **mapped** to its resource floor — never rewritten into the pack. `pi_zero_2w`, `pi_4` and `pi_5` map to §2.1's minimum spec; `mini_pc` to the preferred spec's RAM and storage. The mapped `arch` is always `any`: the old names bundled an architecture with their resource point, and Directive 02a settled that only the numbers were ever the requirement.
-- **[Open — this document owns it] `pi_5` has no stated resource point, and mapping it loses a guarantee.** The table this document removed gave `pi_5` 4 GB / 64 GB; §2.1 now places Pi 4 and Pi 5 in one class at 2 GB / 32 GB. A legacy `pi_5` pack therefore resolves **below** the floor it was built against, so a 2 GB box would be judged able to run it. `wax-builder inspect` reports this loss explicitly rather than absorbing it. Resolving it means either stating the historical resource point here or accepting the widening as intended — **a decision for this document, not for the implementer.**
+- **A pack built before the migration still opens**, and this is tested against real pre-migration artifacts rather than fixtures written for the test. On read, a retired `min_hw_tier` is **mapped** to its resource floor — never rewritten into the pack.
+
+#### Legacy tier floors — read-time compatibility, not buildable values
+
+**[New decision]** Each retired tier maps to **its own historical resource floor**, not to the current minimum:
+
+| Retired tier | Maps to | Why that point |
+|---|---:|---|
+| `pi_zero_2w` | 2 GB / 32 GB | It sat *below* today's minimum. Mapping **up** is safe — nothing below the minimum spec is supported at all, so there is no lower floor to resolve to. |
+| `pi_4` | 2 GB / 32 GB | Already the minimum spec (§2.1). Unchanged. |
+| `pi_5` | **4 GB / 64 GB** | Its real historical point, *above* the minimum. |
+
+`arch` maps to `any` for all three: the old names bundled an architecture with their resource point, and only the numbers were ever the requirement.
+
+- **The rule these three values encode: a legacy pack must never resolve to a floor *lower* than the one it was built against.** Doing so would let a box install content it cannot run — a silent failure that surfaces only when a learner opens the pack. Mapping level or upward is always safe; mapping downward never is. Only `pi_5` ever sat above the minimum, so only `pi_5` needs a point of its own.
+- **These are read-time compatibility values for packs already in the wild. They are not buildable tiers.** Declaring `min_hw_tier` in a `wax-pack.toml` remains a hard error, and the four names stay retired for authoring — a new pack states explicit resource fields. This table exists so that old packs keep working, not so that the tier axis can come back.
+- **A `min_hw_tier` value outside these three cannot be mapped** and is reported as unresolvable rather than guessed at. That is the one case where a legacy pack's requirement is genuinely unknown, and inventing a floor for it would be the exact failure the rule above prevents.
+
+*This closes the open item recorded when the migration landed, which noted that `pi_5` had no stated resource point and that mapping it to the minimum lost a guarantee. The guarantee is no longer lost: `pi_5` resolves to the floor it was built against.*
 - **[New decision]** guest_accessible is added to the normative list. It existed in Track B §2 and in no other document, which made every conforming builder reject it. Its admin-override half is explicitly relocated to the catalog, because an admin cannot modify a field sealed inside a signed archive — the same trap that removed total_size_bytes.
 
 ### Field formats
@@ -405,6 +422,7 @@ Every value in this document that had no defensible source anywhere — chosen r
 | 5.1 | **Authentication and authorization separated explicitly** | A sign-in shape was doing duty as a permission set, which is what produced the closed literal. |
 | 15 | **Apps declare permissions required and defined, never roles** | A new app introducing an authority had no way to do so without a central edit. |
 | 3, 13.2 | **`community_hub` / `field_ops` floor is resources, not architecture** | The `mini_pc` label bundled 16 GB with x86; only the numbers were ever the requirement. |
+| 11 | **Legacy tier floors: `pi_zero_2w`/`pi_4` → 2 GB/32 GB, `pi_5` → 4 GB/64 GB** | A legacy pack must never resolve below the floor it was built against; only `pi_5` ever sat above the minimum. Read-time only — no tier becomes buildable again. |
 
 ## 13. The Blocking Decisions — Enumerated, With Their Answers
 

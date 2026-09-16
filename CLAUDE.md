@@ -26,12 +26,12 @@ _Last updated: 2026-09-15, Directive 01._
 | Component | State | Evidence |
 |---|---|---|
 | `wax-core` | Streaming reader (A1b) + streaming writer (A2e), both memory-bounded. Segment-chain merge, one-hop redirects, checksum verification. | 60 tests |
-| `wax-builder` | `build` / `append` / `inspect` / `verify` / `ls` / `read`; manifest, aliases, compression policy, UUIDv4 identity, minisign hook (A7). | 93 tests |
+| `wax-builder` | `build` / `append` / `inspect` / `verify` / `ls` / `read`; manifest, aliases, compression policy, UUIDv4 identity, minisign hook (A7). | 95 tests |
 | `zim2wax` | Track B v0, text + image. §20 canonical paths, href rewriting, redirect flattening, manifest derivation, §11 licensing + build report. | 61 tests |
 | `fuzz/` | 3 `cargo-fuzz` targets: `header-parse`, `index-loader`, `segment-merge`. | seed corpora committed |
 | WAX format | **v0.9 frozen.** `SPEC.md` is normative and byte-exact. | — |
 
-**Test suite: 214 tests.** Platform results and all measured figures live in
+**Test suite: 216 tests.** Platform results and all measured figures live in
 `docs/baseline.md` and the Directive 01 report. Read `docs/baseline.md` before
 quoting any performance number.
 
@@ -104,6 +104,8 @@ The previous palette's blanket AA claim was false: six pairings failed 4.5:1, wo
 **Still blocking, unchanged:** the Directive 01 rig work. Linux x86 and ARM64 runs, the real-content measurements, the WAX-vs-ZIM output sizes and two of three determinism legs all wait on the two machines being reachable. **The read-only SQLite VFS behind every pack open has still only ever run on Windows.** Windows determinism anchor: `bdc3bc4df07447306dfc8b02d04b51c3d5b0927004115ab7a5c3157ae6983a11`.
 
 **Migration 1 of 2 is done.** `min_hw_tier` → measured resources shipped in Directive 03: `MIN_HW_TIERS` is gone, `zim2wax` emits the resource fields, and every enum assertion was migrated rather than deleted. Legacy packs open via a read-time mapping, proven against real pre-migration artifacts committed at `crates/wax-builder/tests/fixtures/legacy-tier-*.wax`.
+
+**Legacy floors are settled (Directive 03a).** Each retired tier maps to **its own historical floor**, not to the current minimum: `pi_zero_2w` and `pi_4` to 2 GB/32 GB, **`pi_5` to 4 GB/64 GB**. The rule: *a legacy pack must never resolve below the floor it was built against*, because that would let a box install content it cannot run. Read-time compatibility only — no tier is buildable, and a `min_hw_tier` outside the four is reported unresolvable rather than guessed. → **contract §11**
 
 **Migration 2 of 2 is not started: the role enum → data-driven permissions** (contract §4). It rides with the Track F identity build rather than standing alone, since the identity service is largely unbuilt.
 
