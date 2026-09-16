@@ -84,33 +84,61 @@ rely on anyone reading the skip line.
 
 ### Blocking decisions
 
-Directive 01 §3 and Directive 02 refer to "the blocking decisions" as a known,
-named set. **No document in this repo enumerates that set.** Recorded here as a
-defect against the owning document; Directive 02 is to record the set and its
-proposed answers.
+**They are enumerated, in `docs/cross-track-contract.md` §13 "Still Open — Not
+Invented Here".** An earlier version of this file claimed no document listed
+them; that was wrong — it came from grepping for the phrase "blocking decision"
+rather than reading §13. Corrected 2026-09-15. Do not re-report this as a gap.
 
-What *is* grounded in the repo — the five Critical cross-cutting findings in
-`docs/implementability-sweep.md` §4, each invalidating logic in three or more
-documents:
+The seven, in the contract's own words:
 
-1. **Hardware tier table states ranges, not floors** (Track E §5). `pi_4` is
-   "2–8GB", so `min_hw_tier` gates nothing. Superseded in direction above;
-   Directive 02 makes it minimum/preferred with measured floors.
-2. **No total ordering between tiers and deployment profiles**, and no mapping
-   between the two axes, though four documents compare them.
-3. **The installable-stack path matches no tier name**, making tier-gated
-   decisions undecidable on a path already committed to.
-4. **The progress-event schema has four of five elements undefined** — and
-   `progress_events` has no primary key, so the Kolibri poll loop duplicates
-   every row on re-run.
-5. **Nine cross-document amendments are recorded only in the document that
-   decided them** — unverified at the owning document.
+1. Per-service RAM and disk floors for all ten Track H services — the numbers
+   Track E's consolidated budget waits on. Only Track H can supply them.
+2. **The shell's IPC surface** — wire format, argument types, response and error
+   shapes for every privileged operation. The contract calls this "a design
+   session, not a value to pin, and the largest single gap in the set."
+3. The passage/chunk unit for embedding, retrieval and citation. Track D's
+   citations cannot locate anything inside a large article until it exists.
+4. The cross-source search ranking rule — scores from separately-built indexes
+   are not comparable. RRF is the obvious candidate but it is Track D's call.
+5. What binds a Track H service session to the active profile, and what a
+   profile switch does to an open one. Today a switch leaves the previous
+   profile's service session authenticated.
+6. The update-failure detection rule — what "known-good" means and what triggers
+   rollback. Track E specifies the rollback boundary but never its trigger.
+7. Design Language: focus-indicator token, spacing scale, touch-target minimums,
+   interaction-state palette, reconciled status-icon vocabulary — **plus the
+   colour pairings that fail the document's own WCAG AA claim**, the
+   primary-action accent among them. See the measured ratios below.
 
-Plus two decisions Directive 01 explicitly defers:
+The sweep's five Critical cross-cutting findings (`implementability-sweep.md`
+§4) are the *defect register*; the contract is where several were already
+**fixed**. Before citing one as open, check the contract: §2 restates the tier
+table as guaranteed floors, §2/§3 publish both total orderings and the
+profile→tier mapping, and §2 adds the `generic` tier for the installable-stack
+path. The sweep is history, not a to-do list.
 
-* **The LAN HTTP decision** — Directive 02 records it.
-* **Compression: per-article vs grouped vs per-article with a shared
-  dictionary** — Directive 03 measures it against §5.7's baseline.
+### Measured: the design language's AA claim is false
+
+`design-language.md` §4 asserts "Every color pairing above meets or exceeds
+WCAG AA contrast (4.5:1 for body text)". Computed from its own hex values
+(W3C relative-luminance formula), **six text pairings fail 4.5:1**:
+
+| Theme | Pairing | Ratio |
+|---|---|---:|
+| Light | Accent `C1622A` on Background `F2EEE6` | **3.60** |
+| Light | Accent `C1622A` on Surface `FAF8F4` | **3.92** |
+| Light | Success `4B7B4E` on Background `F2EEE6` | **4.28** |
+| Dark | Success `5C9A60` on Surface `2A2723` | **4.42** |
+| Dark | Error `C24545` on Background `1E1C19` | **3.43** |
+| Dark | Error `C24545` on Surface `2A2723` | **2.99** — fails even 3:1 |
+
+Border/divider sits at 1.24–1.42 against both surfaces in both themes; whether
+that matters depends on whether hairlines count as UI components under 1.4.11.
+
+The contract says *five*. This measurement says six, and the discrepancy is
+unresolved — the handoff PDF that is the cited source is still not in `docs/`.
+Under the no-dark-theme direction the three dark rows disappear with the theme,
+leaving three light-theme failures to fix.
 
 ### Next directive
 
