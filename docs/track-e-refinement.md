@@ -6,7 +6,7 @@ Hardware, OS & Networking — Technical Refinement
 
 ## 1. Scope
 
-Track E owns the box itself: the OS image, how it updates without bricking itself, the partition layout everything else's persistent state lives on, the hardware-tier vocabulary every other track already references by name, Wi-Fi/captive-portal behavior, and the radio/IoT/power hardware that only the Field Ops profile turns on. Three tracks have been citing E6's tier names (pi_zero_2w/pi_4/pi_5/mini_pc) and E10/E11's services without this track ever having published what those actually are — settling that is this document's first job, not an afterthought.
+Track E owns the box itself: the OS image, how it updates without bricking itself, the partition layout everything else's persistent state lives on, the OS-side share of the consolidated resource budget (§5.1) — the hardware vocabulary itself now belongs to the cross-track contract §2, Wi-Fi/captive-portal behavior, and the radio/IoT/power hardware that only the Field Ops profile turns on. Three tracks have been citing E6's tier names (pi_zero_2w/pi_4/pi_5/mini_pc) and E10/E11's services without this track ever having published what those actually are — settling that is this document's first job, not an afterthought.
 
 ## 2. Base OS Image (E1)
 
@@ -34,20 +34,29 @@ This is close to free once E1 is rpm-ostree, since ostree's whole model is atomi
 - **Wear-leveling note:** On microSD-based Kiosk/Classroom-tier hardware, frequent writes (B4 catalog updates, F11 progress events) concentrated in one place is a real wear concern over a multi-year deployment. Flagged as an open decision (§17) — whether this warrants a separate partition/volume from general /var, or just a wear-aware filesystem choice (e.g. F2FS) for /var/lib/deltos specifically — rather than assumed away.
 - **The browser's own storage needs pinning here too (added after review):** Track C's C4/C5 isolation scheme depends on Chromium's per-origin localStorage/IndexedDB, which lives inside Chromium's own profile directory — a path Chromium otherwise defaults on its own, not necessarily under /var. deltos-shell's kiosk instance must be launched with its profile directory explicitly set under /var/lib/deltos/browser-profile/, or Track C's entire per-(pack, profile-slot) storage design (Track C §5) sits somewhere ostree's rollback guarantee (§3) doesn't actually cover.
 
-## 5. Hardware-Tier Profiles (E6) — the Table Other Tracks Have Been Assuming
+## 5. Hardware Scoping (E6) — Superseded; the Contract Owns It
 
-Track B's min_hw_tier enum, Track D's D7 gating table, and Track C's hardware scoping all reference pi_zero_2w/pi_4/pi_5/mini_pc by name. This is where those get an actual definition.
+**This section no longer defines hardware. `docs/cross-track-contract.md` §2 does, and nothing here restates it.**
 
-| **Tier** | **RAM** | **Storage** | **CPU class** | **Typical deployment** |
-|---|---|---|---|---|
-| pi_zero_2w | 512MB | microSD, 16–32GB | Quad-core Cortex-A53 @ 1GHz | Kiosk-profile hardware — single reader, no admin services. |
-| pi_4 | 2–8GB | microSD or USB SSD, 32–128GB | Quad-core Cortex-A72 @ 1.5GHz | Classroom-profile hardware — full shell, moderate content. |
-| pi_5 | 4–8GB | USB SSD or NVMe (via adapter), 64–256GB | Quad-core Cortex-A76 @ 2.4GHz | Classroom-profile hardware, higher headroom — Track D's D5 small-model tier. |
-| mini_pc | 16–32GB | NVMe SSD, 256GB–1TB+ | x86_64, 4–8 cores (varies by SKU) | Community Hub- and Field Ops-profile hardware (the same tier serves both) — full Track G/H service set, Track D's larger local model. |
+This document previously held a four-row tier table — `pi_zero_2w` / `pi_4` / `pi_5` / `mini_pc`, with RAM as ranges and Cortex CPU classes — described as "the authoritative source for what each tier's hardware actually is". Two things ended it:
 
-- **Division of labor with Track D's D7:** This table is the authoritative source for what each tier's hardware actually is; Track D's D7 (Track D §8) is the authoritative source for which features that hardware is judged capable of running. Keeping the numbers here and the feature judgment there means neither table has to guess at the other's half.
-- **These RAM figures haven't been summed against the actual concurrent load — flagged after review, extended after Track F's review:** Every number in this table is a hardware spec, not a validated budget. At the low end, pi_zero_2w's 512MB has to cover rpm-ostree's own footprint (§2's stated risk), Chromium kiosk mode, deltos-shelld, one or more per-pack wax-serve instances (Track C §5), Piper TTS (Track C §9, itself flagged for footprint validation), and Track F's own deltos-identityd, deltos-installd, and deltos-healthd (Track F §3, §4, §6, all stated to apply down to Kiosk profile) — eight separate "needs validation" items scattered across four documents that nobody has summed into one number. At the high end, mini_pc's stated 16GB floor is asked to carry K3s plus most of Track G's own services, most of Track H's app catalog, and Track D's 7–8B-class local model concurrently (Track D §6) — plausible at 32GB, unvalidated at 16GB. Both need a real consolidated budget, owned here since this table is the authoritative source for the numbers (§17).
-- **This table is reference data for a calculator, not a published "optimum" spec — reframed per product direction (§21):** Earlier framing treated this table as heading toward a marketing-style minimum/optimum spec sheet. Per product direction, DeltOS does not prescribe an optimum configuration at all: it exposes a checkbox-style selector of tools/features (at download time and, later, in DeltOS's own app store per Track C's C6) that computes and displays a live minimum and optimum requirement for whatever the person has actually selected, and leaves sourcing the hardware to them. This table's tier definitions remain exactly as authoritative as before — the calculator sums per-tool resource costs (a new Track B B3 field, per that document's companion amendment) against these tier floors to produce its live readout, rather than DeltOS publishing one fixed number. "Optimum hardware we can source and list" (site copy, HAT/accessory suggestions) can still exist as informational content, but it is downstream of the calculator's output, not a substitute for it.
+1. **The ranges made the names useless as a gate.** `pi_4` at "2–8GB" meant a pack declaring that tier could land on either, so the name guaranteed nothing. The contract restated the figures as guaranteed floors, and this table was never updated to match — leaving two tables and one of them wrong, which is the exact failure the contract exists to remove.
+2. **Device-name tiers are retired outright.** Per settled product direction, DeltOS is hardware-agnostic: capability follows **measured resources** — RAM, storage, CPU architecture and GPU presence — and **no document may gate a feature on a device model.** The Pi Zero 2 W is no longer a target at all.
+
+What replaces it, all owned by the contract:
+
+- **Minimum spec** (2 GB / 32 GB / `aarch64`, a Pi 4/5-class board as the example) and **preferred spec** (16 GB / 256 GB / `x86_64`, an x86 mini-PC as the example) — contract §2.1. Board names are examples of a resource class, never gates.
+- **What a box measures at first boot**, and the capability record that publishes it — contract §2.2 and §9.
+- **The `min_ram_bytes` / `min_storage_bytes` / `arch` / `gpu` declaration** a pack, feature or app makes — contract §2.3.
+- **Profile floors**, now stated as resources — contract §3.
+
+### 5.1 What Track E still owns here
+
+- **The consolidated budget.** The concern this section raised — that the RAM figures were hardware specs, never summed against real concurrent load — was correct and is not resolved by retiring the table. It is now answerable rather than circular: contract §15's app contract makes **every app and service declare its own measured floor**, so the budget is the sum of declared floors over the installed set, computed on the box. Track E owns summing the **OS-side** contributors that no app manifest covers: the update stack's own footprint, the kiosk browser, `deltos-shelld`, and the Track F baseline daemons.
+- **The requirement calculator's data source.** The calculator described below still works exactly as framed — it sums per-item declared resource costs and displays a live minimum for whatever the person selected. It now sums §2.3 declarations instead of reading tier floors out of a table here, which is strictly better: the figures come from the things themselves.
+
+- **DeltOS still does not prescribe an optimum configuration.** Per product direction, it exposes a checkbox-style selector of tools and features — at download time (§8, E7) and later in Track C's C6 app store — that computes and displays a live minimum and preferred requirement for whatever has actually been selected, and leaves sourcing the hardware to the person. "Optimum hardware we can source and list" may still exist as informational site copy, but it is downstream of the calculator's output, never a substitute for it.
+- **Division of labour with Track D's D7 is unchanged in shape:** the contract is now the authoritative source for what hardware *is*; Track D's D7 (Track D §8) remains the authoritative source for which features that hardware is judged capable of running.
 
 ## 6. Wi-Fi AP & Captive Portal (E3)
 
@@ -77,7 +86,7 @@ A guided imaging tool for admins building new boxes — concretely, this needs t
 Yggdrasil and Reticulum solve different problems; picking one exclusively would be forcing a single tool onto two use cases the master plan's own feature list actually distinguishes.
 
 - **Yggdrasil — box-to-box over real links:** For a multi-building deployment (a school campus, several huts) where boxes reach each other over ordinary Wi-Fi or Ethernet but without a shared router — Yggdrasil's self-routing encrypted overlay gives each box a stable address without manual routing config. This is Track D's D8 federated search's realistic transport once boxes aren't on one LAN.
-- **Reticulum — genuinely bandwidth-starved links:** Reserved for actual radio links (LoRa, packet radio) pairing with Field Ops-profile hardware (mini_pc) — a fundamentally different bandwidth regime than Yggdrasil targets. Not a competing choice; a different layer for a different physical link, scoped to Field Ops/Advanced only.
+- **Reticulum — genuinely bandwidth-starved links:** Reserved for actual radio links (LoRa, packet radio) pairing with Field Ops-profile hardware — a fundamentally different bandwidth regime than Yggdrasil targets. Not a competing choice; a different layer for a different physical link, scoped to Field Ops/Advanced only.
 - **Answering Track D's open question on peer discovery (added after review):** Track D's D8 flagged discovering peers as an item needing Track E's confirmation (Track D §9, §13). The answer has two parts, not one mechanism: on a single LAN segment (boxes in the same building), E10's Avahi/mDNS (§14) already provides automatic discovery — a box simply announces itself and others see it, no Yggdrasil-specific work needed. Across sites (different buildings, different networks), there is no automatic discovery — Yggdrasil doesn't provide a directory service, so an admin explicitly pairs boxes by exchanging Yggdrasil addresses through Track F's forthcoming F6 fleet console. Federated search (Track D §9) should assume the same-LAN case is automatic and the cross-site case is admin-configured, not automatic either way.
 - **Mixed topologies are out of scope for v1, stated plainly (added after review):** A real Field Ops deployment can plausibly mix both — some boxes on Wi-Fi/Ethernet, others reachable only over LoRa. Bridging a Yggdrasil segment to a Reticulum segment automatically is not designed here; a deployment needing both would require a manually configured gateway node running both stacks, not a transparent bridge. A moderate-bandwidth, genuinely IP-capable radio link (point-to-point microwave, satellite backhaul) is simplest classified as a Yggdrasil link, not a Reticulum one — Reticulum is reserved specifically for links too constrained to run ordinary IP at all.
 
@@ -120,7 +129,7 @@ The master plan leaves dnsmasq vs. CoreDNS open; this needs a decision since Tra
 
 chrony, optionally GPS-disciplined — the master plan's own framing ("for sites with no internet access ever") surfaces a hardware gap worth stating plainly rather than assuming away.
 
-- **The RTC gap on Kiosk-profile hardware (pi_zero_2w):** Pi Zero 2W boards commonly ship without a battery-backed real-time clock, meaning the system clock resets to a fixed epoch on every power loss unless something disciplines it. For a genuinely offline Field Ops deployment (no internet, no GPS fix indoors), that's a real problem: a cheap I2C RTC module (e.g. a DS3231) is a stated hardware recommendation for any Field Ops-profile box relying on E11 without a reliable external time source — not a nice-to-have.
+- **The RTC gap on boards without a battery-backed clock:** Many ARM64 single-board machines, the Pi 4 and 5 included, ship with no battery-backed real-time clock, meaning the system clock resets to a fixed epoch on every power loss unless something disciplines it. For a genuinely offline Field Ops deployment (no internet, no GPS fix indoors), that's a real problem: a cheap I2C RTC module (e.g. a DS3231) is a stated hardware recommendation for any Field Ops-profile box relying on E11 without a reliable external time source — not a nice-to-have.
 - **Why correct time matters beyond E11 itself:** TLS certificate validity (Track G's forthcoming G2) and session/token expiry (Track F's forthcoming F12) both depend on a sane wall clock, more strictly than most of what's in this document. Flagged forward as a dependency those tracks' own refinements need to account for, not assumed to be someone else's problem.
 
 ## 16. Hardware & Profile Scoping
@@ -171,7 +180,7 @@ chrony, optionally GPS-disciplined — the master plan's own framing ("for sites
 - **[Moderate]** Track D's D8 had explicitly flagged peer discovery as an open question for Track E to confirm; this document, now drafted, never addressed it. Resolved: same-LAN discovery answered via E10's Avahi/mDNS, cross-site discovery answered as admin-configured via Track F's forthcoming F6, rather than left dangling a second time (§9).
 - **[Moderate]** The Yggdrasil/Reticulum split didn't address a mixed-topology deployment (some boxes on Wi-Fi, others only on radio) or classify a moderate-bandwidth, IP-capable radio link between the two. Resolved: mixed topologies stated as out of scope for v1 (a manual gateway node, not automatic bridging), with IP-capable links classified as Yggdrasil regardless of being carried over radio (§9).
 - **[Moderate]** E9's scope was narrowed to raw telemetry only, silently dropping "panel-positioning guidance" despite it being named explicitly in the master plan's own E9 line item. Resolved: restored as a simple computed value E9 derives from telemetry trends, still just published data for G7 to display, not a scope expansion into dashboard-building (§10).
-- **[Minor]** Track E repeatedly wrote "Kiosk-tier hardware," "Field Ops-tier hardware," etc., conflating Deployment Profile names with E6's actual tier vocabulary — the same error Track B's review had already caught and fixed elsewhere, and especially imprecise for mini_pc, which spans two profiles with no distinct "Field Ops tier" in the E6 table at all. Resolved: swept for consistent Profile/tier phrasing throughout (§2, §5, §6, §9, §15, §16, §17).
+- **[Minor]** Track E repeatedly wrote "Kiosk-tier hardware," "Field Ops-tier hardware," etc., conflating Deployment Profile names with the hardware vocabulary — the same error Track B's review had already caught elsewhere. Now doubly stale: the tier names are retired entirely (contract §2) and the remaining "Field Ops tier" in the E6 table at all. Resolved: swept for consistent Profile/tier phrasing throughout (§2, §5, §6, §9, §15, §16, §17).
 - **[Minor]** §3 described /etc and /var as preserved identically across an ostree update; in fact only /var is directly shared, while /etc undergoes a three-way merge that can drop local edits. Resolved: description corrected, noting DeltOS's own state avoids /etc entirely so the distinction doesn't affect its guarantees (§3).
 
 ## 21. Architecture Amendment (per product direction on deployment model and hardware philosophy)
@@ -188,3 +197,52 @@ After this document's independent review, the product owner raised a foundationa
 Track F's independent review noted that §5's still-open Kiosk-tier budget concern — rpm-ostree, Chromium kiosk mode, deltos-shelld, per-pack wax-serve instances, and Piper TTS, all competing for 512MB — never accounted for Track F's own daemons, even though Track F's §14 states plainly that F2, F3/F11, and F4 all apply down to Kiosk profile.
 
 - **Three more names added to an already-open item, not a newly-closed one:** deltos-identityd (Track F's F3/F11 service), deltos-installd (F4), and deltos-healthd (F5) are added to §5's enumeration and to §17's open-decision bullet — all three are stated in Track F's own design as lightweight, SQLite-backed, and (for installd and healthd) idle or low-frequency-polling processes rather than continuously active ones, but that's a design intention, not a measured footprint. This remains exactly the kind of consolidated, real-measurement budget §5 and §17 already called for before this amendment — the open decision is unchanged in kind, only more complete in what it needs to sum.
+
+## 23. Amendment (per product direction — catalogue additions and self-healing)
+
+Each item below states its **goal**, the **property that must hold**, and **why**. All are subject to the app contract (cross-track contract §15), the single licence check (§16) where they carry third-party content, and measured-resource gating (§2).
+
+### 23.1 E7 gains the download-time configurator
+
+**Goal.** The checkbox-style selector that computes a live minimum and preferred requirement for the tools a person actually selected becomes part of E7 (provisioning and installer), rather than remaining unowned.
+
+**Property.** The configurator's readout is the **sum of `min_ram_bytes` / `min_storage_bytes` declarations** from the selected items (contract §2.3), never a figure maintained by hand in a document. Adding a tool to the catalogue changes the readout with no edit here.
+
+**Why.** The master plan flagged this as referenced by three track documents (Track E §17, Track B §17, Track C §7/§19) and owned by none — precisely the "no home, so it gets a TBD" pattern this pass exists to end. E7 already owns the download and flashing path the configurator sits in front of.
+
+### 23.2 E7 gains install parity
+
+**Goal.** A **one-command install on a Debian/Ubuntu host**, plus a supported **WSL2 path**, alongside the appliance image.
+
+**Property.** The installable-stack path is co-equal with the image: a box installed this way publishes the same capability record (contract §9) and is gated identically. Nothing may assume the appliance path.
+
+**Why.** Both competitors offer a one-command install, and it is how most people will first try DeltOS. WSL2 in particular makes the whole system evaluable on a Windows machine with no hardware at all. The `generic` tier that previously existed to give such a host a name is retired — with measured resources there is nothing left to special-case.
+
+### 23.3 E10 gains a self-service name registry
+
+**Goal.** A person requests a name; an admin approves it; it resolves on the box's network at once.
+
+**Property.** Names resolve under the zones the contract already owns (§8) — service names under `deltos.lan`, hosted sites under the hosting zone — and **an approved name resolves without a service restart**. Approval is an admin action; request is not.
+
+**Why.** H18 hosting and the Commons make name allocation a routine act by non-administrators. Without a registry, every name is a manual DNS edit, which does not scale past a handful and makes hosting effectively admin-only.
+
+### 23.4 E8 gains radio Q&A
+
+**Goal.** On Field Ops, *Ask DeltOS* answers over the low-bandwidth radio mesh.
+
+**Property.** **Text only, with pack citations.** The transport budget is the mesh's, not the model's: an answer that does not fit the link is truncated with its citations intact, never silently dropped. Field Ops only.
+
+**Why.** The mesh already reaches places nothing else does; a question-and-answer service is the highest-value thing that fits in its bandwidth. Citations matter more here than anywhere else, because a recipient on a radio link cannot easily go and check.
+
+### 23.5 Self-healing — the OS supervisor's half
+
+The full model is cross-track; G1 owns orchestration-level healing and this document owns the OS-level supervisor. **Point 2 of the model is Track E's:**
+
+**Goal.** No box, at any profile, runs a service with nothing watching it.
+
+**Property.** **Where G1 orchestration is not present, the OS service supervisor owns restart.** At the minimum profile there is no orchestrator, so the supervisor is the whole of the healing model there — and it must act on an **unhealthy health-check result**, not only on process exit, since a frozen-but-running service exits nothing.
+
+**Why.** Healing was specified as an orchestration property, and orchestration starts at `classroom`. That left the cheapest profile — the one most likely to be unattended in a place with no administrator — as the only one where a crashed service stayed crashed. Exactly backwards.
+
+- **Crash-loop handling is shared with G1:** bounded backoff and an admin alert **before** a service reaches the terminal `failed` state (contract §7.1), so a box never sits silently restarting a broken service forever.
+- **Corrupted data is not a restart case.** The supervisor hands it to F10 backup/restore rather than looping. A restart cannot repair bad bytes, and looping on them turns a recoverable fault into an outage.

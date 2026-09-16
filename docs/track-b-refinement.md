@@ -208,3 +208,31 @@ An implementability sweep of all nine documents, run before writing B1's impleme
 - **The catalog's sha256, defined:** §5's packs.sha256 never said what it digests, which is undefined for a multi-volume pack and is the value F4 verifies a download against. It is the digest of each volume file exactly as published, stored as an ordered comma-separated list for a multi-volume pack, computed by B13 at the signing step over the bytes it will serve.
 
 Two further sweep findings against this document are real but not B1 blockers and are deferred rather than resolved here: the catalog-index sync mechanism (§5) is asserted without stating how a box discovers a new catalog version, what the index pack contains, or how removals are represented; and the automated content-safety scan named in §9's pipeline has no component id, no owning track and no phase. Both need answering before B13 is built, neither before zim2wax.
+
+## 21. Amendment (per product direction — catalogue additions)
+
+Each states its **goal**, the **property that must hold**, and **why**.
+
+### 21.1 Migration (B14)
+
+**Goal.** Existing `.zim` files, Kolibri channels and Internet-in-a-Box installs work on the box on day one.
+
+**Property.** **An existing library owner loses nothing by switching.** That is the whole specification and the bar every part of B14 is measured against: every item that worked before is reachable after, or the migration reports precisely what it could not carry and why. A silent partial migration is a failure, not a partial success.
+
+**Why.** This is the answer to ZIM's ecosystem lead. DeltOS is not competing on catalogue size — it cannot — so it has to make the existing catalogue work here. The person deciding whether to adopt DeltOS already owns a library, and "you would have to rebuild it" ends the conversation.
+
+### 21.2 Video packs (pack type)
+
+**Goal.** Lecture series, documentaries and how-to libraries as a first-class pack type.
+
+**Property.** A video pack is **a pack** — same container, same manifest, same signing, same licence check — not a parallel media path with its own rules.
+
+**Why.** Video is the most requested content type in these deployments and currently has no home: it is either shoehorned into a web pack or handled entirely outside the pack system, which loses signing, licensing and the catalog.
+
+### 21.3 Community Archive (B7 / WAX Studio)
+
+**Goal.** Oral histories, local photos and local records, published as community WAX packs and kept on the box.
+
+**Property.** Community-authored packs are **built and signed by the same toolchain** as any other pack and carry the same manifest — including attribution and licence, which for oral histories are the fields that matter most.
+
+**Why.** Every deployment sits somewhere with a history nobody has digitised, and the box is already the local archive. Routing it through the normal pack path is what makes a community recording a first-class citizen rather than a folder of files.

@@ -149,3 +149,96 @@ Track F's own companion amendment (Track F §22) adds a fourth role, guest, for 
 
 - **Guest is never provisioned into any backend service, by design rather than oversight:** Every adapter this document specifies (§2) exists to give a real, distinguishable person a real account in Kolibri, Nextcloud, Conduit, or Wiki.js — that's the entire point of settling role mapping in §2's table. Guest is the opposite case: one shared, anonymous, admin-toggleable identity with no persistent per-visitor state anywhere in the system (Track F §22). Provisioning it into these services would create exactly one "Guest" account per service that every walk-in visitor shares — an unaccountable shared credential this project's own F13/F3 design has otherwise gone out of its way to avoid (Track F §11, §3). The identity-bridge provisioning event (§2) simply never fires for a profile with role guest; no adapter, API-based or file-based, ever sees it.
 - **What a Guest gets instead:** Content-pack browsing only, filtered to manifest-declared guest_accessible packs (Track B §2, Track C §23) — none of H1/H5/H6/H8's own multi-user services are reachable by a Guest profile at all, the same way they're invisible to a Kiosk-tier device with no identity system running (§13). This is a narrower posture than Student, not an equal-but-different one: Student gets a real, tracked identity inside every one of these services; Guest gets none.
+
+## 19. Amendment (per product direction — the catalogue additions)
+
+Each component states its **goal**, the **property that must hold**, and **why**. Every one is subject to the app contract (cross-track contract §15) — declaring its own measured resource floor, address and roles, sign-in method, health check, backup set, and whether it joins unified search, notifications and progress tracking — plus the single licence check (§16) where it carries third-party content, and measured-resource gating (§2).
+
+**On numbering:** this amendment adds H11, H12 and H14–H19. **H13 is not assigned.** The product direction that settled this catalogue skipped it, and inventing an occupant or renumbering H14 to close the gap would both be worse than leaving it visible. H13 is unallocated and available.
+
+### 19.1 E-book & Audio Library (H11)
+
+**Goal.** Read, shelve and upload e-books; audiobooks and podcasts in the same library. Ships public-domain books and audiobooks as a starter pack.
+
+**Property.** It **publishes an OPDS feed**, so third-party e-reader apps and dedicated e-ink devices can browse the box directly without DeltOS writing a client for each. Uploads pass the licence check.
+
+**Why.** An e-reader the reader already owns is the device they will actually use. OPDS is the one interoperability standard in this space that is widely implemented, and supporting it turns every existing reader app into a DeltOS client for free.
+
+### 19.2 Maker & Code Studio (H12)
+
+**Goal.** Visual block coding for younger learners and notebooks for older ones, in one component.
+
+**Property.** Its **language packages come from the software depot (G9)**, never from the open internet. Projects are part of F10's backup set (contract §16).
+
+**Why.** The two audiences are a continuum, not two products — the same learner crosses from blocks to text — and a shared component is what makes that crossing visible. Sourcing languages from the depot is what keeps it working offline, which is the whole point.
+
+### 19.3 Game Room (H14)
+
+**Goal.** Games that run in the visitor's own browser.
+
+**Property.** **The emulator runs in the visitor's browser; the box only stores and serves.** The box never emulates. Ships **homebrew and openly licensed titles only**; an admin may add games they own; **every game passes the licence check** (contract §16).
+
+**Why.** Browser-side emulation is what makes this affordable at the minimum spec — the box's cost is storage and bandwidth, both of which it already has. The licensing rule is not negotiable: a box that ships copyrighted ROMs is undistributable, and the same validator packs already use settles it at build time rather than by policy.
+
+### 19.4 Nearby Share (H15)
+
+**Goal.** An install-nothing file drop between any two devices on the box's Wi-Fi.
+
+**Property.** **Browser to browser**, no app on either device. It must work for a visitor on plain HTTP, which means it must not depend on any secure-context-only API (contract §16).
+
+**Why.** Moving a file between two phones in the same room is a daily need with no offline answer once the internet is gone. The plain-HTTP constraint is the hard part, and it is stated here because discovering it during implementation would be discovering it too late.
+
+### 19.5 Commons (H16)
+
+**Goal.** Announcements, a lightweight forum, and community Q&A.
+
+**Property.** Moderated through the **existing role set** — admin / teacher / student / guest (contract §4). No new roles, and no per-component moderator concept.
+
+**Why.** A shared box is a community before it is a library. Reusing the role set keeps moderation comprehensible: a teacher is already a teacher everywhere else on the box.
+
+### 19.6 Classroom Tools (H17)
+
+**Goal.** A shared calendar and schedule, a collaborative whiteboard, and casting a screen to the room display.
+
+**Property.** Casting is **to the room display the box drives**, not a peer-to-peer protocol requiring software installed on the presenting device.
+
+**Why.** These are the three things a classroom uses a shared screen for, and all three currently require internet services a disconnected school cannot reach.
+
+### 19.7 Hosting (H18)
+
+**Goal.** Students, classes and the community publish their own sites; admins can host full apps through the app contract.
+
+**Property.** **Hosted sites live on their own DNS zone and are isolated exactly as packs are.** Their content is untrusted and learner-authored. **A hosted site must never be able to read an admin surface's session** — the same finding contract §8 resolved for pack origins, and the same resolution: a separate zone sharing no cookie scope with the admin zone. Hosted sites are in F10's backup set (contract §16).
+
+**Why.** Publishing is the most motivating thing a learner can do with a computer, and the thing an offline box can offer that feels least like a compromise. The isolation requirement is stated first because hosting untrusted, author-controlled content next to an admin console is the most dangerous thing in this catalogue if it is got wrong.
+
+### 19.8 Security Lab (H19)
+
+**Goal.** Teach practical security, offline, against targets the learner is authorised to touch.
+
+**Delivered three ways:**
+
+1. **Browser tools** — encode/decode, packet analysis, log analysis. Runs anywhere.
+2. **A per-user sandboxed toolbox**, opened from the browser. **Preferred-spec hardware only** (contract §2.1) — the one component in this catalogue that genuinely needs it.
+3. **Installers and bootable security distributions**, delivered through the depot (G9).
+
+Plus a **closed practice range** of deliberately vulnerable targets, and **offline references** — a vulnerability database and an attack-technique catalogue.
+
+**The properties that must hold. These are part of the specification, not an afterthought:**
+
+- **Off by default.**
+- **Granted to named people through an admin-granted permission — not a fifth role.** The closed role set stays admin / teacher / student / guest (contract §4). A capability granted per person is revocable per person; a role is not.
+- **Scans may target only admin-authorised addresses.** Never a visitor's device, and never the box's own admin surfaces.
+- **The practice range is closed** — the deliberately vulnerable targets are reachable from the lab and from nowhere else.
+- **Every action is logged.**
+- **Scanner signatures update as delta packs**, like any other content.
+
+**Why.** The alternative to teaching this against an authorised range is learners practising on whatever network they happen to be on. The guardrails are what separate a teaching tool from something pointed at the school's own network, and they are specified here rather than left to the implementer because every one of them is far harder to add afterwards than to build in.
+
+### 19.9 H2 (Media Server) gains plug-in media
+
+**Goal.** Plug in a drive; the box detects it; an admin approves it; MKV/MP4/audio appears in the library with posters and subtitles.
+
+**Property.** **An admin approves before anything is ingested** — detection is automatic, ingestion is not. **Direct play by default**, with on-the-fly transcode **only where measured resources allow** (contract §2.3), never at the minimum spec. **Per-role age ratings gate what each profile sees.**
+
+**Why.** A USB drive of films is how media actually arrives in these deployments. The approval step stops an unattended box ingesting whatever is plugged into it; the transcode gate stops it trying and failing at the minimum spec; the age ratings are what make a shared family or school box usable at all.

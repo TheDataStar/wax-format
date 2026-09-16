@@ -190,7 +190,7 @@ Stand up one physical Pi 4/5 + one x86 test rig running today's prototype end to
 
 New: settle the orchestrator (G1) and reverse-proxy (G2) choice early — nearly the entire Community Hub profile is built on top of these two decisions.
 
-Once these are done, individual components (A1–H10) are ready to be turned into scoped prompts for Claude Code.
+Once these are done, individual components are ready to be turned into scoped prompts for Claude Code. (This line previously named the set as "A1–H10"; the inventory is enumerated in the track documents and is not totalled here — see §8.1.)
 
 ## 7. Holistic Cross-Document Review — Findings and Resolutions
 
@@ -211,3 +211,36 @@ With all eight tracks now individually drafted and independently reviewed, this 
 - **[Moderate]** §5 and §6 both still listed F11 (identity & progress data model) as needing an owner decision, though Track F settled its full design in its own initial draft, ahead of the P2 target, and Track C independently confirmed C8's P3 build against it is unconditional. Resolved: §5's bullet reworded to state the resolution and its citation; §6's now-redundant next step removed.
 - **[Minor]** The Field Ops/Advanced profile row cited "E12–E14," excluding E15 (smart-grid automation) despite describing E15's own mechanism ("G6-driven smart-grid automation") in the same cell. Resolved: range corrected to E12–E15 (§2).
 - **[Minor]** The Kiosk profile row named "old netbook" as example hardware, but Track E's authoritative E6 tier table defines no tier covering a resource-constrained x86 netbook — only pi_zero_2w, pi_4, pi_5, and mini_pc. Resolved: the Kiosk hardware example narrowed to Pi Zero 2W, naming the actual E6 tier it maps to (§2).
+
+## 8. Amendment (per product direction — the catalogue, and how it is counted)
+
+### 8.1 The inventory is enumerated, never totalled
+
+This plan's inventory (§3) previously implied a fixed set, and `INDEX.md` described it as "A1–H10". **Neither is maintained as a count any more.** The catalogue is stated by enumeration in the track documents, each component owned by exactly one of them, and a fixed total in a second place is a number that goes stale the first time the catalogue grows — which it now has.
+
+**Where the additions live.** Each is specified — goal, property, why — in its owning track document, not here:
+
+| Component | Owner |
+|---|---|
+| B14 Migration; video packs; community archive | `track-b-refinement.md` §21 |
+| C7 widened to a USB shelf | `track-c-refinement.md` §24 |
+| AI acceleration (`gpu: preferred`) | `track-d-refinement.md` §17 |
+| E7 configurator and install parity; E10 name registry; E8 radio Q&A; the OS-supervisor half of self-healing | `track-e-refinement.md` §23 |
+| F14 usage insights; F15 network defense; F1 visible benchmark; the remote bridge; F10's widened backup set | `track-f-refinement.md` §23 |
+| G8 print; G9 software depot; self-healing in full | `track-g-refinement.md` §14 |
+| H11, H12, H14–H19; H2 plug-in media | `track-h-refinement.md` §19 |
+| Search-index ownership; the passage unit; A5 hostname routing | `track-a-refinement.md` §20 |
+
+**H13 is unassigned.** The settled catalogue skips it. It is left visibly empty rather than filled or closed by renumbering.
+
+### 8.2 The download-time configurator now has an owner
+
+§7 of this plan recorded the configurator as "referenced by three track documents and owned by none" — added as a flagged, explicitly unowned item so it would not be lost between tracks.
+
+**It is owned. E7 has it** (`track-e-refinement.md` §23.1), alongside install parity. The flagged-unowned entry is resolved, and this is the precedent working as intended: an item with no home was made visible rather than quietly assumed, and it stayed visible until someone gave it one.
+
+### 8.3 What the additions rest on
+
+Every component above is reachable only because of one prior decision, recorded in cross-track contract §15: **the app contract.** Each app or service declares its resources, address and roles, sign-in, health check, backup set and participation once, in one manifest, and the launcher, reverse proxy, backup, health monitoring and store all read it.
+
+Without it, each addition in §8.1 would mean edits in five platform components, and the cost of the catalogue would grow with its size. That is the difference between a catalogue this plan can sequence and a feature list it cannot.

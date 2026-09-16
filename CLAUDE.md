@@ -65,96 +65,45 @@ Nothing printed means every test ran its subject. This is exactly why the
 require flags matter more than the message: **in CI set the flags** and do not
 rely on anyone reading the skip line.
 
-### Direction — settled, supersedes any earlier document
+### Direction — settled and now written into the docs
 
-* **DeltOS is hardware-agnostic.** Capability is decided by **measured
-  resources, never by device name.** Minimum spec is a Raspberry Pi 4/5-class
-  ARM64 machine; preferred spec is an x86 mini-PC. **The Pi Zero 2 W is no
-  longer a target.** This supersedes the tier tables in `docs/track-e-refinement.md`
-  §5 until Directive 02 rewrites them.
-* **DeltOS is one WebOS** with a **single light visual language** from admin
-  through to learner. This supersedes the flat-only rules in
-  `docs/design-language.md` until Directive 02 rewrites them.
-* **Visitors' own phones reach the box over plain HTTP**, with packs isolated
-  **by hostname**. HTTPS is used only where the box's certificate authority can
-  be installed.
-* **Approved feature additions** from the alignment brief are pending the docs
-  revision. **That list is still growing — it is referenced, never counted.**
-  Do not treat any snapshot of it as complete.
+Directive 02 wrote all of this into the design set. These are no longer "supersedes until someone rewrites it" notes — **the documents say it**, and the document named is the owner.
 
-### Blocking decisions
+- **DeltOS is hardware-agnostic.** Device-name tiers are **retired entirely**. Capability follows measured **RAM, storage, CPU architecture and GPU presence**. Minimum spec 2 GB / 32 GB / `aarch64`; preferred 16 GB / 256 GB / `x86_64`. Board names are examples, never gates. The Pi Zero 2 W is not a target anywhere. → **contract §2**
+- **`min_hw_tier` is replaced** by `min_ram_bytes` / `min_storage_bytes` / `arch` / optional `gpu`. → **contract §2.3**
+- **One WebOS, one light visual language**, admin through learner. No dark theme, no separate admin look. Layered by default, flat fallback **decided by the rendering client**, honouring its reduced-transparency and reduced-motion settings. → **design-language §2, §4, §5, §22**
+- **The app contract** — one manifest declaring resources, address and roles, sign-in, health check, backup set and participation, read by the launcher, proxy, backup, health monitoring and store. Adding an app changes no core code. → **contract §15**
+- **No telemetry, ever**, with F14 aggregate-local as the sole exception; the shell itself is translatable; backups cover hosted sites, security-lab work and code-studio projects; one licence check for everything DeltOS distributes; **plain HTTP for unmanaged visitors with the secure-context cost recorded**. → **contract §16**
+- **Self-healing specified in full** — five properties, including that a *frozen* service is healed and that the minimum profile heals through the OS supervisor. → **track-g §14.3** and **track-e §23.5**
+- **The catalogue is enumerated, never totalled.** No fixed component count survives. **H13 is deliberately unassigned.** → **plan §8.1**
 
-**They are enumerated, in `docs/cross-track-contract.md` §13 "Still Open — Not
-Invented Here".** An earlier version of this file claimed no document listed
-them; that was wrong — it came from grepping for the phrase "blocking decision"
-rather than reading §13. Corrected 2026-09-15. Do not re-report this as a gap.
+### Blocking decisions — answered
 
-The seven, in the contract's own words:
+**Enumerated in `docs/cross-track-contract.md` §13, with answers.** Do not re-report them as missing; an earlier version of this file wrongly said no document listed them.
 
-1. Per-service RAM and disk floors for all ten Track H services — the numbers
-   Track E's consolidated budget waits on. Only Track H can supply them.
-2. **The shell's IPC surface** — wire format, argument types, response and error
-   shapes for every privileged operation. The contract calls this "a design
-   session, not a value to pin, and the largest single gap in the set."
-3. The passage/chunk unit for embedding, retrieval and citation. Track D's
-   citations cannot locate anything inside a large article until it exists.
-4. The cross-source search ranking rule — scores from separately-built indexes
-   are not comparable. RRF is the obvious candidate but it is Track D's call.
-5. What binds a Track H service session to the active profile, and what a
-   profile switch does to an open one. Today a switch leaves the previous
-   profile's service session authenticated.
-6. The update-failure detection rule — what "known-good" means and what triggers
-   rollback. Track E specifies the rollback boundary but never its trigger.
-7. Design Language: focus-indicator token, spacing scale, touch-target minimums,
-   interaction-state palette, reconciled status-icon vocabulary — **plus the
-   colour pairings that fail the document's own WCAG AA claim**, the
-   primary-action accent among them. See the measured ratios below.
+Seven are settled: search-index ownership (Track A owns the bytes, additive minor version, tokenizer declared and refused if unknown), per-service floors (each app declares its own), profile-switch sessions (storage partition per `profile_slot`), the passage unit (deterministic build-time chunks along headings), cross-source ranking (Reciprocal Rank Fusion), the rollback trigger (shape settled; **the window and failure count are measured on real hardware, not guessed**), and the design-system accessibility values (**closed** — the locked tokens).
 
-The sweep's five Critical cross-cutting findings (`implementability-sweep.md`
-§4) are the *defect register*; the contract is where several were already
-**fixed**. Before citing one as open, check the contract: §2 restates the tier
-table as guaranteed floors, §2/§3 publish both total orderings and the
-profile→tier mapping, and §2 adds the `generic` tier for the installable-stack
-path. The sweep is history, not a to-do list.
+**One is direction only, not a finished design:** the shell privilege boundary — loopback WebSocket, per-boot token, strict origin check, closed operation list. **It still needs its own design session before C1 is built.** Reading it as final is the mistake §13 exists to prevent.
 
-### Measured: the design language's AA claim is false
+**Still genuinely open** (§13.2): whether `community_hub`/`field_ops` require `x86_64`; the exact icon set; and the measured per-service floors for the ten existing Track H services.
 
-`design-language.md` §4 asserts "Every color pairing above meets or exceeds
-WCAG AA contrast (4.5:1 for body text)". Computed from its own hex values
-(W3C relative-luminance formula), **six text pairings fail 4.5:1**:
+### Design tokens are locked and verified
 
-| Theme | Pairing | Ratio |
-|---|---|---:|
-| Light | Accent `C1622A` on Background `F2EEE6` | **3.60** |
-| Light | Accent `C1622A` on Surface `FAF8F4` | **3.92** |
-| Light | Success `4B7B4E` on Background `F2EEE6` | **4.28** |
-| Dark | Success `5C9A60` on Surface `2A2723` | **4.42** |
-| Dark | Error `C24545` on Background `1E1C19` | **3.43** |
-| Dark | Error `C24545` on Surface `2A2723` | **2.99** — fails even 3:1 |
+`design-language.md` §4 and §5 carry the locked palette, type scale, spacing, radius, focus indicator and touch-target minimum. **I verified every stated contrast ratio before transcribing it** — they are correct, measured against `surface` `#F2EEE6`.
 
-Border/divider sits at 1.24–1.42 against both surfaces in both themes; whether
-that matters depends on whether hairlines count as UI components under 1.4.11.
+Worth knowing, and recorded in §4: measured against the darker `bg` `#E9E6DF` every ratio is lower — `ink-2` 4.63, `accent-ink` 4.87, `success` 4.65, `accent` 3.34 — all still passing, but with less headroom than the quoted figures suggest. **Validate a new token against `bg`, not `surface`.** `ink-3` measures 2.82 on `bg`, which is why it is decorative-only.
 
-The contract says *five*. This measurement says six, and the discrepancy is
-unresolved — the handoff PDF that is the cited source is still not in `docs/`.
-Under the no-dark-theme direction the three dark rows disappear with the theme,
-leaving three light-theme failures to fix.
+The previous palette's blanket AA claim was false: six pairings failed 4.5:1, worst at 2.99. The accent split into `accent` (fills, 3.6:1, UI) and `accent-ink` (text and focus ring, 5.3:1) is the fix — one value could not serve both roles at AA.
 
-### Next directive
+### What comes next
 
-**Directive 02 — the docs revision.** Hardware tiers become minimum/preferred
-specs from measured resources; the single light design language replaces the
-flat-only rules; every approved feature addition becomes an owned component;
-an extensibility contract lets new apps and services be added without core
-changes; self-healing is fully specified; the Kiosk-profile gaps are fixed
-(serving phones, restarting crashed services, reusing pack numbers); the
-download-time configurator moves to E7; the LAN HTTP decision and the proposed
-answers to the blocking decisions are recorded.
+**Still blocking, unchanged:** the Directive 01 rig work. Linux x86 and ARM64 runs, the real-content measurements, the WAX-vs-ZIM output sizes and two of three determinism legs all wait on the two machines being reachable. **The read-only SQLite VFS behind every pack open has still only ever run on Windows.** Windows determinism anchor: `374dab8385e07a35b1baa3ebb4a837105a60758406317cb64552ee7c66a12892`.
 
-Then **Directive 03** (compression, needs §5.7), then the embedded search index
-and **A5 `wax-serve`**.
+**Directive 03 — implementation.** Migrate `min_hw_tier` and its tests from the device-name enum to the measured-resource model of contract §2.3. Concretely: `MIN_HW_TIERS` in `crates/wax-builder/src/config.rs`, the validator messages, **fifteen assertions across three tests** in `crates/wax-builder/tests/manifest_schema.rs`, the example manifest, and the `zim2wax` fixtures. The docs already state the target; this is the code catching up.
 
----
+**Directive 04 — measurement.** The three compression options — per-article, grouped, and per-article with a shared dictionary — measured on the real archives for size, read speed **on SD and on SSD**, and one-month delta size. Needs the rigs and the §5.7 output-size baseline that does not exist yet.
+
+**Then the P1 build line:** the embedded search index (contract §13 decision 1, specified in track-a §20.1) and **A5 `wax-serve`** with the Kiosk hostname-routing model (track-a §20.3).
 
 ## Session-start ritual
 

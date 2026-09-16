@@ -190,3 +190,11 @@ The product owner settled §22's open item: every user gets a real profile — D
 - **Guest tile on the switch-profile screen, conditionally present:** When F1's admin has enabled Guest access (Track F §22), C5's switch-profile screen shows exactly one additional tile alongside the device's named profiles — labeled "Guest," passwordless, tap/click to enter, identical in mechanics to a student tile (§9 of the Design Language document). When Guest access is disabled (the default), the tile simply isn't rendered — the same conditionally-present-not-shown-then-blocked principle §11 already uses for C11's hardware-tier absence.
 - **C2's registry filters to guest_accessible packs only:** Track B's manifest schema gains a guest_accessible boolean for exactly this (Track B §2, confirmed there per Track F §22). C2 (§3) checks this flag only when the active profile's role is guest — every other role continues to see the full catalog per §3's existing category/min_hw_tier filtering, unaffected. A pack with no opinion set is invisible to Guest, not visible-then-refused, keeping the restriction legible as a smaller grid rather than an error state.
 - **No dashboard, no dock item, nothing to switch back to that persists:** Because Guest is a single shared identity (Track F §22), C8's coach dashboard (§8) never shows a "Guest" row, and nothing about a Guest session survives Lock/session-end (§7 of the Design Language document) — the next person to tap Guest starts from the same clean state, by design, not by an unfinished feature.
+
+## 24. Amendment (per product direction — C7 widened to a USB shelf)
+
+**Goal.** A teacher's USB drive appears as a browsable, role-scoped shelf — not only as a pack installer.
+
+**Property.** The drive's contents are **browsable in place and scoped by role**, exactly as installed content is. Installing from it remains available; it is no longer the only thing that can be done with it. Nothing on a plugged-in drive is visible to a role that could not see the same content installed.
+
+**Why.** C7 treated a USB drive as an installation source and nothing else, so a teacher arriving with a folder of worksheets had to install them as a pack — or could not use them at all. Most material arriving on a drive is meant to be read once, not added to the box permanently. Role scoping is what makes browsing safe to allow by default.

@@ -224,3 +224,47 @@ The product owner settled the open question the Design Language document raised 
 - **"Limited access to certain tools and features," made concrete:** Guest's content-browsing scope (C2, Track C §3) is a manifest-declared subset, not the full catalog: B3's manifest schema (Track B §2) gains an optional guest_accessible boolean, defaulting false, that a pack's own author or the admin sets explicitly. A pack with no opinion set is hidden from Guest's launcher grid entirely — the same "conditionally present, not shown-then-blocked" principle Track C's C11 already uses for hardware-tier absence (Track C §11) — rather than shown and then refused. This keeps the restriction legible (a guest sees a smaller, deliberately curated grid, not an error) and keeps the default safe (a new pack is invisible to Guest until someone opts it in, not visible until someone remembers to opt it out).
 - **No identity-bridge provisioning for Guest, by default:** Track H's Identity Bridge (Track H §2) provisions a DeltOS profile into third-party self-hosted services (Kolibri, Nextcloud, Conduit, Wiki.js) on profile creation. Guest is excluded from this by default, for a different reason than Gitea's exclusion (Track H §2): those services model persistent per-user state (files, messages, course progress) that a shared, anonymous identity has no meaningful claim to, and provisioning one "Guest" account that every walk-in visitor shares would create exactly the kind of ambiguous, unaccountable shared credential this project's own F13/F3 design has otherwise avoided. Confirmed in a companion note to Track H (Track H §18).
 - **No progress tracking, no personal storage:** Because Guest is a single shared identity rather than a per-person one, C8's coach dashboard (Track C §8) and any per-profile storage quota (H5, Track H §5) simply don't apply to it — there is no "Guest's progress" or "Guest's files" to track in a way that would be meaningful, and this document does not invent one. A visitor who wants their own tracked progress needs their own profile, created by a teacher or admin the ordinary way (§21).
+
+## 23. Amendment (per product direction — catalogue additions)
+
+Each states its **goal**, the **property that must hold**, and **why**. All are subject to the app contract (cross-track contract §15) and measured-resource gating (§2).
+
+### 23.1 Usage Insights (F14)
+
+**Goal.** Show which packs actually get used.
+
+**Property.** **Aggregate only, never per learner, and it never leaves the box.** Contract §16 states that DeltOS has no telemetry at all; **F14 is the single named exception to that rule**, and it is an exception only in the sense that the data is collected — not in the sense that anything is transmitted. Nothing is reported outward.
+
+**Why.** A librarian choosing what to put on a box with finite storage is guessing without this. It is named as the sole exception in the contract precisely so that "we already collect usage data" can never be used to justify a second collector later.
+
+### 23.2 Network Defense (F15)
+
+**Goal.** The box protects itself.
+
+**Property.** Intrusion detection on its own Wi-Fi, scheduled self-scans of its own services, blocking of repeated failed logins, and alerts in the admin view. **Its scope is the box.** It scans the box's own services and watches the box's own network — it is not a tool pointed outward, and it shares no machinery with H19's security lab, whose targets are authorised separately.
+
+**Why.** A box in a school runs a dozen services on an open network with no administrator watching it most of the time. Failed-login blocking alone closes the most common real attack against such a deployment. Keeping F15's scope explicitly self-directed is what keeps it distinct from H19 — one defends this box, the other teaches.
+
+### 23.3 Visible Benchmark (F1)
+
+**Goal.** Surface the box's own measured capability in the admin console: what this box can run, and why.
+
+**Property.** It reads the **capability record** (contract §9) and the declared floors of installed apps (§15), and shows the comparison that gating actually performs. **It reports measurements, never a device name** — there is no longer a tier to display.
+
+**Why.** With capability now following measured resources, "why can't this box run the larger model?" has a real answer, and an administrator should be able to see it rather than infer it. This is also the honest consequence of retiring tier names: the name used to be the explanation, so something has to take its place.
+
+### 23.4 Remote Bridge (Track F)
+
+**Goal.** Remote administration when internet is present.
+
+**Property.** **Opt-in, admin-only, and off by default.** All three, independently.
+
+**Why.** Fleets of boxes in reachable locations are genuinely easier to support with a bridge, and a box that can be administered remotely without the owner's deliberate action is a box the owner does not control. Off by default is the part that matters.
+
+### 23.5 F10 backup/restore covers the new surfaces
+
+**Goal.** Backups cover everything people create, not only content and progress.
+
+**Property.** F10's set now includes **hosted sites (H18), security-lab work (H19) and code-studio projects (H12)** alongside content and progress data. F10 learns about them through the **durability group of each app's manifest** (contract §15.1), not through per-service knowledge coded into F10.
+
+**Why.** Every one of the new components lets someone create something durable, and a backup that silently omits a learner's own work is worse than no backup — it is a promise that fails exactly when it is needed. Sourcing the set from manifests is what stops the omission recurring with the next addition.

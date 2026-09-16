@@ -114,3 +114,41 @@ Prometheus/VictoriaMetrics plus Grafana, per the master plan — needs a stated 
 - **[Minor]** G5's stated apt-package-build use case didn't connect to any build process this document otherwise describes, which only covers pulling pre-built images. Resolved: connected to the one scenario where it applies — a service built from source locally rather than pulled through G4 (§6).
 - **[Minor]** The wildcard hostname scheme named deltos.lan but never stated the actual DNS record that makes it resolve. Resolved: a wildcard record in Track E's CoreDNS zone, named explicitly (§3).
 - **[Minor]** Nothing described how G2's internal CA root actually reaches and gets trusted by client devices — "the admin trusts one CA once" asserted an outcome with no enrollment step. Resolved: a download from F1 and a first-boot QR code specified, with the residual limitation for unenrolled devices stated rather than assumed away (§3).
+
+## 14. Amendment (per product direction — G8, G9, and self-healing in full)
+
+Each new component states its **goal**, the **property that must hold**, and **why**. Both are subject to the app contract (cross-track contract §15) — each declares its own measured resource floor, its health check, its roles and what of its data is backed up — and to the single licence check (§16).
+
+### 14.1 Print Service (G8)
+
+**Goal.** Shared printing from any device on the box's network.
+
+**Property.** A print queue is reachable by the roles its manifest declares and **by no others**; a visitor on plain HTTP can print without installing anything. Print jobs are transient and are **not** part of F10's backup set.
+
+**Why.** Schools print worksheets. It is the single most requested thing a shared box in a classroom does that no competitor's offline stack provides well, and it is cheap: the box is already the one always-on machine on the network.
+
+### 14.2 Software Depot (G9)
+
+**Goal.** Offline mirrors people install *from* — Android apps for visitors' phones, open-source desktop installers, and the language packages H12's code studio needs.
+
+**Property.** Depot contents are **served as packs** and **updated by delta**, so a depot refresh costs the changed bytes rather than the whole mirror. Everything in the depot passes the **same build-time licence validator** packs use (contract §16) — one check, not a second set of rules. The depot is **curated**: it is not a general-purpose proxy to the open internet.
+
+**Why.** A visitor's phone with no app store is the common case in the deployments DeltOS targets, and the code studio is unusable without its language packages. Delta updates matter because a depot is the largest thing on the box and the most frequently refreshed; full re-mirroring over a shared uplink is what makes offline mirrors fail in practice.
+
+### 14.3 Self-healing (G1) — the orchestration half, specified in full
+
+"A crashed service repairs itself" was a stated principle with no specification behind it. Five gaps, closed. Track E §23.5 owns the OS-supervisor half; the two together are the whole model.
+
+**Goal.** A service that stops working is restored without an administrator present, or escalated to one when it cannot be.
+
+**The five properties that must hold:**
+
+1. **An unhealthy health-check result triggers replacement — not only a process exit.** A service that is frozen but still running exits nothing and would otherwise never be healed. The probe is the one the app manifest declares (contract §15.1); its result drives the §7.1 health vocabulary.
+2. **Healing exists at every profile, including the minimum spec.** Where G1 is not present — the minimum profile runs no orchestrator — the OS service supervisor owns restart (Track E §23.5). **No profile runs a service with nothing watching it.**
+3. **A service update that fails its health check rolls back to that service's last known-good version.** This is the service-level counterpart of the OS's A/B rollback, and it is a separate mechanism: an app update can fail on a box whose OS is entirely healthy.
+4. **A crash loop gets bounded backoff and an admin alert *before* the terminal `failed` state.** Contract §7.1 already fixes `failed` as terminal — automatic restart abandoned, not in progress. The gap was the path into it: without bounded backoff and an alert, a box sits silently restarting a broken service indefinitely, which reads as "working" from outside.
+5. **Corrupted data is not a restart case.** The health model hands it to F10 backup/restore rather than looping. Restarting cannot repair bad bytes; looping on them converts a recoverable fault into an outage and destroys the evidence.
+
+**Why this needed specifying.** Every one of the five is a case where the principle as stated — restart what crashed — produces the wrong behaviour: the frozen service, the unorchestrated profile, the bad update, the silent loop, and the corrupt file. A self-healing model that only handles clean process exits heals the one failure mode that was already survivable.
+
+- **The consecutive-failure ceiling** after which a service enters `failed` remains Track G's number to choose, per contract §7.1. It is measured against real restart behaviour, not guessed here.

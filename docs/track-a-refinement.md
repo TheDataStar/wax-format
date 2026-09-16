@@ -202,3 +202,36 @@ This pass fixed the write side. The read side has the same defect and worse cons
 Three consecutive implementation passes (A3/A4, A2, and the start of A2b) ran without the Track & Phase Plan v2 or any Track Refinement document actually reachable from the wax-format repo — the first time because only inline-pasted text was available, the second and third despite the gap being flagged after each. That was a recurring process failure, not a one-off: every prompt assuming docs/ existed produced exactly the category of gap catalogued in §15, §16 and §17, because the implementer was reconstructing settled design from fragments instead of reading it.
 
 Closed during A2b: this document now lives in the repo at docs/track-a-refinement.docx, alongside a verified plain-text extraction (docs/track-a-refinement.md) and the dependency-free script that regenerates it. Worth noting what the fix immediately bought — the two findings above (total_size_bytes and depends_on) are both cases where the implementer could finally see two parts of the schema at once and notice they contradicted each other. Neither was findable from the field list alone, which is all the earlier passes ever received.
+
+## 20. Amendment (per product direction — search-index ownership and Kiosk serving)
+
+**`SPEC.md` is not modified by this amendment.** Everything below is a recorded target for a later implementation directive; the format on disk is unchanged and v0.9 remains frozen.
+
+### 20.1 Track A owns the search index (blocking decision 1)
+
+**Goal.** Packs become searchable. Every pack built to date is browse-only.
+
+**Property.** **The index bytes are part of the format, added as an *additive minor version*** — an existing v0.9 reader must continue to open a pack carrying an index, ignoring what it does not understand. The header already reserves `search_index` (offset, length), so the extension point exists and no byte layout moves.
+
+- **A pack declares the tokenizer it was indexed with.**
+- **A reader refuses a tokenizer it does not recognise** rather than falling back to a different one. A mismatched tokenizer produces confidently wrong results — empty hits for text that is present — which is worse than a refusal, because nothing surfaces as broken.
+
+**Why.** Ownership was genuinely ambiguous: the index could have lived beside the pack, in the catalog, or inside it. Inside wins because the index must travel with the pack — a pack copied to another box by USB has to arrive searchable — and because the container already signs its own contents, so the index inherits the integrity guarantee rather than needing a second one.
+
+**The constraint this carries, recorded because it bounds the choice:** the query side must run **the same tokenizer** the pack was indexed with, on every box, at the minimum spec. That bounds the tokenizer options — CJK segmentation in particular, where approaches differ sharply in dictionary size and memory cost. **Choosing within that bound is Track A's**, and a tokenizer chosen for build-side quality alone may be one the minimum spec cannot run. Also recorded in contract §13.1.
+
+### 20.2 The passage unit (blocking decision 5)
+
+**Goal.** Citations that can locate a position inside a large article, not merely name the article.
+
+**Property.** **Chunks are cut deterministically at build time along heading structure.** A chunk id is **the pack path plus the chunk's position**. **Chunks live in the pack**, so the format owns them — the same reasoning as §20.1, and the same signing guarantee.
+
+**Why.** Deterministic cutting is what makes a citation stable: the same source bytes must yield the same chunk ids on every build, or a citation stored today stops resolving after a rebuild. Cutting along heading structure rather than at a fixed byte or token count is what keeps a chunk semantically whole, which is what makes a citation readable when a person follows it.
+
+### 20.3 A5 `wax-serve` routes by hostname at the minimum profile
+
+**Goal.** Visitors' phones can reach packs on a box running the minimum profile.
+
+**Property.** **`wax-serve` performs hostname routing itself**, mapping each pack to its own hostname without a reverse proxy in front. Pack isolation therefore **does not depend on G2**, which is a `classroom`-and-above component.
+
+**Why.** This was a real gap, not a detail. The minimum profile runs no reverse proxy, and loopback-only serving cannot reach a phone on the box's Wi-Fi at all — so the cheapest profile, the one most likely to be deployed where visitors bring their own phones, was the one that could not serve them. Doing the routing in the serving layer also keeps the isolation property identical across profiles: the origin a pack is served from is the same whether or not a proxy is present, so contract §8's separation holds everywhere rather than only above `classroom`.

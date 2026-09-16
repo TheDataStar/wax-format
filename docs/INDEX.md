@@ -17,14 +17,14 @@ Read `cross-track-contract.md` before any other document.
    restating one of these values is descriptive, not binding.
 2. The track document you are implementing (below).
 3. `implementability-sweep.md` — the known-defect register. Check whether your track
-   has open findings before you start; §13 lists what is deliberately unresolved.
+   has open findings before you start. The Contract’s §13 is **the enumerated list of blocking decisions with their answers**; §13.2 is the short list of what is still genuinely open.
 
 ## The documents
 
 | File | Owns |
 |---|---|
 | `cross-track-contract.md` | Every shared vocabulary. Read first. |
-| `track-and-phase-plan-v2.md` | Component inventory A1–H10, deployment profiles, phase sequencing. |
+| `track-and-phase-plan-v2.md` | The component inventory, deployment profiles, phase sequencing. **The inventory is stated by enumeration, never by a fixed total** — an earlier entry here read "A1–H10", which the catalogue has since outgrown. |
 | `track-a-refinement.md` | The .wax container format, storage engine, signing. §15–§18 are implementation resolutions from real build passes. |
 | `track-b-refinement.md` | Content & interop: ZIM conversion, crawling, manifests, catalog. §20 holds the zim2wax blockers. |
 | `track-c-refinement.md` | The shell: launcher, privilege split, search, profiles, sandboxing, accessibility. |
@@ -34,7 +34,9 @@ Read `cross-track-contract.md` before any other document.
 | `track-g-refinement.md` | Orchestration, reverse proxy, platform services. |
 | `track-h-refinement.md` | The application catalog and its third-party services. |
 | `design-language.md` | Visual and interaction system for the shell. |
-| `implementability-sweep.md` | ~140 known defects across all of the above, with the six systemic causes behind them. |
+| `implementability-sweep.md` | The known-defect register from the audit — a record of what was found, **not a to-do list**. Several of its Critical findings are already fixed in the Contract; check there before citing one as open. |
+| `baseline.md` | Measured figures every later session compares against, and the prerequisites. Transcribed into the repo so nothing depends on a document outside it. |
+| *a handoff PDF, if filed here* | **Reference only. Below every document above in precedence**, including this index. It records history; it decides nothing. |
 
 ## Ground rules for implementing from these
 

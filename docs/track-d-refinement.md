@@ -142,3 +142,13 @@ Track B's B11 (Track B §8, revised) assumed forward geocoding could reuse "Trac
 - **[Moderate]** D1's P0 milestone didn't say whether its test pack could exist before Track A's own P2 commitment for A9's standardized v0.9 form. Resolved: stated explicitly as an ad hoc fixture, independent of that commitment (§14).
 - **[Moderate]** deltos-searchd's subscription to deltos-shelld's B4 change-notification bus (§2) assumed a second native-process subscriber was already supported, when Track C's design of that bus was scoped only around distinguishing deltos-shell from a pack origin. Resolved: flagged as needing Track C's confirmation rather than treated as agreed (§10, §13).
 - **[Minor]** The D5 hardware-tier table's column header read "Hardware tier (E6)" but listed Deployment Profile names, not E6's actual tier vocabulary — the same conflation Track B's review caught and fixed for the manifest schema. Resolved: retitled to separate the Profile name from its E6 hardware mapping (§6).
+
+## 17. Amendment (per product direction — AI acceleration)
+
+**Goal.** The local model uses GPU acceleration where the box measures a usable GPU.
+
+**Property.** The model declares **`gpu: preferred`** (cross-track contract §2.3), which means it **runs either way and never gates on the accelerator**: GPU where one is measured, CPU where none is, and absent where the measured RAM does not meet the model's floor. Three outcomes from one declaration, decided against the capability record (§9), never against a device name.
+
+**Why.** Accelerators are exactly the kind of hardware variation the retired tier names could not express — two boxes with identical RAM and storage can differ entirely in whether the model is usable. `preferred` rather than `required` is the whole point: a box without a GPU loses speed, not the feature.
+
+- **D5's resource floors are unchanged** and remain in contract §6, now carrying `gpu: preferred` on both rows. The floors are RAM-based and measured; the accelerator selects an execution path within them.
