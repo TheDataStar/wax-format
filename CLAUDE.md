@@ -38,16 +38,32 @@ quoting any performance number.
 **Not yet measured:** WAX output size vs source ZIM size (Directive 01 §5.7).
 The Directive 03 compression decision depends on it.
 
-### Two tests can pass without running
+### Two tests need an external input — both are hardened
 
-Both return early and report `ok`, which is indistinguishable from a real pass
-in the summary. **Always set both variables, or the green is partly hollow:**
+Each would otherwise return early and report `ok`, which is indistinguishable
+from a real pass in the summary. Both now use **one mechanism**: unset, they
+skip with a loud `SKIPPED (` line; with the require flag set, the missing input
+is a hard failure. **CI sets both.**
 
-* `WAX_REQUIRE_MINISIGN=1` — turns a missing `minisign` into a hard failure.
-  Without it, 8 signing tests skip silently. This one already exists.
-* `ZIM2WAX_REAL_ZIM=<path>` — makes `real_wikipedia_zim` actually run. **There
-  is no `WAX_REQUIRE_*` equivalent for it.** Unset, it prints to stderr and
-  returns. Recorded as a defect against the test, not fixed here.
+| Needs | Provide with | Require flag |
+|---|---|---|
+| the `minisign` binary (8 signing tests) | on `PATH`, or `$WAX_MINISIGN` | `WAX_REQUIRE_MINISIGN=1` |
+| a real Wikipedia ZIM (`real_wikipedia_zim`) | `$ZIM2WAX_REAL_ZIM` | `ZIM2WAX_REQUIRE_REAL_ZIM=1` |
+
+`$ZIM2WAX_REAL_ZIM` pointing at a path that is not a readable file is **always**
+a hard failure, flag or not — that is a misconfiguration, never a valid skip.
+
+One grep audits the whole suite — but **`--nocapture` is required.** Cargo
+swallows a *passing* test's stderr, so the "loud" skip line is invisible under a
+plain `cargo test`, for the signing tests just as much as the real-content one:
+
+```bash
+cargo test --workspace -- --nocapture 2>&1 | grep 'SKIPPED ('
+```
+
+Nothing printed means every test ran its subject. This is exactly why the
+require flags matter more than the message: **in CI set the flags** and do not
+rely on anyone reading the skip line.
 
 ### Direction — settled, supersedes any earlier document
 
@@ -147,6 +163,12 @@ Needs Rust stable **plus a C toolchain** (bundled SQLite + zstd), the
 `minisign` binary, and for fuzzing nightly + `cargo-fuzz`.
 
 ```bash
+# CI: both require-flags set, so no test can pass by not running
+WAX_REQUIRE_MINISIGN=1 \
+ZIM2WAX_REQUIRE_REAL_ZIM=1 ZIM2WAX_REAL_ZIM=/archives/wikipedia_en_100.zim \
+  cargo test --workspace
+
+# locally, with no ZIM to hand — the real-content test then skips, loudly
 WAX_REQUIRE_MINISIGN=1 cargo test --workspace
 ```
 
@@ -154,9 +176,7 @@ On Windows, `cargo` locates MSVC Build Tools on its own; `with-msvc.bat` is
 only needed when it cannot.
 
 ```bash
-cargo +nightly fuzz run header-parse -- -runs=100000
-cargo +nightly fuzz run index-loader -- -runs=100000
-cargo +nightly fuzz run segment-merge -- -runs=100000
+fuzz/smoke.sh            # all three targets, 45s each, leaves the tree clean
 ```
 
 **Build output is never tracked.** `.gitignore` covers `/target`,

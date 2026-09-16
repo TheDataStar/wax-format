@@ -3,7 +3,8 @@
 //! Two kinds of input: the committed openzim test-suite ZIMs (one per
 //! namespace scheme), and synthetic ZIMs built by `common::ZimBuilder` for the
 //! shapes real fixtures lack. A real Wikipedia ZIM is exercised by
-//! `real_wikipedia_zim` when `ZIM2WAX_REAL_ZIM` points at one.
+//! `real_wikipedia_zim` when `ZIM2WAX_REAL_ZIM` points at one; set
+//! `ZIM2WAX_REQUIRE_REAL_ZIM=1` to make its absence a failure rather than a skip.
 
 mod common;
 
@@ -650,19 +651,50 @@ fn committed_fixture_legacy_namespace_scheme_converts() {
     assert_eq!(r.entry("_assets/favicon").unwrap().redirect_to.as_deref(), Some("_assets/favicon.png"));
 }
 
-/// Real-content end-to-end. Set `ZIM2WAX_REAL_ZIM` to a Wikipedia ZIM path
-/// (e.g. wikipedia_en_100) to run; skipped otherwise. Not committed — 333 MB.
+/// Locate the real Wikipedia ZIM this test converts.
+///
+/// Skips when `$ZIM2WAX_REAL_ZIM` is unset — but set
+/// `ZIM2WAX_REQUIRE_REAL_ZIM=1` (CI does) and the absent archive becomes a hard
+/// failure, so this test can never silently pass by not running.
+///
+/// Deliberately the same mechanism as `WAX_REQUIRE_MINISIGN` in the
+/// `wax-builder` suite, down to the `SKIPPED (` marker — one grep over the test
+/// output finds every test that opted out of its own subject.
+fn real_zim_path() -> Option<std::path::PathBuf> {
+    match std::env::var("ZIM2WAX_REAL_ZIM") {
+        // Set and usable: run for real.
+        Ok(p) if std::path::Path::new(&p).is_file() => Some(std::path::PathBuf::from(p)),
+        // Set but wrong. Never a legitimate skip — someone meant this to run,
+        // so say so here rather than fail obscurely inside `convert`.
+        Ok(p) => panic!(
+            "ZIM2WAX_REAL_ZIM is set to `{p}`, which is not a readable file. Point it \
+             at a Wikipedia ZIM, or unset it to skip this test."
+        ),
+        Err(_) if std::env::var("ZIM2WAX_REQUIRE_REAL_ZIM").as_deref() == Ok("1") => panic!(
+            "ZIM2WAX_REQUIRE_REAL_ZIM=1 but $ZIM2WAX_REAL_ZIM is unset, so the \
+             real-content test would not have run. Point it at a Wikipedia ZIM (e.g. \
+             wikipedia_en_100), or clear ZIM2WAX_REQUIRE_REAL_ZIM to allow the skip."
+        ),
+        Err(_) => {
+            eprintln!(
+                "SKIPPED (real-content test: $ZIM2WAX_REAL_ZIM unset; set it to a \
+                 Wikipedia ZIM, or ZIM2WAX_REQUIRE_REAL_ZIM=1 to make this a failure)"
+            );
+            None
+        }
+    }
+}
+
+/// Real-content end-to-end. Runs against the archive named by
+/// `$ZIM2WAX_REAL_ZIM`; see [`real_zim_path`]. Not committed — 333 MB.
 #[test]
 fn real_wikipedia_zim() {
-    let Ok(path) = std::env::var("ZIM2WAX_REAL_ZIM") else {
-        eprintln!("ZIM2WAX_REAL_ZIM not set; skipping real-ZIM test");
-        return;
-    };
+    let Some(path) = real_zim_path() else { return };
     let dir = tempfile::tempdir().unwrap();
     let wax = dir.path().join("wp.wax");
     let mut o = opts();
     o.license_if_absent = Some("CC-BY-SA-4.0".into());
-    let rep = convert(std::path::Path::new(&path), &wax, &o).unwrap();
+    let rep = convert(&path, &wax, &o).unwrap();
     assert!(rep.stats.content_emitted > 1000);
     assert!(rep.stats.redirects_emitted > 100);
     assert!(rep.stats.hrefs_rewritten > 1000);

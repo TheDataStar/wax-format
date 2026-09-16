@@ -5,6 +5,7 @@
 
 # cargo-fuzz working state (seed corpora ARE committed, see fuzz/corpus/)
 /fuzz/artifacts
+/fuzz/smoke-corpus
 /fuzz/coverage
 
 # editor / OS
