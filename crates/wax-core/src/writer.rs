@@ -155,6 +155,18 @@ impl WaxWriter {
         old.validate(file_size)?;
         let next_index = read_segment_index(&mut file, old.index_offset, old.index_length)? + 1;
 
+        // Carry the pack's dictionary forward (SPEC §5.9). This happens here,
+        // not at the call site, on purpose: carry-forward is the invariant the
+        // whole codec decision rests on, so it is the structural default of
+        // appending rather than something every caller must remember. A caller
+        // that genuinely wants a different dictionary has to say so explicitly
+        // by calling `train_dictionary` after opening.
+        //
+        // Note this only makes the dictionary available for *encoding* new
+        // entries. The table itself stays in segment 0 and is not rewritten
+        // into the appended segment — see `finish`.
+        let carried = existing.dictionary().map(|d| d.to_vec());
+
         file.seek(SeekFrom::Start(file_size))?;
         let index = IndexBuilder::open(None)?;
         Ok(StreamingWriter {
@@ -172,7 +184,7 @@ impl WaxWriter {
             external_paths: Some(existing),
             entries: 0,
             redirects: 0,
-            dictionary: None,
+            dictionary: carried,
         })
     }
 
@@ -527,7 +539,13 @@ impl StreamingWriter {
         // (SPEC section 8), so storing it here puts it inside the signature.
         // Every entry decoding depends on it, so an unsigned dictionary would let
         // a swap corrupt all content while the signature still verified.
-        if let Some(d) = self.dictionary.as_deref() {
+        //
+        // Segment 0 only, the same placement rule as `manifest` (SPEC §5.9).
+        // An append carries the dictionary forward for *encoding* its new
+        // entries, but must not rewrite the table into its own segment —
+        // a reader would ignore it there anyway, and duplicating it would
+        // grow every append by ~110 KB for nothing.
+        if let (Some(d), 0) = (self.dictionary.as_deref(), self.segment_index) {
             self.index.write_dictionary(d)?;
         }
 

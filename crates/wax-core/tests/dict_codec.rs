@@ -227,6 +227,77 @@ fn the_dictionary_is_carried_forward_not_retrained() {
 }
 
 #[test]
+fn appending_carries_the_dictionary_forward_without_being_asked() {
+    // Carry-forward is the structural default of opening an archive for
+    // append, not a step a caller has to remember. A caller who forgets would
+    // otherwise silently produce entries that no reader can decode, or quietly
+    // reframe the archive -- both of which the invariant exists to prevent.
+    let dir = tempfile::tempdir().unwrap();
+    let items = corpus(200);
+    let pack = build_dict_pack(dir.path(), "base.wax", &items);
+
+    let original = {
+        let r = WaxReader::open(&pack).unwrap();
+        r.dictionary().expect("base pack carries a dictionary").to_vec()
+    };
+
+    // Append WITHOUT mentioning the dictionary at all.
+    let w = WaxWriter::new(UUID).created_at(1_700_000_100);
+    let mut sw = w.open_append(&pack).expect("open for append");
+    assert_eq!(
+        sw.dictionary(),
+        Some(original.as_slice()),
+        "append must inherit the archive's dictionary"
+    );
+    let extra = b"<!doctype html><html><body><h1>Appended</h1></body></html>".to_vec();
+    sw.add_entry(
+        EntryMeta::new("a/appended.html").mime("text/html").compression(Compression::ZstdDict),
+        &mut extra.as_slice(),
+    )
+    .expect("a dict-framed entry must be writable on append");
+    sw.finish().unwrap();
+
+    let r = WaxReader::open(&pack).unwrap();
+    assert_eq!(
+        r.dictionary().unwrap(),
+        original.as_slice(),
+        "the dictionary must be unchanged after an append"
+    );
+    assert_eq!(r.read("a/appended.html").unwrap(), extra);
+    // and everything from before the append still decodes
+    for (p, want) in items.iter().take(25) {
+        assert_eq!(&r.read(p).unwrap(), want, "{p} must survive the append");
+    }
+}
+
+#[test]
+fn an_append_does_not_duplicate_the_dictionary_into_its_own_segment() {
+    // The table is segment-0 only (SPEC §5.9). Re-writing ~110 KB into every
+    // appended segment would be pure waste that no reader would even look at.
+    let dir = tempfile::tempdir().unwrap();
+    let items = corpus(200);
+    let pack = build_dict_pack(dir.path(), "base.wax", &items);
+    let before = std::fs::metadata(&pack).unwrap().len();
+
+    let w = WaxWriter::new(UUID).created_at(1_700_000_100);
+    let mut sw = w.open_append(&pack).unwrap();
+    let tiny = b"x".to_vec();
+    sw.add_entry(
+        EntryMeta::new("a/tiny.html").mime("text/html").compression(Compression::ZstdDict),
+        &mut tiny.as_slice(),
+    )
+    .unwrap();
+    sw.finish().unwrap();
+
+    let grew_by = std::fs::metadata(&pack).unwrap().len() - before;
+    assert!(
+        grew_by < 100 * 1024,
+        "append grew the archive by {grew_by} bytes, which suggests the ~110 KB \
+         dictionary was duplicated into the appended segment"
+    );
+}
+
+#[test]
 fn retraining_instead_of_carrying_would_reframe_everything() {
     // The negative half of the invariant: prove the failure mode is real, so
     // the carry-forward rule is justified by measurement rather than assertion.

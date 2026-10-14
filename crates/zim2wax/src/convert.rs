@@ -136,11 +136,30 @@ pub fn is_supported_mime(bare: &str) -> bool {
         )
 }
 
-/// Compression per entry: already-entropy-coded formats verbatim, text zstd.
+/// Training-sample bounds (SPEC v0.10 section 5.9). These cap the converter
+/// memory regardless of archive size -- a representative sample is what zstd
+/// needs, not the corpus, which is how A2e stays memory-bounded.
+const DICT_SAMPLE_MAX: usize = 2048;
+const DICT_SAMPLE_BYTES: usize = 16 * 1024 * 1024;
+/// Below this there is not enough text for a dictionary to pay for itself.
+const DICT_MIN_SAMPLES: usize = 32;
+
+/// Compression per entry: already-entropy-coded formats verbatim, text zstd,
+/// and text against the shared dictionary once the pack carries one.
 /// Same policy as wax-builder's extension list, keyed on mimetype instead.
-fn compression_for(bare: &str) -> Compression {
+///
+/// The dictionary is spent only where Directive 04 measured it paying — many
+/// small, similar text documents. Media is already entropy-coded, so framing it
+/// against a dictionary buys nothing.
+fn compression_for(bare: &str, use_dict: bool) -> Compression {
+    let text = if use_dict {
+        Compression::ZstdDict
+    } else {
+        Compression::Zstd
+    };
     if bare == "image/svg+xml" {
-        return Compression::Zstd;
+        // Markup despite the image/ prefix, so it benefits like any other text.
+        return text;
     }
     if bare.starts_with("image/")
         || bare.starts_with("font/")
@@ -150,7 +169,7 @@ fn compression_for(bare: &str) -> Compression {
     {
         Compression::None
     } else {
-        Compression::Zstd
+        text
     }
 }
 
@@ -631,6 +650,89 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
     }
     content_order.sort_unstable();
 
+    // ------------------------------------------------------------------
+    // 4a. Pass one: a bounded, deterministically-ordered training sample.
+    //
+    // A2e's memory bound is the constraint here, not the pass count. zstd needs
+    // a *representative* sample, not the corpus, so this holds at most
+    // DICT_SAMPLE_BYTES of samples however large the archive is — peak memory
+    // stays flat as the source grows, which is the property Directive 01
+    // measured and this must not regress.
+    //
+    // Order is a pure function of the ZIM: content_order is already sorted, and
+    // the stride derives from a count over it. SPEC §5.9 requires exactly that,
+    // because zstd's trainer is deterministic per sequence but not
+    // order-independent.
+    // ------------------------------------------------------------------
+    let mut dict_samples: Vec<Vec<u8>> = Vec::new();
+    let mut dict_sample_bytes = 0usize;
+    {
+        // Cheap pre-count: dirent reads only, no cluster decompression.
+        let mut text_total = 0usize;
+        for &(_, _, idx) in &content_order {
+            let e = z.get_by_url_index(idx)?;
+            let bare = bare_mime(mime_str(&e.mime_type).unwrap_or(""));
+            if is_article_mime(&bare) || bare == "text/css" {
+                text_total += 1;
+            }
+        }
+
+        if text_total >= DICT_MIN_SAMPLES {
+            let stride = (text_total / DICT_SAMPLE_MAX).max(1);
+            let mut seen_text = 0usize;
+            let mut sample_cluster: Option<(u32, zim::Cluster<'_>)> = None;
+            for &(cluster_idx, blob_idx, idx) in &content_order {
+                if dict_samples.len() >= DICT_SAMPLE_MAX || dict_sample_bytes >= DICT_SAMPLE_BYTES {
+                    break;
+                }
+                let e = z.get_by_url_index(idx)?;
+                let bare = bare_mime(mime_str(&e.mime_type).unwrap_or(""));
+                if !(is_article_mime(&bare) || bare == "text/css") {
+                    continue;
+                }
+                let take = seen_text % stride == 0;
+                seen_text += 1;
+                if !take {
+                    continue;
+                }
+                let Disposition::Emit(_) = canonicalize(e.namespace, &e.url, &bare) else {
+                    continue;
+                };
+                if sample_cluster.as_ref().map(|(c, _)| *c) != Some(cluster_idx) {
+                    sample_cluster = Some((cluster_idx, z.get_cluster(cluster_idx)?));
+                }
+                let cluster = &sample_cluster.as_ref().expect("just set").1;
+                let guard = cluster.read()?;
+                let bytes: &[u8] = guard.blob(blob_idx)?;
+
+                // Sample what will actually be stored — post-rewrite — so the
+                // dictionary is trained on the bytes it must compress.
+                let text = String::from_utf8_lossy(bytes);
+                let (out, _) = if bare == "text/css" {
+                    rewrite_css(&text, e.namespace, &e.url, &resolver)
+                } else {
+                    rewrite_html(&text, e.namespace, &e.url, &resolver)
+                };
+                let body = out.into_bytes();
+                if body.is_empty() {
+                    continue;
+                }
+                dict_sample_bytes += body.len();
+                dict_samples.push(body);
+            }
+        }
+    }
+
+    // A dictionary is only worth storing where it pays. Directive 04 measured
+    // 2.35x on small text and essentially nothing on already-compressed media,
+    // so an archive with too little text does not get one and its entries stay
+    // plain-framed. The writer decides per content; nothing is forced.
+    let use_dict = dict_samples.len() >= DICT_MIN_SAMPLES;
+    if use_dict {
+        pack.train_dictionary(dict_samples.iter().map(|s| s.as_slice()))?;
+    }
+    drop(dict_samples);
+
     let mut current: Option<(u32, zim::Cluster<'_>)> = None;
     for &(cluster_idx, blob_idx, idx) in &content_order {
         let e = z.get_by_url_index(idx)?;
@@ -651,7 +753,7 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
         let bytes: &[u8] = guard.blob(blob_idx)?;
 
         let title = entry_title(&e, &bare);
-        let mut meta = EntryMeta::new(path).compression(compression_for(&bare));
+        let mut meta = EntryMeta::new(path).compression(compression_for(&bare, use_dict));
         if let Some(m) = mime_str(&e.mime_type) {
             meta = meta.mime(m);
         }

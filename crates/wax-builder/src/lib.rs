@@ -260,6 +260,29 @@ impl PackStream {
         })
     }
 
+    /// Train this pack's shared dictionary from a bounded, ordered sample of
+    /// its own content (SPEC v0.10 §5.9).
+    ///
+    /// Samples must be presented in a content-derived order: zstd's trainer is
+    /// deterministic for a given *sequence* but is not order-independent, so
+    /// filesystem or insertion order would make two builds diverge.
+    pub fn train_dictionary<'a, I>(&mut self, samples: I) -> Result<()>
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
+        Ok(self.writer.train_dictionary(samples)?)
+    }
+
+    /// Carry a dictionary forward verbatim from a previous edition.
+    pub fn carry_dictionary(&mut self, dict: &[u8]) -> Result<()> {
+        Ok(self.writer.carry_dictionary(dict)?)
+    }
+
+    /// The dictionary this pack will store, if any.
+    pub fn dictionary(&self) -> Option<&[u8]> {
+        self.writer.dictionary()
+    }
+
     /// Stream one content entry from `src`.
     pub fn add_entry(
         &mut self,
