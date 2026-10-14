@@ -358,7 +358,57 @@ pub fn calver_from_zim_date(date: &str) -> Result<String> {
 /// with one decompressed cluster resident; index rows go into SQLite as they
 /// are produced. Heap therefore stays flat in the archive's byte size and
 /// grows only ~20 bytes per dirent.
+/// Builds to a sibling `.partial` and renames on success, so a failed or killed
+/// conversion never leaves something at the output path that looks like a pack.
+///
+/// Directive 01 measured the alternative: an OOM-killed conversion left
+/// **2,186,196,595 bytes** with a zero header sitting exactly where a real pack
+/// would be. SPEC §7 meant it could never *verify* — the header is written last
+/// — but nothing removed it, and a few of those fill a disk.
+///
+/// An `Err` return cleans up the partial archive and its build report. A process
+/// killed outright (OOM, SIGKILL) cannot run cleanup at all, which is exactly
+/// why the output path goes untouched until the work has succeeded: what
+/// survives a kill is an obviously-incomplete `.partial`, not a counterfeit.
 pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<ConvertReport> {
+    let mut partial = output.as_os_str().to_os_string();
+    partial.push(".partial");
+    let partial = PathBuf::from(partial);
+    let partial_report = report_sibling(&partial);
+
+    // Never inherit a previous run's leftovers.
+    let _ = std::fs::remove_file(&partial);
+    let _ = std::fs::remove_file(&partial_report);
+
+    match convert_inner(zim_path, &partial, opts) {
+        Ok(mut report) => {
+            std::fs::rename(&partial, output)
+                .with_context(|| format!("publishing {}", output.display()))?;
+            let final_report = report_sibling(output);
+            if partial_report.exists() {
+                std::fs::rename(&partial_report, &final_report)
+                    .with_context(|| format!("publishing {}", final_report.display()))?;
+            }
+            report.write.archive = output.to_path_buf();
+            report.write.report_path = final_report;
+            Ok(report)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&partial);
+            let _ = std::fs::remove_file(&partial_report);
+            Err(e)
+        }
+    }
+}
+
+/// `wax-builder` writes the build report beside the archive under this name.
+fn report_sibling(archive: &Path) -> PathBuf {
+    let mut p = archive.as_os_str().to_os_string();
+    p.push(".build-report.json");
+    PathBuf::from(p)
+}
+
+fn convert_inner(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<ConvertReport> {
     opts.validate()?;
     let z = Zim::new(zim_path).with_context(|| format!("opening ZIM {}", zim_path.display()))?;
     let mut warnings = Warnings::new();

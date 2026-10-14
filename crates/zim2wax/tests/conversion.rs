@@ -467,6 +467,49 @@ fn blank_license_is_a_hard_failure() {
 }
 
 #[test]
+fn a_failed_conversion_leaves_no_scratch_behind() {
+    // Directive 01 measured the alternative: an OOM-killed conversion left
+    // 2,186,196,595 bytes with a zero header sitting exactly where a real pack
+    // would be. It could never verify — SPEC §7 writes the header last — but
+    // nothing removed it either, and a few of those fill a disk.
+    let b = ZimBuilder::new()
+        .meta("Title", "T")
+        .meta("Date", "2026-01-01")
+        .meta("Creator", "c")
+        .html(C, "index", "i", "<p/>")
+        .main_page(C, "index");
+    let fx = fixture(&b);
+    assert!(convert(&fx.zim, &fx.wax, &opts()).is_err(), "this fixture must fail");
+
+    assert!(!fx.wax.exists(), "no pack at the output path");
+    let leftovers: Vec<String> = std::fs::read_dir(fx.wax.parent().unwrap())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".partial") || n.contains("build-report"))
+        .collect();
+    assert!(leftovers.is_empty(), "scratch left behind: {leftovers:?}");
+}
+
+#[test]
+fn a_successful_conversion_publishes_through_a_partial_then_renames() {
+    // The output path stays untouched until the work succeeds, which is what
+    // makes a killed run survivable: what remains is an obviously-incomplete
+    // .partial, never a counterfeit pack at the real path.
+    let fx = fixture(&wiki());
+    let rep = convert(&fx.zim, &fx.wax, &opts()).unwrap();
+    assert!(fx.wax.exists(), "the pack lands at the requested path");
+    assert_eq!(rep.write.archive, fx.wax, "the report names the final path, not the partial");
+    assert!(rep.write.report_path.exists(), "the build report is published alongside it");
+    let partial = {
+        let mut p = fx.wax.as_os_str().to_os_string();
+        p.push(".partial");
+        std::path::PathBuf::from(p)
+    };
+    assert!(!partial.exists(), "the partial must not survive a success");
+}
+
+#[test]
 fn operator_supplied_license_is_reviewed_not_trusted_even_when_allowlisted() {
     // Contract §11: license_operator_supplied always accompanies
     // license_review_required, so an operator's claim goes to a reviewer.
