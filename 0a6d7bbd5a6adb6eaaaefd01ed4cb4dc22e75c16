@@ -1,0 +1,50 @@
+Directive 06 (2026-10-14). The v0.10 codec is wired, measured and proven.
+228 tests pass on Windows and Linux x86. Determinism anchor 95a41ece...
+reproduces on both.
+
+THE RESULT: WAX now beats ZIM on all three archives, whole-pack.
+  chemistry_mini 0.766x (was 1.47x)
+  en_100         0.161x (was 0.162x)
+  history_maxi   0.992x (was 1.12x)
+Directive 04 predicted ~0.75x and ~0.995x whole-pack for arm 3. Measured
+0.766 and 0.992. The prediction held.
+
+A2e's memory bound survived the two-pass change: the floor is unchanged at
+128-256 MB for a 2 GB archive (fails 128M, passes 256M, exactly as v0.9), and
+chemistry_mini still converts under a 64 MB cap.
+
+THREE BUGS FOUND BY MEASURING RATHER THAN TRUSTING, all mine, all in this
+directive:
+
+1. The sampling gate had a 16 MiB budget and a 32-sample floor in tension.
+   en_100 averages 549 KB per article, so the budget bought 31 samples -- one
+   short -- and the dictionary was SILENTLY skipped. Caught because the v0.10
+   pack came out byte-identical to the v0.9 one, which should be impossible;
+   checking the codec histogram rather than accepting the size found it.
+   Fixed by capping each sample at 64 KiB, which is what dict training wants
+   anyway. For en_100 the buggy path reached the right answer by accident.
+
+2. zim2wax trained a fresh dictionary for a new EDITION. Carry-forward was
+   wired into open_append, which covers appending to one file -- but nobody
+   appends to a Wikipedia pack, they convert next month's ZIM. Added
+   --carry-dictionary-from. Measured on two real editions: carried forward
+   reframes 0 of 15,589 unchanged entries; retrained reframes 14,216 and
+   wastes 2,946,912 bytes, 24.2% of the update, on content that did not change.
+
+3. The reader handed zstd the raw 110 KB dictionary on EVERY read, so every
+   read re-digested it: 16.3us against v0.9's 12.7us, 28% slower -- the new
+   codec would have been worse to read than the one it replaced. D04's
+   codecbench missed this because it built its decompressor outside the timer.
+   Preparing the dictionary once at open: 11.4us, now ~10% FASTER than v0.9.
+
+Worth carrying forward: carry-forward costs ~12% at-rest size on this pair
+(21.2 MB carried vs 19.0 MB retrained) in exchange for zero delta waste. Over
+many editions the delta saving compounds and the size penalty does not, but a
+deliberate periodic retrain is worth evaluating -- SPEC 5.9 already allows it
+as a flagged event.
+
+Converter scratch: proven against a real OOM kill at 128M. Exit 137, leaves
+out.wax.partial, nothing at the output path.
+
+Still open: the Pi. ARM64 storage proof, ARM read measurements, and now the
+v0.10 determinism leg and a v0.10 build on the minimum-spec tier.
