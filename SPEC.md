@@ -1,7 +1,7 @@
 # WAX Archive Format — Specification
 
-**Format version: 0.10** (`version_major = 0`, `version_minor = 10`)
-**Status: FROZEN for v0.10.** Byte layout and index schema below are settled
+**Format version: 0.11** (`version_major = 0`, `version_minor = 11`)
+**Status: FROZEN for v0.11.** Byte layout and index schema below are settled
 decisions from the DeltOS *Track A Refinement* document (v2, post-review).
 This file is the authoritative, byte-exact contract. Code implements this
 document; this document is not reverse-engineered from code.
@@ -108,7 +108,7 @@ All offsets are from the start of the file. The header occupies bytes `[0, 128)`
 |-------:|------------------------|-----:|---------|-------|
 | 0      | `magic`                | 4    | bytes   | ASCII `"WAX1"` = `57 41 58 31`. Reader MUST reject any other value. |
 | 4      | `version_major`        | 1    | u8      | `0` for this spec. Reader MUST refuse to open an archive whose `version_major` it does not implement. |
-| 5      | `version_minor`        | 1    | u8      | `10` for this spec (`9` for v0.9). Reader MUST NOT fail on an unknown (higher) minor; it ignores index columns it does not know (§5.4). |
+| 5      | `version_minor`        | 1    | u8      | `11` for this spec; `10` added the shared dictionary, `9` was the original. Reader MUST NOT fail on an unknown (higher) minor; it ignores index columns it does not know (§5.4). |
 | 6      | `flags`                | 2    | u16 LE  | Bit flags, §2.1. Reader MUST ignore bits it does not know. |
 | 8      | `archive_uuid`         | 16   | bytes   | Stable archive identity, preserved across every version/append of the same logical pack. A delta update (A6, later) matches against this. Format is an RFC 4122 UUID's 16 raw bytes; WAX does not require any particular version. All-zero is discouraged but not rejected. |
 | 24     | `created_at`           | 8    | u64 LE  | Unix epoch **seconds** at which this archive state was written. On append it is updated to the append time. |
@@ -424,22 +424,102 @@ CREATE TABLE manifest (
   this phase exposes `manifest()` as an opaque `Map<String,String>` and does not
   validate keys.
 
-### 5.7 `search_index`
+### 5.7 `search_index` *(v0.11)*
 
 ```sql
--- optional, v0.9 form of component A9
-CREATE VIRTUAL TABLE search_index USING fts5(path UNINDEXED, title, body);
+-- optional; component A9, embedded form
+CREATE VIRTUAL TABLE search_index USING fts5(
+    title, body, content='', detail=none, tokenize='unicode61'
+);
+CREATE TABLE search_docs (
+    id         INTEGER PRIMARY KEY,   -- = search_index rowid
+    path       TEXT NOT NULL,
+    title      TEXT,
+    title_fold TEXT                   -- lowercased title, for prefix completion
+);
+CREATE INDEX search_docs_fold ON search_docs(title_fold);
 ```
 
-* **Optional.** Absent in every archive a v0.9 builder produces.
-* When present it is an FTS5 virtual table; a reader without FTS5 compiled in
-  MUST still open the archive and serve entries, simply treating search as
-  unavailable.
-* The stand-off binary search segment pointed to by `search_index_offset`
-  (header §2) is the **v2** form and is entirely unused in v0.9
-  (`search_index_offset == 0`). Space is reserved in the header only.
-* A3/A4 scope: reserve the header fields and the table name. No search
-  implementation, no ranking, no query surface.
+* **Optional, and absence is not an error.** A reader opening an archive with
+  no `search_index` MUST serve entries normally and report search as
+  *unavailable* — never as a failure. Every archive built before v0.11 is in
+  exactly this state, which is what makes the segment additive.
+* **Present only in `segment[0]`**, the same placement rule as `manifest`
+  (§5.6) and `dictionary` (§5.9).
+* A reader without FTS5 compiled in MUST likewise still open the archive and
+  treat search as unavailable.
+
+#### The index is contentless, and that is a size decision
+
+`content=''` means the index stores terms, never a copy of the text; the
+archive already holds the content. `detail=none` stores term *presence* per
+document rather than positions.
+
+Both were measured over real pack content rather than assumed:
+
+| form | size, as a multiple of the indexed text |
+|---|---:|
+| stores the body | 0.659× |
+| contentless, full detail | 0.430× |
+| **contentless, `detail=none`** | **0.241×** |
+
+A content-storing index would put a second copy of every article inside the
+archive, which a format whose reason to exist is size cannot afford. The cost
+of `detail=none` is that **phrase queries and snippet extraction are not
+available**; term and boolean queries are. Both are the stand-off segment's job
+(below), not this one's.
+
+#### The declared tokenizer — normative
+
+* The archive **MUST** record the tokenizer its index was built with, in
+  `segment_meta` under the key `search_tokenizer`.
+* A reader that cannot reproduce that tokenizer **MUST refuse the query** and
+  say so. It MUST NOT answer using a different one. An index is a function of
+  its tokenizer: querying with another returns confidently wrong results — a
+  miss on text that is present — which is worse than a refusal, because nothing
+  surfaces as broken.
+* Refusal is per query. The archive still opens and still serves entries.
+* **The query side must run the same tokenizer on every tier**, which is what
+  bounds the choice. `unicode61` is the default because it is built into every
+  SQLite with FTS5, so no tier can fail to reproduce it. It does not segment
+  CJK; a CJK archive declares `trigram`, also built in. **This is precisely why
+  the tokenizer is declared per archive rather than fixed by the format**: one
+  fixed choice would be wrong for one of those two scripts.
+
+#### Title completion
+
+`search_docs.title_fold` with its index serves prefix completion as a b-tree
+range scan. It is deliberately **not** a second FTS table: prefix completion is
+a range query, and paying for an inverted index to answer one would cost size
+for nothing.
+
+#### Determinism
+
+The index MUST build byte-identically from identical input. Writers insert in
+a content-derived order and MUST run FTS5 `'optimize'` before sealing the
+segment, since an unoptimised index otherwise carries whatever b-tree structure
+the insert order happened to produce.
+
+#### Built where packs are built
+
+The index is produced at conversion time and travels inside the archive. A
+device consumes it; it never builds one — the same scoping that applies to
+conversion generally (Track A §18).
+
+#### Signed, because it is in the footer
+
+The index lives in the index segment, so it falls inside
+`SHA-256(header ‖ index-chain)` (§8.1). A tampered index cannot verify — the
+same property that protects the shared dictionary, and for the same reason:
+search results are a claim about content, and an unsigned index could lie about
+what an archive contains.
+
+#### Still v2: the stand-off segment
+
+The binary stand-off segment pointed to by `search_index_offset` (header §2)
+remains the **v2** form and is unused (`search_index_offset == 0`). It is where
+phrase search, snippets, richer ranking and vector retrieval belong. Naming it
+here is not a commitment to build it in this version.
 
 ### 5.8 `signatures`
 
@@ -934,6 +1014,7 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
 
 | Format version | Date | Change |
 |----------------|------|--------|
+| 0.11 | 2026-10-14 | **Additive minor.** The embedded search segment (§5.7): a contentless FTS5 index plus a `search_docs` title map, present only in segment 0, with the tokenizer declared in `segment_meta` and a reader obliged to refuse one it cannot reproduce rather than answer wrongly. Fills the table name v0.9 reserved. No byte-layout change; an archive without the segment opens exactly as before and reports search absent, not failed. The stand-off segment behind `search_index_offset` is still v2 and still unused. Decision recorded in `docs/adr/ADR-0002`. |
 | 0.10 | 2026-10-14 | **Additive minor.** New `compression` value `zstd-dict` (§3) and a new segment-0 `dictionary` table (§5.9) holding one shared zstd dictionary. Per-entry framing is unchanged — still one frame per entry, so random access and the lookup path are untouched. Every v0.9 archive opens unmodified; the dictionary table and the new codec value are both additive under §5.4. Codec chosen from measurement, not argument — see [`docs/adr/ADR-0001`](docs/adr/ADR-0001-text-compression-codec.md). Carrying the dictionary forward across editions is normative (§5.9), because retraining reframes every entry and destroys the delta model. |
 | 0.9 | 2026-09-13 | A1b — no byte-layout change. §5.2: `entries` is declared `WITHOUT ROWID` by writers; readers MUST accept either layout. §4.1/§5.5 clarify that segments may be opened in place and that the merge is a definition, not a materialization. §11.3 fuzz target 2 walks the segment through the same path the reader uses. §12.23 records the measurements. |
 | 0.9 | 2026-09-12 | §8.2: sidecar trusted-comment `archive_uuid` is canonical lowercase-hyphenated per Contract §11 (was bare hex); verifiers compare parsed values. No byte-layout change. |

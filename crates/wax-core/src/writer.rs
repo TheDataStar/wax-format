@@ -41,6 +41,17 @@ use tempfile::NamedTempFile;
 /// Read/compress buffer. Bounds the per-entry working memory.
 const STREAM_BUF: usize = 64 * 1024;
 
+/// The tokenizer a pack is indexed with unless it declares another
+/// (SPEC §5.7). `unicode61` is built into every SQLite with FTS5, so the query
+/// side can reproduce it on every tier -- which is the actual constraint. It
+/// does not segment CJK; a CJK pack declares `trigram`, also built in, which is
+/// exactly why the tokenizer is per-pack rather than fixed by the format.
+pub const DEFAULT_TOKENIZER: &str = "unicode61";
+
+/// Tokenizers this build can reproduce on the query side. A pack declaring
+/// anything else is refused at query time rather than answered wrongly.
+pub const SUPPORTED_TOKENIZERS: [&str; 3] = ["unicode61", "trigram", "porter unicode61"];
+
 /// Shared-dictionary size, SPEC v0.10. 110 KiB is the size Directive 04
 /// measured the codec decision against; it is a knob, not a format value.
 const DICT_BYTES: usize = 110 * 1024;
@@ -123,6 +134,8 @@ impl WaxWriter {
             entries: 0,
             redirects: 0,
             dictionary: None,
+            search_tokenizer: None,
+            search_rows: 0,
         })
     }
 
@@ -185,6 +198,8 @@ impl WaxWriter {
             entries: 0,
             redirects: 0,
             dictionary: carried,
+            search_tokenizer: None,
+            search_rows: 0,
         })
     }
 
@@ -293,6 +308,11 @@ pub struct StreamingWriter {
     /// The pack's shared dictionary (SPEC v0.10 §3.1), stored once in
     /// segment 0. `None` until trained or carried forward.
     dictionary: Option<Vec<u8>>,
+    /// Declared search tokenizer (SPEC §5.7). `None` until the first indexed
+    /// entry, at which point the default is recorded.
+    search_tokenizer: Option<String>,
+    /// Documents indexed so far; doubles as the next FTS rowid.
+    search_rows: u64,
 }
 
 impl StreamingWriter {
@@ -351,6 +371,57 @@ impl StreamingWriter {
     /// The dictionary this pack will store, if any.
     pub fn dictionary(&self) -> Option<&[u8]> {
         self.dictionary.as_deref()
+    }
+
+    /// Declare the tokenizer this pack's search index is built with
+    /// (SPEC §5.7). Defaults to [`DEFAULT_TOKENIZER`].
+    ///
+    /// Recorded so a reader can **refuse** an index it cannot reproduce rather
+    /// than answering a query with confidently wrong results. Must be set
+    /// before the first [`index_text`](Self::index_text).
+    pub fn set_search_tokenizer(&mut self, name: &str) -> Result<()> {
+        if self.search_rows > 0 {
+            return Err(WaxError::Schema {
+                detail: "the search tokenizer must be declared before the first indexed entry"
+                    .into(),
+            });
+        }
+        self.search_tokenizer = Some(name.to_string());
+        Ok(())
+    }
+
+    /// Add one document to the pack's embedded search index (SPEC §5.7).
+    ///
+    /// `body` is the *rendered text* to index, not markup — the caller decides
+    /// what searchable means, exactly as it decides what to store. The index is
+    /// contentless: it holds no copy of the text, only the terms, so indexing
+    /// does not double the pack.
+    ///
+    /// Segment 0 only, the same placement rule as the manifest and dictionary.
+    pub fn index_text(&mut self, path: &str, title: Option<&str>, body: &str) -> Result<()> {
+        if self.segment_index != 0 {
+            return Err(WaxError::Schema {
+                detail: format!(
+                    "the search index lives in segment 0 (SPEC §5.7); this writer is appending \
+                     segment {}",
+                    self.segment_index
+                ),
+            });
+        }
+        let tok = self
+            .search_tokenizer
+            .clone()
+            .unwrap_or_else(|| DEFAULT_TOKENIZER.to_string());
+        self.index.ensure_search(&tok)?;
+        self.search_rows += 1;
+        self.index
+            .index_text(self.search_rows as i64, path, title, body)?;
+        Ok(())
+    }
+
+    /// How many documents have been indexed.
+    pub fn indexed_count(&self) -> u64 {
+        self.search_rows
     }
     /// Stream one content entry. Bytes are read from `src` in
     /// [`STREAM_BUF`]-sized chunks, hashed (SHA-256 over the uncompressed
@@ -545,6 +616,17 @@ impl StreamingWriter {
         // entries, but must not rewrite the table into its own segment —
         // a reader would ignore it there anyway, and duplicating it would
         // grow every append by ~110 KB for nothing.
+        // Search segment (SPEC §5.7), segment 0 only. The declared tokenizer is
+        // recorded even when it is the default, so a reader never has to assume.
+        if self.search_rows > 0 && self.segment_index == 0 {
+            let tok = self
+                .search_tokenizer
+                .clone()
+                .unwrap_or_else(|| DEFAULT_TOKENIZER.to_string());
+            self.index.write_search_meta(&tok)?;
+            self.index.optimize_search()?;
+        }
+
         if let (Some(d), 0) = (self.dictionary.as_deref(), self.segment_index) {
             self.index.write_dictionary(d)?;
         }
@@ -652,6 +734,91 @@ const SCHEMA: &str = "PRAGMA page_size=4096;
      );";
 
 impl IndexBuilder {
+    /// Create the search tables once, on first use (SPEC §5.7).
+    ///
+    /// The FTS table is **contentless** (`content=''`) and `detail=none`.
+    /// Both are size decisions, measured rather than assumed: over real pack
+    /// content a content-storing index cost 0.659x the indexed text and a
+    /// contentless one with full detail 0.430x, against 0.241x here. A
+    /// content-storing index would also put a second copy of every article in
+    /// the pack, which is the one thing a format that just won on size cannot
+    /// afford. The cost is that phrase queries and snippets need the v2
+    /// stand-off segment; term and boolean queries work.
+    fn ensure_search(&self, tokenizer: &str) -> Result<()> {
+        let conn = self.conn.as_ref().expect("connection open");
+        let exists = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_index'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if exists {
+            return Ok(());
+        }
+        // The tokenizer name reaches SQL, so admit only the forms this build
+        // can reproduce on the query side; anything else is stored as a
+        // declaration and the index is built with the default.
+        let tok = if SUPPORTED_TOKENIZERS.contains(&tokenizer) {
+            tokenizer
+        } else {
+            DEFAULT_TOKENIZER
+        };
+        conn.execute_batch(&format!(
+            "CREATE VIRTUAL TABLE search_index USING fts5(
+                 title, body, content='', detail=none, tokenize='{tok}'
+             );
+             CREATE TABLE search_docs (
+                 id         INTEGER PRIMARY KEY,
+                 path       TEXT NOT NULL,
+                 title      TEXT,
+                 title_fold TEXT
+             );
+             CREATE INDEX search_docs_fold ON search_docs(title_fold);"
+        ))?;
+        Ok(())
+    }
+
+    /// Index one document. `id` is the FTS rowid and the `search_docs` key.
+    fn index_text(&self, id: i64, path: &str, title: Option<&str>, body: &str) -> Result<()> {
+        let conn = self.conn.as_ref().expect("connection open");
+        conn.execute(
+            "INSERT INTO search_index(rowid, title, body) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, title.unwrap_or(""), body],
+        )?;
+        conn.execute(
+            "INSERT INTO search_docs(id, path, title, title_fold) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                id,
+                path,
+                title,
+                title.map(|t| t.to_lowercase())
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Merge the FTS b-tree into one segment. Smaller on disk, and -- the
+    /// reason it is not optional here -- deterministic: an unoptimised index
+    /// carries whatever segment structure the insert order happened to produce.
+    fn optimize_search(&self) -> Result<()> {
+        let conn = self.conn.as_ref().expect("connection open");
+        conn.execute_batch("INSERT INTO search_index(search_index) VALUES ('optimize')")?;
+        Ok(())
+    }
+
+    /// Record the declared tokenizer so a reader can refuse what it cannot
+    /// reproduce (SPEC §5.7).
+    fn write_search_meta(&self, tokenizer: &str) -> Result<()> {
+        let conn = self.conn.as_ref().expect("connection open");
+        conn.execute(
+            "INSERT OR REPLACE INTO segment_meta(key, value) VALUES ('search_tokenizer', ?1)",
+            rusqlite::params![tokenizer],
+        )?;
+        Ok(())
+    }
+
     /// Store the pack shared dictionary (SPEC v0.10 section 3.1). One row, one
     /// blob, segment 0 only -- the same placement rule as `manifest`.
     fn write_dictionary(&self, bytes: &[u8]) -> Result<()> {

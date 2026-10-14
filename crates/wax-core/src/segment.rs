@@ -306,6 +306,81 @@ impl Segment {
             .optional()?)
     }
 
+    /// True when this segment carries an embedded search index (SPEC §5.7).
+    pub fn has_search_index(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_index'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// The tokenizer this segment's index declares (SPEC §5.7), if recorded.
+    pub fn search_tokenizer(&self) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT value FROM segment_meta WHERE key = 'search_tokenizer'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
+    /// Full-text query against the embedded index.
+    ///
+    /// The index is queried **in place** through the same windowing VFS the
+    /// entry lookups use, so searching a full-Wikipedia pack costs page reads,
+    /// not a load. Returns `(path, title)` pairs in rank order.
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<(String, Option<String>)>> {
+        let mut st = self.conn.prepare(
+            "SELECT d.path, d.title
+               FROM search_index s
+               JOIN search_docs d ON d.id = s.rowid
+              WHERE search_index MATCH ?1
+              ORDER BY rank
+              LIMIT ?2",
+        )?;
+        let rows = st.query_map(rusqlite::params![query, limit as i64], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Title prefix completion, for a search bar.
+    ///
+    /// A plain indexed range scan rather than a second FTS table: prefix
+    /// completion is a b-tree range, and paying an inverted index for it would
+    /// cost size the format cannot spare.
+    pub fn suggest(&self, prefix: &str, limit: usize) -> Result<Vec<(String, String)>> {
+        let lo = prefix.to_lowercase();
+        // The half-open upper bound for "everything starting with lo".
+        let mut hi = lo.clone();
+        hi.push('\u{10FFFF}');
+        let mut st = self.conn.prepare(
+            "SELECT path, title FROM search_docs
+              WHERE title_fold >= ?1 AND title_fold < ?2
+              ORDER BY title_fold, path
+              LIMIT ?3",
+        )?;
+        let rows = st.query_map(rusqlite::params![lo, hi, limit as i64], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default()))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// The pack's shared dictionary (SPEC v0.10 §3.1), if this segment carries
     /// one. Base segment only — the same placement rule as `manifest`.
     ///

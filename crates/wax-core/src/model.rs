@@ -147,3 +147,22 @@ impl EntryInput {
         self
     }
 }
+
+/// One full-text search result (SPEC §5.7).
+///
+/// Carries the path rather than the text: the pack already holds the content,
+/// and the index is contentless precisely so it does not hold a second copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    /// Entry path, directly readable with [`WaxReader::read`](crate::WaxReader::read).
+    pub path: String,
+    /// The indexed title, when the document had one.
+    pub title: Option<String>,
+}
+
+/// One title-completion suggestion (SPEC §5.7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Suggestion {
+    pub path: String,
+    pub title: String,
+}

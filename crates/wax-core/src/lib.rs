@@ -29,7 +29,7 @@ pub mod vfs;
 pub mod writer;
 
 pub use header::WaxHeader;
-pub use model::{Compression, Entry, EntryContent, EntryInput, Resolved};
+pub use model::{Compression, Entry, EntryContent, EntryInput, Resolved, SearchHit, Suggestion};
 pub use reader::{Entries, ReadOptions, WaxReader};
 pub use writer::{EntryMeta, EntryStats, FinishStats, StreamingWriter, WaxWriter};
 
@@ -42,7 +42,7 @@ pub const HEADER_LEN: usize = 128;
 /// Format version implemented by this crate (SPEC §10).
 pub const FORMAT_VERSION_MAJOR: u8 = 0;
 /// Format minor version implemented by this crate.
-pub const FORMAT_VERSION_MINOR: u8 = 10;
+pub const FORMAT_VERSION_MINOR: u8 = 11;
 
 /// Smallest possible SQLite database (one 512-byte page). Used as the lower
 /// bound for `index_length` and `prev_segment_length` (SPEC §2.2, §5.1).
@@ -112,6 +112,12 @@ pub enum WaxError {
     ChecksumMismatch { path: String },
     #[error("entry {path:?} uses the zstd-dict codec but this pack carries no dictionary")]
     DictionaryMissing { path: String },
+
+    // --- Search (SPEC §5.7) --------------------------------------------
+    #[error("this archive carries no search index")]
+    SearchUnavailable,
+    #[error("archive was indexed with tokenizer {tokenizer:?}, which this build cannot reproduce; refusing to answer rather than return wrong results")]
+    UnknownTokenizer { tokenizer: String },
 
     // --- Shared dictionary (v0.10) -------------------------------------
     #[error("shared dictionary: {detail}")]

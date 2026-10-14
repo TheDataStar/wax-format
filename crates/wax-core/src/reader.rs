@@ -12,7 +12,7 @@
 //! order, one page of rows per segment in memory.
 
 use crate::header::WaxHeader;
-use crate::model::{Compression, Entry, Resolved};
+use crate::model::{Compression, Entry, Resolved, SearchHit, Suggestion};
 use crate::segment::Segment;
 use crate::{Result, WaxError, HEADER_LEN, MAX_SEGMENTS, MIN_SQLITE_LEN};
 use sha2::{Digest, Sha256};
@@ -102,6 +102,9 @@ pub struct WaxReader {
     segments: Vec<Segment>,
     /// Base-segment manifest (SPEC §5.6); small, held.
     manifest: BTreeMap<String, String>,
+    /// The tokenizer the base segment declares (SPEC §5.7), or None when this
+    /// pack carries no search index.
+    search_tokenizer: Option<String>,
     /// The dictionary in zstd prepared form, digested once at open. Preparing
     /// it per read costs more than the codec saves -- measured 12.7us -> 16.3us
     /// on a real pack.
@@ -153,12 +156,21 @@ impl WaxReader {
         // --- manifest: base segment only (SPEC §5.6) ---
         let mut manifest = BTreeMap::new();
         let mut dictionary = None;
+        let mut search_tokenizer: Option<String> = None;
         if let Some(base) = segments.first() {
             for (k, v) in base.manifest()? {
                 manifest.insert(k, v);
             }
             // --- shared dictionary: base segment only (SPEC v0.10 §3.1) ---
             dictionary = base.dictionary()?;
+            // --- search segment: base segment only (SPEC §5.7) ---
+            if base.has_search_index()? {
+                // An index built before the tokenizer was recorded is read as
+                // the default, which is what it would have used.
+                let declared = base.search_tokenizer()?;
+                search_tokenizer =
+                    Some(declared.unwrap_or_else(|| crate::writer::DEFAULT_TOKENIZER.to_string()));
+            }
         }
 
         Ok(WaxReader {
@@ -168,6 +180,7 @@ impl WaxReader {
             header,
             segments,
             manifest,
+            search_tokenizer,
             dict_prepared: dictionary
                 .as_deref()
                 .map(zstd::dict::DecoderDictionary::copy),
@@ -331,6 +344,61 @@ impl WaxReader {
 
     pub fn manifest(&self) -> &BTreeMap<String, String> {
         &self.manifest
+    }
+
+    /// True when this pack carries an embedded search index (SPEC §5.7).
+    ///
+    /// `false` is not an error — it is the normal state of every pack built
+    /// before search existed, and of any pack published without one.
+    pub fn has_search_index(&self) -> bool {
+        self.search_tokenizer.is_some()
+    }
+
+    /// The tokenizer this pack was indexed with, or `None` when it carries no
+    /// index. A reader that cannot reproduce it refuses to query (§5.7).
+    pub fn search_tokenizer(&self) -> Option<&str> {
+        self.search_tokenizer.as_deref()
+    }
+
+    /// Full-text search over the embedded index, best match first.
+    ///
+    /// Queried in place through the same windowing VFS entry lookups use, so
+    /// this costs page reads rather than loading the index.
+    ///
+    /// Errors when the pack has no index, or when it declares a tokenizer this
+    /// build cannot reproduce — answering anyway would mean returning
+    /// confidently wrong results for text that is present.
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        let base = self.searchable_segment()?;
+        Ok(base
+            .search(query, limit)?
+            .into_iter()
+            .map(|(path, title)| SearchHit { path, title })
+            .collect())
+    }
+
+    /// Title prefix completion, for a search bar.
+    pub fn suggest(&self, prefix: &str, limit: usize) -> Result<Vec<Suggestion>> {
+        let base = self.searchable_segment()?;
+        Ok(base
+            .suggest(prefix, limit)?
+            .into_iter()
+            .map(|(path, title)| Suggestion { path, title })
+            .collect())
+    }
+
+    /// The base segment, if this pack has an index this build can query.
+    fn searchable_segment(&self) -> Result<&Segment> {
+        let tok = self
+            .search_tokenizer
+            .as_deref()
+            .ok_or(WaxError::SearchUnavailable)?;
+        if !crate::writer::SUPPORTED_TOKENIZERS.contains(&tok) {
+            return Err(WaxError::UnknownTokenizer {
+                tokenizer: tok.to_string(),
+            });
+        }
+        self.segments.first().ok_or(WaxError::SearchUnavailable)
     }
 
     /// The pack's shared dictionary (SPEC v0.10 §3.1), or `None` for a v0.9
