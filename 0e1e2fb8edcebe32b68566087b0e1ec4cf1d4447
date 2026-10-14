@@ -1,0 +1,38 @@
+Directive 05, part 1 of 2 (2026-10-14). SPEC v0.10 and the shared-dictionary
+codec, tests first. 224 tests pass. Determinism holds.
+
+DONE: scope 1 (SPEC v0.10, additive), scope 2 (codec in wax-core), scope 5
+(the tests, written before the implementation).
+
+NOT DONE, and deliberately not rushed: scope 3 (builder carry-forward wiring --
+the wax-core API exists and is tested, but wax-builder does not yet call it on
+append), scope 4 (zim2wax emitting v0.10), scope 6 (re-measurement), scope 7
+(ADR, externally blocked), scope 8 (converter cleanup).
+
+Why I stopped where I did: scope 4 needs zim2wax to collect training samples
+before it writes, which means touching the single streaming pass that is A2e's
+memory-bounded property -- the thing Directive 01 measured and the thing a
+hasty refactor would quietly break. Scope 6 cannot be honestly reported without
+scope 4. The directive says not to claim the win without re-measured numbers,
+so the win is not claimed.
+
+Three things found by measuring rather than assuming:
+
+1. Dictionary training is deterministic but NOT order-independent. Five rounds
+   on identical input gave identical output; reversing sample order gave a
+   different dictionary. SPEC 5.9 therefore REQUIRES content-derived sample
+   ordering. Had this gone unchecked it would have been a silent
+   reproducibility failure that only showed up across machines.
+
+2. The dictionary belongs in the index segment for a security reason, not a
+   convenience one. The signing digest is SHA-256(header + index-chain), so the
+   blob region is outside the signature. Every dict-framed entry depends on the
+   dictionary, so an unsigned one lets an attacker change all decoded content
+   with the signature still verifying.
+
+3. The red state was exactly four missing API items -- no accidental surface.
+   That is what TDD bought here.
+
+v0.10 anchor: 95a41ece2cabe3b4c469336faa17bc1627e910b90e72ebbf51a169d9ebc87a9d
+(v0.9 was bdc3bc4d...). The value moved because the version byte did; the
+reproducibility property did not.
