@@ -102,6 +102,10 @@ pub struct WaxReader {
     segments: Vec<Segment>,
     /// Base-segment manifest (SPEC §5.6); small, held.
     manifest: BTreeMap<String, String>,
+    /// The dictionary in zstd prepared form, digested once at open. Preparing
+    /// it per read costs more than the codec saves -- measured 12.7us -> 16.3us
+    /// on a real pack.
+    dict_prepared: Option<zstd::dict::DecoderDictionary<'static>>,
     /// Base-segment shared dictionary (SPEC v0.10 §3.1). Held because every
     /// `zstd-dict` entry needs it, and it is ~110 KiB against a pack-open cost
     /// already measured under 1.2 MB. `None` for every v0.9 archive.
@@ -164,6 +168,9 @@ impl WaxReader {
             header,
             segments,
             manifest,
+            dict_prepared: dictionary
+                .as_deref()
+                .map(zstd::dict::DecoderDictionary::copy),
             dictionary,
             opts,
             cache: RefCell::new(LookupCache {
@@ -467,28 +474,31 @@ impl WaxReader {
                 })?
             }
             Compression::ZstdDict => {
-                // One frame, exactly as for Zstd -- the only difference is the
-                // dictionary supplied to the decoder. Random access is
-                // unchanged, which is the property this codec exists to keep.
-                let dict = self
-                    .dictionary()
-                    .ok_or_else(|| WaxError::DictionaryMissing {
+                // One frame, exactly as for Zstd — the only difference is the
+                // dictionary. Random access is unchanged, which is the property
+                // this codec exists to keep.
+                //
+                // The dictionary is *prepared once at open*, not handed to the
+                // decoder raw on every read. Measured: re-digesting ~110 KB per
+                // read cost 12.7µs -> 16.3µs on a real pack, which would have
+                // made the codec slower to read than the one it replaced. The
+                // prepared form is the whole difference.
+                let prepared =
+                    self.dict_prepared
+                        .as_ref()
+                        .ok_or_else(|| WaxError::DictionaryMissing {
+                            path: e.path.clone(),
+                        })?;
+                let mut dec = zstd::bulk::Decompressor::with_prepared_dictionary(prepared)
+                    .map_err(|err| WaxError::Decompress {
                         path: e.path.clone(),
+                        detail: err.to_string(),
                     })?;
-                let mut dec = zstd::stream::Decoder::with_dictionary(&raw[..], dict).map_err(
-                    |err| WaxError::Decompress {
+                dec.decompress(&raw[..], e.uncompressed_length as usize)
+                    .map_err(|err| WaxError::Decompress {
                         path: e.path.clone(),
                         detail: err.to_string(),
-                    },
-                )?;
-                let mut out = Vec::with_capacity(e.uncompressed_length as usize);
-                std::io::Read::read_to_end(&mut dec, &mut out).map_err(|err| {
-                    WaxError::Decompress {
-                        path: e.path.clone(),
-                        detail: err.to_string(),
-                    }
-                })?;
-                out
+                    })?
             }
         };
 
