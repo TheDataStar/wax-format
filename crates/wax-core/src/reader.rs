@@ -102,6 +102,10 @@ pub struct WaxReader {
     segments: Vec<Segment>,
     /// Base-segment manifest (SPEC §5.6); small, held.
     manifest: BTreeMap<String, String>,
+    /// Base-segment shared dictionary (SPEC v0.10 §3.1). Held because every
+    /// `zstd-dict` entry needs it, and it is ~110 KiB against a pack-open cost
+    /// already measured under 1.2 MB. `None` for every v0.9 archive.
+    dictionary: Option<Vec<u8>>,
     opts: ReadOptions,
     cache: RefCell<LookupCache>,
 }
@@ -144,10 +148,13 @@ impl WaxReader {
 
         // --- manifest: base segment only (SPEC §5.6) ---
         let mut manifest = BTreeMap::new();
+        let mut dictionary = None;
         if let Some(base) = segments.first() {
             for (k, v) in base.manifest()? {
                 manifest.insert(k, v);
             }
+            // --- shared dictionary: base segment only (SPEC v0.10 §3.1) ---
+            dictionary = base.dictionary()?;
         }
 
         Ok(WaxReader {
@@ -157,6 +164,7 @@ impl WaxReader {
             header,
             segments,
             manifest,
+            dictionary,
             opts,
             cache: RefCell::new(LookupCache {
                 map: HashMap::new(),
@@ -318,6 +326,17 @@ impl WaxReader {
         &self.manifest
     }
 
+    /// The pack's shared dictionary (SPEC v0.10 §3.1), or `None` for a v0.9
+    /// archive and for any pack whose entries are all plain-framed.
+    ///
+    /// A builder producing the next edition reads this and carries it forward
+    /// rather than retraining — see [`StreamingWriter::carry_dictionary`].
+    ///
+    /// [`StreamingWriter::carry_dictionary`]: crate::writer::StreamingWriter::carry_dictionary
+    pub fn dictionary(&self) -> Option<&[u8]> {
+        self.dictionary.as_deref()
+    }
+
     /// `(hits, misses)` of the lookup cache since open. Diagnostic.
     pub fn cache_stats(&self) -> (u64, u64) {
         let c = self.cache.borrow();
@@ -446,6 +465,30 @@ impl WaxReader {
                     path: e.path.clone(),
                     detail: err.to_string(),
                 })?
+            }
+            Compression::ZstdDict => {
+                // One frame, exactly as for Zstd -- the only difference is the
+                // dictionary supplied to the decoder. Random access is
+                // unchanged, which is the property this codec exists to keep.
+                let dict = self
+                    .dictionary()
+                    .ok_or_else(|| WaxError::DictionaryMissing {
+                        path: e.path.clone(),
+                    })?;
+                let mut dec = zstd::stream::Decoder::with_dictionary(&raw[..], dict).map_err(
+                    |err| WaxError::Decompress {
+                        path: e.path.clone(),
+                        detail: err.to_string(),
+                    },
+                )?;
+                let mut out = Vec::with_capacity(e.uncompressed_length as usize);
+                std::io::Read::read_to_end(&mut dec, &mut out).map_err(|err| {
+                    WaxError::Decompress {
+                        path: e.path.clone(),
+                        detail: err.to_string(),
+                    }
+                })?;
+                out
             }
         };
 

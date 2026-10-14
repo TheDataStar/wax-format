@@ -306,6 +306,31 @@ impl Segment {
             .optional()?)
     }
 
+    /// The pack's shared dictionary (SPEC v0.10 §3.1), if this segment carries
+    /// one. Base segment only — the same placement rule as `manifest`.
+    ///
+    /// Absent on every v0.9 archive, so a missing table is `None` rather than
+    /// an error. That is precisely what makes the codec additive.
+    pub fn dictionary(&self) -> Result<Option<Vec<u8>>> {
+        let present = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dictionary'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !present {
+            return Ok(None);
+        }
+        let bytes: Option<Vec<u8>> = self
+            .conn
+            .query_row("SELECT bytes FROM dictionary WHERE id = 0", [], |r| r.get(0))
+            .optional()?;
+        Ok(bytes.filter(|b| !b.is_empty()))
+    }
+
     /// `manifest` as an opaque string map. Caller decides whether to read it
     /// (only segment 0, SPEC §5.6).
     pub fn manifest(&self) -> Result<Vec<(String, String)>> {

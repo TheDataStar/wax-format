@@ -2,15 +2,29 @@
 
 use crate::{Result, WaxError};
 
-/// Compression codec for an entry blob. v0.9 defines exactly these two values
-/// (SPEC §3, §12.6). An unrecognised string in an archive is *not* mapped here;
-/// it is surfaced as [`WaxError::UnknownCompression`] when the entry is read.
+/// Compression codec for an entry blob (SPEC §3, §12.6). An unrecognised
+/// string in an archive is *not* mapped here; it is surfaced as
+/// [`WaxError::UnknownCompression`] when the entry is read.
+///
+/// The codec is **per entry**, so one pack may mix all three — a v0.10 writer
+/// is free to leave already-compressed media as `Zstd` or `None` and spend the
+/// dictionary only where it pays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compression {
     /// Stored verbatim; `length == uncompressed_length`.
     None,
     /// A single complete Zstandard frame (RFC 8878).
     Zstd,
+    /// A single Zstandard frame compressed against the pack's shared
+    /// dictionary (SPEC v0.10 §3.1). Decoding requires that dictionary, which
+    /// is stored once in segment 0.
+    ///
+    /// New in v0.10. A v0.9 reader encountering this value reports
+    /// [`WaxError::UnknownCompression`] for that entry, which is the correct
+    /// outcome: it genuinely cannot decode the bytes. Opening and listing such
+    /// a pack still works, because §5.4's version tolerance is about the index,
+    /// not the blobs.
+    ZstdDict,
 }
 
 impl Compression {
@@ -18,7 +32,13 @@ impl Compression {
         match self {
             Compression::None => "none",
             Compression::Zstd => "zstd",
+            Compression::ZstdDict => "zstd-dict",
         }
+    }
+
+    /// True when decoding this entry needs the pack's shared dictionary.
+    pub fn needs_dictionary(self) -> bool {
+        matches!(self, Compression::ZstdDict)
     }
 
     /// Parse the on-disk `compression` string for `path`. Unknown → error.
@@ -26,6 +46,7 @@ impl Compression {
         match value {
             "none" => Ok(Compression::None),
             "zstd" => Ok(Compression::Zstd),
+            "zstd-dict" => Ok(Compression::ZstdDict),
             other => Err(WaxError::UnknownCompression {
                 path: path.to_string(),
                 value: other.to_string(),

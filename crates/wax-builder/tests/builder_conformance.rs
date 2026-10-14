@@ -351,7 +351,25 @@ fn unknown_codec_in_config_is_rejected() {
     let p = dir.path().join("wax-pack.toml");
     std::fs::write(&p, "[build]\ncompression = \"brotli\"\n").unwrap();
     let err = PackConfig::load(&p).unwrap_err();
-    assert!(format!("{err:#}").contains("not a v0.9 codec"));
+    let msg = format!("{err:#}");
+    assert!(msg.contains("not a WAX codec"), "{msg}");
+    // The error should name the domain, including the v0.10 addition, so the
+    // reader of a failed build learns what IS available rather than only what
+    // is not.
+    for codec in ["none", "zstd", "zstd-dict"] {
+        assert!(msg.contains(codec), "error should name {codec}: {msg}");
+    }
+}
+
+#[test]
+fn the_shared_dictionary_codec_is_accepted_in_config() {
+    // v0.10. Migrated alongside the message change above rather than added as
+    // an afterthought: the domain gained a member, so the domain test gained a
+    // case.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("wax-pack.toml");
+    std::fs::write(&p, "[build]\ncompression = \"zstd-dict\"\n").unwrap();
+    PackConfig::load(&p).expect("zstd-dict is a valid v0.10 codec");
 }
 
 #[test]

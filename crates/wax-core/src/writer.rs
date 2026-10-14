@@ -41,6 +41,14 @@ use tempfile::NamedTempFile;
 /// Read/compress buffer. Bounds the per-entry working memory.
 const STREAM_BUF: usize = 64 * 1024;
 
+/// Shared-dictionary size, SPEC v0.10. 110 KiB is the size Directive 04
+/// measured the codec decision against; it is a knob, not a format value.
+const DICT_BYTES: usize = 110 * 1024;
+
+/// Below this, zstd cannot train anything useful and silently returns a poor
+/// dictionary, so refuse rather than ship one that helps nothing.
+const MIN_DICT_SAMPLES: usize = 8;
+
 /// Pointer-jumping iterations before a redirect chain is declared cyclic.
 /// Each iteration halves the remaining chain length, so this bounds legitimate
 /// depth at 2^64; anything still unresolved is a cycle.
@@ -114,6 +122,7 @@ impl WaxWriter {
             external_paths: None,
             entries: 0,
             redirects: 0,
+            dictionary: None,
         })
     }
 
@@ -163,6 +172,7 @@ impl WaxWriter {
             external_paths: Some(existing),
             entries: 0,
             redirects: 0,
+            dictionary: None,
         })
     }
 
@@ -268,9 +278,68 @@ pub struct StreamingWriter {
     external_paths: Option<crate::reader::WaxReader>,
     entries: u64,
     redirects: u64,
+    /// The pack's shared dictionary (SPEC v0.10 §3.1), stored once in
+    /// segment 0. `None` until trained or carried forward.
+    dictionary: Option<Vec<u8>>,
 }
 
 impl StreamingWriter {
+    /// Train this pack's shared dictionary from a sample of its own content.
+    ///
+    /// **Sample order is part of the result.** zstd's trainer is deterministic
+    /// for a given input *sequence* but not order-independent, so two builds
+    /// agree only if they present the same samples in the same order. Callers
+    /// must therefore iterate something stable — entry path order, not
+    /// filesystem or insertion order. That is the whole basis of the v0.10
+    /// determinism guarantee, and it is why this takes an ordered iterator
+    /// rather than a set.
+    ///
+    /// Prefer [`carry_dictionary`](Self::carry_dictionary) for any edition
+    /// after the first: retraining reframes every entry (SPEC §3.1).
+    pub fn train_dictionary<'a, I>(&mut self, samples: I) -> Result<()>
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
+        let owned: Vec<Vec<u8>> = samples
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_vec())
+            .collect();
+        if owned.len() < MIN_DICT_SAMPLES {
+            return Err(WaxError::Dictionary {
+                detail: format!(
+                    "training needs at least {MIN_DICT_SAMPLES} non-empty samples, got {}",
+                    owned.len()
+                ),
+            });
+        }
+        let dict = zstd::dict::from_samples(&owned, DICT_BYTES)
+            .map_err(|e| WaxError::Dictionary { detail: format!("training failed: {e}") })?;
+        self.dictionary = Some(dict);
+        Ok(())
+    }
+
+    /// Carry a dictionary forward from a previous edition, verbatim.
+    ///
+    /// This is the default for every edition after the first. An entry whose
+    /// bytes did not change then frames to the identical stored bytes, so a
+    /// delta ships only what actually changed — the property Directive 04
+    /// measured at 16–59x better than grouped framing at realistic churn.
+    /// Retraining instead would move every frame.
+    pub fn carry_dictionary(&mut self, dict: &[u8]) -> Result<()> {
+        if dict.is_empty() {
+            return Err(WaxError::Dictionary {
+                detail: "refusing to carry an empty dictionary forward".into(),
+            });
+        }
+        self.dictionary = Some(dict.to_vec());
+        Ok(())
+    }
+
+    /// The dictionary this pack will store, if any.
+    pub fn dictionary(&self) -> Option<&[u8]> {
+        self.dictionary.as_deref()
+    }
     /// Stream one content entry. Bytes are read from `src` in
     /// [`STREAM_BUF`]-sized chunks, hashed (SHA-256 over the uncompressed
     /// content, SPEC §3.1) and compressed in the same pass, and written
@@ -300,6 +369,23 @@ impl StreamingWriter {
             },
             Compression::Zstd => {
                 let mut enc = zstd::stream::write::Encoder::new(&mut sink, 3)?;
+                loop {
+                    let n = src.read(&mut buf)?;
+                    if n == 0 {
+                        break;
+                    }
+                    hasher.update(&buf[..n]);
+                    enc.write_all(&buf[..n])?;
+                    uncompressed += n as u64;
+                }
+                enc.finish()?;
+            }
+            Compression::ZstdDict => {
+                let dict = self
+                    .dictionary
+                    .as_deref()
+                    .ok_or_else(|| WaxError::DictionaryMissing { path: path.clone() })?;
+                let mut enc = zstd::stream::write::Encoder::with_dictionary(&mut sink, 3, dict)?;
                 loop {
                     let n = src.read(&mut buf)?;
                     if n == 0 {
@@ -436,6 +522,15 @@ impl StreamingWriter {
         }
         self.index.write_meta(&meta)?;
 
+        // The shared dictionary lives in the index segment, not the blob region,
+        // and that is deliberate: the signing digest covers header + index-chain
+        // (SPEC section 8), so storing it here puts it inside the signature.
+        // Every entry decoding depends on it, so an unsigned dictionary would let
+        // a swap corrupt all content while the signature still verified.
+        if let Some(d) = self.dictionary.as_deref() {
+            self.index.write_dictionary(d)?;
+        }
+
         // Seal and stream the index database into the archive.
         let index_offset = self.cursor;
         let mut db = self.index.seal()?;
@@ -539,6 +634,21 @@ const SCHEMA: &str = "PRAGMA page_size=4096;
      );";
 
 impl IndexBuilder {
+    /// Store the pack shared dictionary (SPEC v0.10 section 3.1). One row, one
+    /// blob, segment 0 only -- the same placement rule as `manifest`.
+    fn write_dictionary(&self, bytes: &[u8]) -> Result<()> {
+        let conn = self.conn.as_ref().expect("connection open");
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dictionary (id INTEGER PRIMARY KEY, bytes BLOB NOT NULL)",
+            [],
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO dictionary (id, bytes) VALUES (0, ?1)",
+            rusqlite::params![bytes],
+        )?;
+        Ok(())
+    }
+
     fn open(manifest: Option<&BTreeMap<String, String>>) -> Result<Self> {
         let tmp = tempfile::Builder::new().suffix(".db").tempfile()?;
         let conn = Connection::open(tmp.path())?;

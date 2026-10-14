@@ -1,10 +1,17 @@
 # WAX Archive Format — Specification
 
-**Format version: 0.9** (`version_major = 0`, `version_minor = 9`)
-**Status: FROZEN for v0.9.** Byte layout and index schema below are settled
+**Format version: 0.10** (`version_major = 0`, `version_minor = 10`)
+**Status: FROZEN for v0.10.** Byte layout and index schema below are settled
 decisions from the DeltOS *Track A Refinement* document (v2, post-review).
 This file is the authoritative, byte-exact contract. Code implements this
 document; this document is not reverse-engineered from code.
+
+**v0.10 is additive over v0.9.** The header layout, the blob-region structure,
+the `entries` schema, the append-commit protocol, the segment chain and the
+signing model are all unchanged. v0.10 adds one `compression` value (§3) and
+one segment-0 table (§5.9). **Every v0.9 archive opens unmodified under a
+v0.10 reader** — proven against real pre-v0.10 artifacts in the conformance
+suite, not against fixtures written for the test.
 
 Document component: **A3**. Related components: A1 (`wax-core` reader/writer),
 A2 (`wax-builder` CLI), A4 (conformance suite & fuzzers), A7 (pack signing).
@@ -101,7 +108,7 @@ All offsets are from the start of the file. The header occupies bytes `[0, 128)`
 |-------:|------------------------|-----:|---------|-------|
 | 0      | `magic`                | 4    | bytes   | ASCII `"WAX1"` = `57 41 58 31`. Reader MUST reject any other value. |
 | 4      | `version_major`        | 1    | u8      | `0` for this spec. Reader MUST refuse to open an archive whose `version_major` it does not implement. |
-| 5      | `version_minor`        | 1    | u8      | `9` for this spec. Reader MUST NOT fail on an unknown (higher) minor; it ignores index columns it does not know (§5.4). |
+| 5      | `version_minor`        | 1    | u8      | `10` for this spec (`9` for v0.9). Reader MUST NOT fail on an unknown (higher) minor; it ignores index columns it does not know (§5.4). |
 | 6      | `flags`                | 2    | u16 LE  | Bit flags, §2.1. Reader MUST ignore bits it does not know. |
 | 8      | `archive_uuid`         | 16   | bytes   | Stable archive identity, preserved across every version/append of the same logical pack. A delta update (A6, later) matches against this. Format is an RFC 4122 UUID's 16 raw bytes; WAX does not require any particular version. All-zero is discouraged but not rejected. |
 | 24     | `created_at`           | 8    | u64 LE  | Unix epoch **seconds** at which this archive state was written. On append it is updated to the append time. |
@@ -162,9 +169,21 @@ Only after all of these does the reader open the SQLite segment.
   * `compression = "zstd"` → the span is a single complete Zstandard frame
     (RFC 8878) whose decoded output is the content; `uncompressed_length` is
     the decoded size and `length` is the frame size on disk.
-* v0.9 defines exactly these two `compression` values. A reader that encounters
-  any other value for an entry it is asked to read MUST return
-  `UnknownCompression { value }` rather than guessing.
+  * `compression = "zstd-dict"` *(new in v0.10)* → as `"zstd"`, except the
+    frame was produced against the archive's **shared dictionary** (§5.9) and
+    MUST be decoded with it. Still exactly one frame per entry, so per-entry
+    random access is unchanged.
+* v0.10 defines exactly these three `compression` values; v0.9 defined the
+  first two. A reader that encounters any other value for an entry it is asked
+  to read MUST return `UnknownCompression { value }` rather than guessing.
+* **The codec is per entry.** One archive MAY mix all three, and a writer is
+  expected to: a shared dictionary pays on many small similar documents and is
+  worth essentially nothing on already-compressed media. A reader MUST NOT
+  assume a single codec for the whole archive.
+* A reader asked to read a `"zstd-dict"` entry in an archive that carries no
+  dictionary MUST fail **that read** with a distinct error, and MUST NOT
+  attempt a plain decode — which would otherwise yield silent garbage. Opening
+  and listing such an archive still succeeds; only the affected reads fail.
 * Redirect entries (`redirect_to` non-NULL) own no blob bytes; their `offset`
   and `length` MUST be `0` and are ignored (§5.3).
 * Blob spans of non-redirect entries within a segment MUST lie inside that
@@ -438,6 +457,53 @@ CREATE TABLE signatures (
   with an external detached sidecar (§8). A reader MUST NOT require rows here and
   SHOULD ignore any it finds during v0.9/v1.x.
 * In-archive signature rows are reserved for the v2/TUF trust model.
+
+### 5.9 `dictionary` *(new in v0.10)*
+
+```sql
+CREATE TABLE dictionary (
+    id     INTEGER PRIMARY KEY,
+    bytes  BLOB NOT NULL
+);
+```
+
+* **Present only in `segment[0]`**, the same placement rule as `manifest`
+  (§5.6). A reader MUST ignore a `dictionary` table found in `segment[1…N]`.
+* Exactly one row, `id = 0`, holding the raw zstd dictionary. An archive with
+  no `"zstd-dict"` entries SHOULD omit the table entirely.
+* Absent on every v0.9 archive. A reader MUST treat a missing table as "no
+  dictionary", not as an error — that is what makes the codec additive, and
+  §5.4's "extra tables are ignored" is the matching rule in the other
+  direction.
+
+#### Why the index segment and not the blob region
+
+The signing digest is `SHA-256(header ‖ index-chain)` (§8.1). A dictionary
+stored here is therefore **inside the signature**; one stored in the blob
+region would not be. Since decoding every `"zstd-dict"` entry depends on it,
+an unsigned dictionary would let an attacker alter the decoded content of the
+entire archive while the signature still verified. The placement is a security
+property, not a convenience.
+
+#### Carrying the dictionary forward — normative
+
+* A writer producing a **new edition or an append** of an existing archive
+  MUST reuse that archive's existing dictionary verbatim, and MUST NOT retrain
+  by default.
+* Retraining changes the frame of **every** entry, including entries whose
+  content did not change. An update would then have to ship the whole archive
+  rather than the changed entries, which defeats the delta model (§7) outright.
+  Measured: at realistic churn, carrying forward keeps an update proportional
+  to what actually changed, while reframing does not.
+* A writer MAY retrain, but only as an explicit, flagged act — never a silent
+  default of a routine build.
+* **Training MUST be deterministic.** zstd's trainer is deterministic for a
+  given sample *sequence* but is **not order-independent**: the same samples in
+  a different order yield a different dictionary. A conforming writer therefore
+  selects and orders its training samples by a rule derived from content —
+  entry path order is the obvious one — and never from filesystem or insertion
+  order. Without this, two builds of one source produce different archives and
+  the reproducibility guarantee (§12) fails.
 
 ---
 
@@ -868,6 +934,7 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
 
 | Format version | Date | Change |
 |----------------|------|--------|
+| 0.10 | 2026-10-14 | **Additive minor.** New `compression` value `zstd-dict` (§3) and a new segment-0 `dictionary` table (§5.9) holding one shared zstd dictionary. Per-entry framing is unchanged — still one frame per entry, so random access and the lookup path are untouched. Every v0.9 archive opens unmodified; the dictionary table and the new codec value are both additive under §5.4. Codec chosen from measurement, not argument — see `docs/adr/ADR-0001`. Carrying the dictionary forward across editions is normative (§5.9), because retraining reframes every entry and destroys the delta model. |
 | 0.9 | 2026-09-13 | A1b — no byte-layout change. §5.2: `entries` is declared `WITHOUT ROWID` by writers; readers MUST accept either layout. §4.1/§5.5 clarify that segments may be opened in place and that the merge is a definition, not a materialization. §11.3 fuzz target 2 walks the segment through the same path the reader uses. §12.23 records the measurements. |
 | 0.9 | 2026-09-12 | §8.2: sidecar trusted-comment `archive_uuid` is canonical lowercase-hyphenated per Contract §11 (was bare hex); verifiers compare parsed values. No byte-layout change. |
 | 0.9 | 2026-09-09 | Initial frozen specification (A3). Header 128 B; SQLite segment chain; `entries` / `manifest` / `segment_meta` / `signatures` / optional `search_index`; append-commit protocol; detached minisign sidecar signing model. |

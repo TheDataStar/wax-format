@@ -42,7 +42,7 @@ pub const HEADER_LEN: usize = 128;
 /// Format version implemented by this crate (SPEC §10).
 pub const FORMAT_VERSION_MAJOR: u8 = 0;
 /// Format minor version implemented by this crate.
-pub const FORMAT_VERSION_MINOR: u8 = 9;
+pub const FORMAT_VERSION_MINOR: u8 = 10;
 
 /// Smallest possible SQLite database (one 512-byte page). Used as the lower
 /// bound for `index_length` and `prev_segment_length` (SPEC §2.2, §5.1).
@@ -110,6 +110,12 @@ pub enum WaxError {
     Decompress { path: String, detail: String },
     #[error("entry {path:?} content does not match its recorded sha256")]
     ChecksumMismatch { path: String },
+    #[error("entry {path:?} uses the zstd-dict codec but this pack carries no dictionary")]
+    DictionaryMissing { path: String },
+
+    // --- Shared dictionary (v0.10) -------------------------------------
+    #[error("shared dictionary: {detail}")]
+    Dictionary { detail: String },
 
     // --- Signature (returned by verify path) --------------------------
     #[error("signature sidecar is missing")]

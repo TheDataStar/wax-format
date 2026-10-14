@@ -705,10 +705,11 @@ impl PackConfig {
 
     fn validate_build(&self) -> Result<()> {
         match self.build.compression.as_str() {
-            "zstd" | "none" => {}
+            "zstd" | "none" | "zstd-dict" => {}
             other => bail!(
-                "build.compression = {other:?} is not a v0.9 codec; SPEC §3 defines \
-                 exactly \"none\" and \"zstd\""
+                "build.compression = {other:?} is not a WAX codec; SPEC §3 defines \
+                 \"none\", \"zstd\", and \"zstd-dict\" — the v0.10 shared-dictionary \
+                 codec (docs/adr/ADR-0001)"
             ),
         }
         Ok(())
