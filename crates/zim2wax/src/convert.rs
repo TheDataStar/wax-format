@@ -204,6 +204,10 @@ pub struct ConvertOptions {
     pub created_at: Option<u64>,
     pub archive_uuid: Option<[u8; 16]>,
     pub sign_key: Option<PathBuf>,
+    /// Previous edition whose shared dictionary this conversion carries forward
+    /// (SPEC v0.10 §5.9). `None` trains a fresh one, which is correct only for
+    /// a first edition — retraining on a later one reframes every entry.
+    pub carry_dictionary_from: Option<PathBuf>,
 }
 
 impl ConvertOptions {
@@ -787,24 +791,52 @@ fn convert_inner(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Resul
     // 2.35x on small text and essentially nothing on already-compressed media,
     // so an archive with too little text does not get one and its entries stay
     // plain-framed. The writer decides per content; nothing is forced.
-    let use_dict = dict_samples.len() >= DICT_MIN_SAMPLES;
-    if use_dict {
-        eprintln!(
-            "  dictionary   : trained from {} samples ({} KiB, capped at {} KiB each)",
-            dict_samples.len(),
-            dict_sample_bytes / 1024,
-            DICT_SAMPLE_EACH / 1024
-        );
-    } else {
-        eprintln!(
-            "  dictionary   : none -- only {} text samples, below the {} needed for one to pay",
-            dict_samples.len(),
-            DICT_MIN_SAMPLES
-        );
-    }
-    if use_dict {
-        pack.train_dictionary(dict_samples.iter().map(|s| s.as_slice()))?;
-    }
+    // A later edition carries the previous one's dictionary forward rather than
+    // retraining. Retraining reframes every entry, so the update would ship the
+    // whole archive instead of only what changed — the property that made this
+    // codec win (SPEC v0.10 §5.9).
+    let use_dict = match opts.carry_dictionary_from.as_deref() {
+        Some(prior) => {
+            let prev = wax_core::WaxReader::open(prior)
+                .with_context(|| format!("opening previous edition {}", prior.display()))?;
+            match prev.dictionary() {
+                Some(d) => {
+                    pack.carry_dictionary(d)?;
+                    eprintln!(
+                        "  dictionary   : carried forward from {} ({} KiB)",
+                        prior.display(),
+                        d.len() / 1024
+                    );
+                    true
+                }
+                None => {
+                    eprintln!(
+                        "  dictionary   : none — {} carries none to carry forward",
+                        prior.display()
+                    );
+                    false
+                }
+            }
+        }
+        None if dict_samples.len() >= DICT_MIN_SAMPLES => {
+            pack.train_dictionary(dict_samples.iter().map(|s| s.as_slice()))?;
+            eprintln!(
+                "  dictionary   : trained from {} samples ({} KiB, capped at {} KiB each)",
+                dict_samples.len(),
+                dict_sample_bytes / 1024,
+                DICT_SAMPLE_EACH / 1024
+            );
+            true
+        }
+        None => {
+            eprintln!(
+                "  dictionary   : none — only {} text samples, below the {} needed to pay",
+                dict_samples.len(),
+                DICT_MIN_SAMPLES
+            );
+            false
+        }
+    };
     drop(dict_samples);
 
     let mut current: Option<(u32, zim::Cluster<'_>)> = None;
@@ -1024,6 +1056,7 @@ mod tests {
             created_at: None,
             archive_uuid: None,
             sign_key: None,
+            carry_dictionary_from: None,
         };
         assert!(o.validate().is_ok());
 

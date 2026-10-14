@@ -60,6 +60,13 @@ enum Commands {
         /// must reuse the archive_uuid so A6 sees an update, not a new pack).
         #[arg(long)]
         archive_uuid: Option<String>,
+        /// Path to the PREVIOUS edition of this pack. Its shared dictionary is
+        /// carried forward verbatim instead of training a new one (SPEC v0.10
+        /// section 5.9). Use this for every edition after the first: retraining
+        /// reframes every entry, so an update would ship the whole archive
+        /// rather than the entries that actually changed.
+        #[arg(long)]
+        carry_dictionary_from: Option<PathBuf>,
     },
     /// Read-only: show a ZIM's metadata and what the manifest would derive.
     Probe {
@@ -83,9 +90,10 @@ fn main() -> Result<()> {
             sign_key,
             created_at,
             archive_uuid,
+            carry_dictionary_from,
         } => cmd_convert(
             input, output, category, min_ram_bytes, min_storage_bytes, arch, gpu, license,
-            attribution, sign_key, created_at, archive_uuid,
+            attribution, sign_key, created_at, archive_uuid, carry_dictionary_from,
         ),
         Commands::Probe { input } => cmd_probe(input),
     }
@@ -105,6 +113,7 @@ fn cmd_convert(
     sign_key: Option<PathBuf>,
     created_at: Option<u64>,
     archive_uuid: Option<String>,
+    carry_dictionary_from: Option<PathBuf>,
 ) -> Result<()> {
     let opts = ConvertOptions {
         category,
@@ -119,6 +128,7 @@ fn cmd_convert(
         }),
         archive_uuid: archive_uuid.as_deref().map(wax_builder::parse_uuid).transpose()?,
         sign_key: wax_builder::sign::resolve_seckey(sign_key),
+        carry_dictionary_from,
     };
     opts.validate()?;
 
