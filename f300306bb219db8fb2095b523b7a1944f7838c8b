@@ -1,0 +1,33 @@
+Directive 04 (2026-10-13) - codec measured. Arm 3 (per-entry + shared
+dictionary) wins on all three criteria. No format change made; the codec is
+decided, not yet implemented.
+
+The decision under the section 5 rule is not close:
+  size      arm 3 beats ZIM on all three archives (0.530x / 0.157x / 0.971x)
+            where arm 1 loses on two of them (1.246x / 1.099x)
+  delta     arm 3 is the smallest delta at EVERY churn level measured
+  read path arm 3 decodes a single article FASTER than today (2.2us vs 3.1us)
+
+So no trade-off needed surfacing. Arm 3 keeps everything Directive 01 proved
+and fixes the one thing that was broken.
+
+Two things worth carrying forward, because both contradicted an expectation:
+
+1. The directive predicted grouping would bloat deltas. Measured against two
+   real editions it did the OPPOSITE (0.40x) -- because churn was 37.6%, which
+   dirties 98.9% of blocks, and a rebuilt block beats its entries framed
+   singly. The hypothesis is right, but only below ~40% churn. The churn sweep
+   is what separated the mechanism from the artifact; the real-edition pair
+   alone would have pointed the wrong way.
+
+2. en_100 is not a usable delta subject at all. Its article selection changes
+   monthly, so 4,073 of 5,542 entries are ADDED rather than edited. Use
+   chemistry_mini or history_maxi for delta work.
+
+The dictionary must be trained once and reused across editions. deltabench
+trains on the OLD edition deliberately -- retraining per edition would change
+every frame and destroy the delta property that makes arm 3 win.
+
+Still outstanding: ADR-0001 was never received, so docs/adr/ does not exist
+and the Status could not be set to Accepted. The decision and its numbers are
+in this commit and its message.
