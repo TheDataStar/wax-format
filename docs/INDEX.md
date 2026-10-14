@@ -36,6 +36,7 @@ Read `cross-track-contract.md` before any other document.
 | `design-language.md` | Visual and interaction system for the shell. |
 | `implementability-sweep.md` | The known-defect register from the audit — a record of what was found, **not a to-do list**. Several of its Critical findings are already fixed in the Contract; check there before citing one as open. |
 | `baseline.md` | Measured figures every later session compares against, and the prerequisites. Transcribed into the repo so nothing depends on a document outside it. |
+| `adr/` | Architecture decision records. One file per decision, with the options, the measured trade-offs and why. **ADR-0001** settles the text-compression codec. |
 | *a handoff PDF, if filed here* | **Reference only. Below every document above in precedence**, including this index. It records history; it decides nothing. |
 
 ## Ground rules for implementing from these
