@@ -141,6 +141,15 @@ pub fn is_supported_mime(bare: &str) -> bool {
 /// needs, not the corpus, which is how A2e stays memory-bounded.
 const DICT_SAMPLE_MAX: usize = 2048;
 const DICT_SAMPLE_BYTES: usize = 16 * 1024 * 1024;
+/// Each sample is truncated to this before training. zstd learns from the
+/// *variety* of samples, not their length, so an uncapped budget spent on a few
+/// huge documents buys a worse dictionary than the same bytes spent on many
+/// small ones -- and on an archive of very large articles it can exhaust the
+/// budget before the minimum-sample floor is even met, silently skipping the
+/// dictionary. Measured: en_100 averages 549 KB per article and collected just
+/// 31 samples before this cap existed.
+const DICT_SAMPLE_EACH: usize = 64 * 1024;
+
 /// Below this there is not enough text for a dictionary to pay for itself.
 const DICT_MIN_SAMPLES: usize = 32;
 
@@ -713,10 +722,11 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
                 } else {
                     rewrite_html(&text, e.namespace, &e.url, &resolver)
                 };
-                let body = out.into_bytes();
+                let mut body = out.into_bytes();
                 if body.is_empty() {
                     continue;
                 }
+                body.truncate(DICT_SAMPLE_EACH);
                 dict_sample_bytes += body.len();
                 dict_samples.push(body);
             }
@@ -728,6 +738,20 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
     // so an archive with too little text does not get one and its entries stay
     // plain-framed. The writer decides per content; nothing is forced.
     let use_dict = dict_samples.len() >= DICT_MIN_SAMPLES;
+    if use_dict {
+        eprintln!(
+            "  dictionary   : trained from {} samples ({} KiB, capped at {} KiB each)",
+            dict_samples.len(),
+            dict_sample_bytes / 1024,
+            DICT_SAMPLE_EACH / 1024
+        );
+    } else {
+        eprintln!(
+            "  dictionary   : none -- only {} text samples, below the {} needed for one to pay",
+            dict_samples.len(),
+            DICT_MIN_SAMPLES
+        );
+    }
     if use_dict {
         pack.train_dictionary(dict_samples.iter().map(|s| s.as_slice()))?;
     }
