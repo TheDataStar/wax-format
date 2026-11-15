@@ -18,9 +18,11 @@ marker (§5.5.1), lets every appended segment carry search rows for its own
 entries (§5.7), declares how titles are folded for completion (§5.7.1), links
 each appended segment to the exact state it was appended to (§7.4), and moves
 the `volume_id` check from open to lookup (§5.2). Every v0.11 archive opens
-unmodified under a v0.12 reader, and a v0.11 reader opening a v0.12 archive
-refuses only what it genuinely cannot interpret (a deleted path's read), never
-the whole archive.
+unmodified under a v0.12 reader. A v0.11 reader still opens a v0.12 archive and
+refuses a deleted path's read, but **its search on an updated archive is
+stale**: it consults only `segment[0]`'s index, so it misses new articles and
+may return replaced or deleted ones. A box MUST therefore run a v0.12 reader
+before it installs any v0.12 update (§12.27).
 
 Document component: **A3**. Related components: A1 (`wax-core` reader/writer),
 A2 (`wax-builder` CLI), A4 (conformance suite & fuzzers), A7 (pack signing).
@@ -449,7 +451,7 @@ A **tombstone** is an `entries` row with `compression = "tombstone"` and
   new column, so that a reader predating v0.12 sees an unknown codec and refuses
   the read with `UnknownCompression`. That is the safe failure: it never serves
   bytes for a deleted path. Such a reader does still list the path; that is the
-  cost of staying additive, and the reason a box SHOULD run a v0.12 reader
+  cost of staying additive, and the reason a box MUST run a v0.12 reader
   before it installs a v0.12 update.
 
 ### 5.6 `manifest`
@@ -502,10 +504,16 @@ CREATE INDEX search_docs_fold ON search_docs(title_fold);
   or tombstone), and segment `i`'s own row is live. A reader MUST drop hits that
   fail this, so a superseded or deleted article never appears in results. The
   check is a point lookup per hit and MUST NOT disturb the entry cache.
-* **Merging across segments.** A reader queries every indexed segment, newest
-  first, and orders the surviving hits by FTS5 `rank`, breaking ties in favour
-  of the newer segment. Because ownership makes the per-segment lists disjoint,
-  this is the same order Reciprocal Rank Fusion (contract §13) would produce.
+* **Merging across segments.** Raw FTS5 `rank` values from two segments are
+  **not comparable**: bm25 weighs a term by how rare it is *within that
+  segment*, so a term common in the base is rare in a small update, and the
+  update's scores come out systematically better. A reader therefore merges by
+  **position**: each segment's surviving hits are numbered 0, 1, 2… in that
+  segment's own rank order, and the merged list is ordered by that number,
+  newer segment first on a tie. Because ownership makes the lists disjoint,
+  this is exactly Reciprocal Rank Fusion (contract §13) for any constant. The
+  consequence is deliberate and should be understood: an update's best hit
+  sits beside the base's best hit, however small the update.
 * **One tokenizer per archive.** Every segment that carries an index MUST
   declare the same `search_tokenizer`. A writer appending to an indexed archive
   inherits its tokenizer and refuses a different one (`TokenizerMismatch`). A
@@ -578,6 +586,12 @@ still disagree. v0.12 names the fold in `segment_meta.title_fold`.
 * If indexed segments declare different folds, a reader MAY fold the prefix
   once per segment; `wax-core` does exactly that, so a v0.11 base with a v0.12
   update still completes correctly.
+* **Unicode version.** Case folding is pinned to 16.0. NFKC is stable for every
+  character assigned in 16.0 under Unicode's normalization stability policy,
+  so any NFKC implementation of 16.0 or later gives the same result for those
+  characters. Characters first assigned after 16.0 may fold differently
+  between implementations; titles that depend on them are outside this fold's
+  guarantee, and a fold pinned to a later version gets a new name.
 * No Turkish dotted/dotless-i tailoring is applied; `İstanbul` folds to
   `i̇stanbul`. A locale-aware fold would be a new declared value, not a change
   to this one.
@@ -737,7 +751,14 @@ modified. The **only** bytes an append overwrites are the fixed 128-byte header.
 
 Starting from a valid archive with `N+1` segments (`segment[0…N]`), header `H`:
 
-1. **Append blob region `N+1`** at end of file (current EOF).
+1. **Append blob region `N+1`** at the archive's **logical end**,
+   `index_offset + index_length` of `H`. *(v0.12)* Bytes past that point are
+   the orphaned tail of a crashed append (§7.2); the writer MUST truncate them
+   first rather than append after them, so that every copy of an edition
+   places the new region at the same offset (§7.4).
+   A writer MUST refuse an append that would make the chain longer than the
+   64-segment reader limit (§5.1) with `TooManySegments`, leaving the file
+   untouched: writing it would produce an archive no reader opens.
 2. **Append index segment `N+1`** immediately after it. This SQLite database
    contains: the new/overriding `entries` rows, a full `segment_meta`
    (including `prev_segment_offset/length` pointing at `segment[N]`'s database,
@@ -796,10 +817,19 @@ v0.12 makes that delta checkable before it is applied.
   it stood before the append.
 * **Applying a delta (informative procedure).** The receiver (a box) computes
   the §8.1 digest of its own copy; opens the delta's new segment(s) and
-  compares the first new segment's `prev_state_digest` with that value; on a
-  match writes the tail at its old EOF, then the new header, then verifies the
-  sidecar signature of the result (§8.3). A mismatch means the delta was made
-  against a different edition and MUST NOT be applied.
+  compares the first new segment's `prev_state_digest` with that value, and
+  checks that the first new segment's `blob_region_offset` equals its own
+  logical end (`index_offset + index_length`). On both matching it truncates
+  any orphaned tail, writes the delta's bytes at that offset, then the new
+  header, then verifies the sidecar signature of the result (§8.3). A digest
+  mismatch means the delta was made against a different edition; an offset
+  mismatch means it was cut from a copy carrying an orphaned tail. Either
+  MUST NOT be applied.
+* **The 64-segment budget.** A pack holds at most 63 appended updates. Before
+  that, the publisher issues a full rebuild as a new edition, which also
+  reclaims the space of replaced and deleted entries (append never does).
+  Deltas then continue from the rebuild. At one update a month that is a
+  rebuild at least every five years; weekly, every year.
 * The digest is inside the signed index chain, so a signed *B* also signs the
   claim "*B* extends exactly this *A*".
 * Segments written before v0.12 have no `prev_state_digest`; a delta whose base
@@ -1143,6 +1173,17 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
     v0.11 reader lists a deleted path but cannot read it (§5.5.1). A new column
     would have hidden the deletion from old readers entirely and let them serve
     stale bytes; an unknown codec makes them refuse.
+27. **A v0.11 reader gives stale search on an updated v0.12 pack.** It reads
+    only `segment[0]`'s index and checks no ownership. Nothing can fix that from
+    the v0.12 side short of omitting the index from appended segments, which
+    is the defect v0.12 exists to remove. In practice no v0.11 reader is
+    deployed (as of 2026-11-15 `zim2wax` does not build an index), so the
+    rule is simply: boxes update their reader before their content.
+28. **Two writer defects found in review and fixed in v0.12** (2026-11-15):
+    appending after an orphaned tail instead of reclaiming it, which made a
+    box-side delta land at the wrong offset while its digest still matched;
+    and writing a 65th segment, which made the pack unopenable. Both have
+    regression tests in `crates/wax-core/tests/v0_12.rs`.
 
 ---
 
@@ -1150,7 +1191,7 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
 
 | Format version | Date | Change |
 |----------------|------|--------|
-| 0.12 | 2026-11-15 | **Additive minor.** Tombstones as `compression = "tombstone"`, with aliases deleted alongside their target (§5.5.1). The search segment may appear in any segment, covering its own entries, with hits checked for ownership and merged by rank; one tokenizer per archive (§5.7); this also fixes §4.1, which already said "any segment". Declared title fold `nfkc-cf-16` (§5.7.1). `prev_state_digest` links each appended segment to the state it extends, so an update is the byte tail plus a header and can be checked before it is applied; header minor on append is `max(old, 12)` (§7.4). `volume_id` checked per entry at lookup rather than by a scan at open (§5.2). No byte-layout change. |
+| 0.12 | 2026-11-15 | **Additive minor.** Tombstones as `compression = "tombstone"`, with aliases deleted alongside their target (§5.5.1). The search segment may appear in any segment, covering its own entries, with hits checked for ownership and merged by per-segment position (RRF), since bm25 scores from different segments are not comparable; one tokenizer per archive (§5.7); this also fixes §4.1, which already said "any segment". Declared title fold `nfkc-cf-16` (§5.7.1). `prev_state_digest` links each appended segment to the state it extends, so an update is the byte tail plus a header and can be checked before it is applied; header minor on append is `max(old, 12)`; an appending writer reclaims an orphaned tail and refuses to exceed the 64-segment limit (§7.1, §7.4). `volume_id` checked per entry at lookup rather than by a scan at open (§5.2). No byte-layout change. |
 | 0.11 | 2026-10-14 | **Additive minor.** The embedded search segment (§5.7): a contentless FTS5 index plus a `search_docs` title map, present only in segment 0, with the tokenizer declared in `segment_meta` and a reader obliged to refuse one it cannot reproduce rather than answer wrongly. Fills the table name v0.9 reserved. No byte-layout change; an archive without the segment opens exactly as before and reports search absent, not failed. The stand-off segment behind `search_index_offset` is still v2 and still unused. Decision recorded in `docs/adr/ADR-0002`. |
 | 0.10 | 2026-10-14 | **Additive minor.** New `compression` value `zstd-dict` (§3) and a new segment-0 `dictionary` table (§5.9) holding one shared zstd dictionary. Per-entry framing is unchanged — still one frame per entry, so random access and the lookup path are untouched. Every v0.9 archive opens unmodified; the dictionary table and the new codec value are both additive under §5.4. Codec chosen from measurement, not argument — see [`docs/adr/ADR-0001`](docs/adr/ADR-0001-text-compression-codec.md). Carrying the dictionary forward across editions is normative (§5.9), because retraining reframes every entry and destroys the delta model. |
 | 0.9 | 2026-09-13 | A1b — no byte-layout change. §5.2: `entries` is declared `WITHOUT ROWID` by writers; readers MUST accept either layout. §4.1/§5.5 clarify that segments may be opened in place and that the merge is a definition, not a materialization. §11.3 fuzz target 2 walks the segment through the same path the reader uses. §12.23 records the measurements. |

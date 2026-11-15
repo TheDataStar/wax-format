@@ -393,7 +393,8 @@ impl WaxReader {
     /// last-segment-wins merge, to *s* itself: a newer segment that replaced
     /// the entry carries its own row for the new text, and a tombstone
     /// removes it. The surviving lists are therefore disjoint, and they are
-    /// merged by rank, newer segment first on a tie — the order Reciprocal
+    /// merged by per-segment position (raw bm25 scores from two segments are
+    /// not comparable), newer segment first on a tie — the order Reciprocal
     /// Rank Fusion gives for disjoint lists whatever its constant.
     ///
     /// Errors when the pack has no index, or when it declares a tokenizer this

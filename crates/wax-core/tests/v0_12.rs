@@ -209,6 +209,59 @@ fn the_update_is_the_byte_tail_plus_a_header() {
     WaxReader::open(&copy).unwrap();
 }
 
+#[test]
+fn an_orphaned_tail_is_reclaimed_so_the_update_still_travels_as_a_byte_tail() {
+    // Review finding (2026-11-15): after a crashed append (SPEC §7.2) the
+    // writer used to append *after* the orphaned bytes. The §8.1 digest does
+    // not cover them, so a box holding a clean copy accepted the update and
+    // placed every new blob at the wrong offset. The writer now reclaims the
+    // orphan first, so both copies produce the same tail.
+    let dir = tempfile::tempdir().unwrap();
+    let pack = edition_one(dir.path());
+    let clean = std::fs::read(&pack).unwrap();
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&pack).unwrap();
+        f.write_all(&[0xAB; 4096]).unwrap(); // the crashed append's leftovers
+    }
+    edition_two(&pack);
+    let new = std::fs::read(&pack).unwrap();
+    assert_eq!(&new[128..clean.len()], &clean[128..], "nothing before the logical end moved");
+    assert_ne!(
+        &new[clean.len()..clean.len() + 4096],
+        &[0xAB; 4096][..],
+        "the orphan must be reclaimed, not shipped inside the update"
+    );
+
+    let copy = dir.path().join("box-copy.wax");
+    let mut applied = new[..128].to_vec();
+    applied.extend_from_slice(&clean[128..]);
+    applied.extend_from_slice(&new[clean.len()..]);
+    std::fs::write(&copy, &applied).unwrap();
+    assert_eq!(std::fs::read(&copy).unwrap(), new);
+    let r = WaxReader::open(&copy).unwrap();
+    assert_eq!(r.read("Boron.html").unwrap(), b"Boron is a metalloid.");
+}
+
+#[test]
+fn an_append_past_the_segment_limit_is_refused_and_the_pack_stays_readable() {
+    // Review finding (2026-11-15): the writer used to write segment 64, which
+    // every reader then refuses to open (SPEC §5.1), turning a working pack
+    // into an unreadable one.
+    let dir = tempfile::tempdir().unwrap();
+    let pack = edition_one(dir.path());
+    for i in 1..wax_core::MAX_SEGMENTS as u64 {
+        let mut sw = WaxWriter::new(UUID).created_at(1_700_000_000 + i).open_append(&pack).unwrap();
+        add(&mut sw, &format!("p{i}.html"), "P", "x", false);
+        sw.finish().unwrap();
+    }
+    let before = std::fs::read(&pack).unwrap();
+    let err = WaxWriter::new(UUID).created_at(1).open_append(&pack).err().expect("must refuse");
+    assert!(matches!(err, WaxError::TooManySegments), "got {err}");
+    assert_eq!(std::fs::read(&pack).unwrap(), before, "a refused append changes nothing");
+    WaxReader::open(&pack).unwrap();
+}
+
 // --- §10 header minor on append ---------------------------------------------
 
 #[test]

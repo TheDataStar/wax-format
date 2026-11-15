@@ -170,6 +170,25 @@ impl WaxWriter {
         let old = WaxHeader::parse(&hbuf)?;
         old.validate(file_size)?;
         let next_index = read_segment_index(&mut file, old.index_offset, old.index_length)? + 1;
+        // A reader refuses a chain longer than MAX_SEGMENTS (SPEC §5.1), so a
+        // writer that appended past it would turn a readable pack into one
+        // nobody can open. Refuse before touching the file.
+        if next_index >= crate::MAX_SEGMENTS as u64 {
+            return Err(WaxError::TooManySegments);
+        }
+        // The archive's logical end is the end of its newest index segment
+        // (SPEC §7.1). Anything past it is the orphaned tail of an append that
+        // crashed before its header write (§7.2). It is reclaimed here rather
+        // than appended after, so the new segment's `blob_region_offset` is
+        // the same on every copy of this edition, with or without that
+        // garbage — which is what lets the update travel as a byte tail
+        // (§7.4).
+        let logical_end = old.index_offset + old.index_length;
+        if file_size > logical_end {
+            file.set_len(logical_end)?;
+            file.sync_all()?;
+        }
+        let file_size = logical_end;
 
         // Carry the pack's dictionary forward (SPEC §5.9). This happens here,
         // not at the call site, on purpose: carry-forward is the invariant the
