@@ -135,7 +135,11 @@ impl WaxWriter {
             redirects: 0,
             dictionary: None,
             search_tokenizer: None,
+            pack_tokenizer: None,
             search_rows: 0,
+            prev_state_digest: None,
+            prev_header: None,
+            tombstones: 0,
         })
     }
 
@@ -167,6 +171,25 @@ impl WaxWriter {
         let old = WaxHeader::parse(&hbuf)?;
         old.validate(file_size)?;
         let next_index = read_segment_index(&mut file, old.index_offset, old.index_length)? + 1;
+        // A reader refuses a chain longer than MAX_SEGMENTS (SPEC §5.1), so a
+        // writer that appended past it would turn a readable pack into one
+        // nobody can open. Refuse before touching the file.
+        if next_index >= crate::MAX_SEGMENTS as u64 {
+            return Err(WaxError::TooManySegments);
+        }
+        // The archive's logical end is the end of its newest index segment
+        // (SPEC §7.1). Anything past it is the orphaned tail of an append that
+        // crashed before its header write (§7.2). It is reclaimed here rather
+        // than appended after, so the new segment's `blob_region_offset` is
+        // the same on every copy of this edition, with or without that
+        // garbage — which is what lets the update travel as a byte tail
+        // (§7.4).
+        let logical_end = old.index_offset + old.index_length;
+        if file_size > logical_end {
+            file.set_len(logical_end)?;
+            file.sync_all()?;
+        }
+        let file_size = logical_end;
 
         // Carry the pack's dictionary forward (SPEC §5.9). This happens here,
         // not at the call site, on purpose: carry-forward is the invariant the
@@ -179,6 +202,15 @@ impl WaxWriter {
         // entries. The table itself stays in segment 0 and is not rewritten
         // into the appended segment — see `finish`.
         let carried = existing.dictionary().map(|d| d.to_vec());
+
+        // The state this segment extends (SPEC v0.12 §7.4): the §8.1 digest
+        // of the archive exactly as it stands, recorded in the new segment so
+        // a box receiving this update as a byte tail can check, before it
+        // appends anything, that the tail was built against its own copy.
+        let prev_state_digest = existing.signable_digest()?;
+        // Search rows appended here must be built with the pack's tokenizer
+        // (SPEC v0.12 §5.7): results from two tokenizers cannot be merged.
+        let pack_tokenizer = existing.search_tokenizer().map(str::to_string);
 
         file.seek(SeekFrom::Start(file_size))?;
         let index = IndexBuilder::open(None)?;
@@ -198,8 +230,12 @@ impl WaxWriter {
             entries: 0,
             redirects: 0,
             dictionary: carried,
-            search_tokenizer: None,
+            search_tokenizer: pack_tokenizer.clone(),
+            pack_tokenizer,
             search_rows: 0,
+            prev_state_digest: Some(prev_state_digest),
+            prev_header: Some(hbuf),
+            tombstones: 0,
         })
     }
 
@@ -311,8 +347,18 @@ pub struct StreamingWriter {
     /// Declared search tokenizer (SPEC §5.7). `None` until the first indexed
     /// entry, at which point the default is recorded.
     search_tokenizer: Option<String>,
+    /// The tokenizer an earlier segment of this pack already declares (append
+    /// only). An appended index must use the same one (SPEC v0.12 §5.7).
+    pack_tokenizer: Option<String>,
     /// Documents indexed so far; doubles as the next FTS rowid.
     search_rows: u64,
+    /// The §8.1 digest of the archive this segment is appended to (SPEC
+    /// v0.12 §7.4). `None` for a fresh build.
+    prev_state_digest: Option<[u8; 32]>,
+    /// The raw header this append will overwrite (SPEC v0.12 §7.5).
+    prev_header: Option<[u8; HEADER_LEN]>,
+    /// Tombstones added to this segment (SPEC v0.12 §5.5.1).
+    tombstones: u64,
 }
 
 impl StreamingWriter {
@@ -386,6 +432,14 @@ impl StreamingWriter {
                     .into(),
             });
         }
+        if let Some(pack) = &self.pack_tokenizer {
+            if pack != name {
+                return Err(WaxError::TokenizerMismatch {
+                    first: pack.clone(),
+                    other: name.to_string(),
+                });
+            }
+        }
         self.search_tokenizer = Some(name.to_string());
         Ok(())
     }
@@ -397,17 +451,13 @@ impl StreamingWriter {
     /// contentless: it holds no copy of the text, only the terms, so indexing
     /// does not double the pack.
     ///
-    /// Segment 0 only, the same placement rule as the manifest and dictionary.
+    /// Any segment may carry an index (SPEC v0.12 §5.7), but only for the
+    /// entries **that segment itself** adds or replaces: `path` must be added
+    /// to this writer as content or a redirect, which `finish` checks. On an
+    /// append, index every new or changed document again; a reader drops
+    /// older segments' rows for paths a newer segment owns.
     pub fn index_text(&mut self, path: &str, title: Option<&str>, body: &str) -> Result<()> {
-        if self.segment_index != 0 {
-            return Err(WaxError::Schema {
-                detail: format!(
-                    "the search index lives in segment 0 (SPEC §5.7); this writer is appending \
-                     segment {}",
-                    self.segment_index
-                ),
-            });
-        }
+        let path = &normalize_path(path)?;
         let tok = self
             .search_tokenizer
             .clone()
@@ -422,6 +472,50 @@ impl StreamingWriter {
     /// How many documents have been indexed.
     pub fn indexed_count(&self) -> u64 {
         self.search_rows
+    }
+
+    /// Delete `path` from the pack (SPEC v0.12 §5.5.1): a zero-length row
+    /// whose `compression` is `tombstone`. Last-segment-wins does the rest —
+    /// a reader treats the path as gone, drops it from listings and from
+    /// search, and refuses reads of it with `EntryDeleted`. A reader that
+    /// predates v0.12 refuses the read with `UnknownCompression`, so no
+    /// reader ever serves the deleted content.
+    ///
+    /// Append only: a fresh build has nothing to delete. The path must exist
+    /// in the archive being appended to, and must not also be added to this
+    /// segment.
+    pub fn add_tombstone(&mut self, path: &str) -> Result<()> {
+        let path = normalize_path(path)?;
+        let Some(existing) = &self.external_paths else {
+            return Err(WaxError::Schema {
+                detail: format!(
+                    "cannot delete {path:?}: tombstones only exist in appended segments \
+                     (SPEC v0.12 §5.5.1); a fresh build simply omits the path"
+                ),
+            });
+        };
+        if !existing.contains(&path)? {
+            return Err(WaxError::EntryNotFound(path));
+        }
+        self.index.insert(&SegRow {
+            path,
+            title: None,
+            offset: 0,
+            length: 0,
+            uncompressed_length: 0,
+            mime: None,
+            compression: crate::model::TOMBSTONE.to_string(),
+            sha256: None,
+            volume_id: 0,
+            redirect_to: None,
+        })?;
+        self.tombstones += 1;
+        Ok(())
+    }
+
+    /// Tombstones added to this segment so far.
+    pub fn tombstones_added(&self) -> u64 {
+        self.tombstones
     }
     /// Stream one content entry. Bytes are read from `src` in
     /// [`STREAM_BUF`]-sized chunks, hashed (SHA-256 over the uncompressed
@@ -553,11 +647,12 @@ impl StreamingWriter {
         Ok(())
     }
 
-    /// True if `path` (normalized) has been added to this segment. A point
-    /// lookup in the index database; no path set is held in memory.
+    /// True if `path` (normalized) has been added to this segment as content
+    /// or a redirect. A point lookup in the index database; no path set is
+    /// held in memory. A tombstone added here does not count.
     pub fn has_path(&self, path: &str) -> Result<bool> {
         let p = normalize_path(path)?;
-        self.index.has_path(&p)
+        self.index.has_live_path(&p)
     }
 
     /// True if `path` names a content entry, a redirect resolving to one, or
@@ -565,6 +660,9 @@ impl StreamingWriter {
     pub fn resolves(&self, path: &str) -> Result<bool> {
         if self.has_path(path)? {
             return Ok(true);
+        }
+        if self.index.is_tombstoned(&normalize_path(path)?)? {
+            return Ok(false);
         }
         match &self.external_paths {
             Some(r) => r.contains(&normalize_path(path).unwrap_or_default()),
@@ -584,9 +682,60 @@ impl StreamingWriter {
     pub fn finish(mut self) -> Result<FinishStats> {
         let blob_region_length = self.cursor - self.blob_region_offset;
 
+        // Deleting a path deletes its aliases (SPEC v0.12 §5.5.1): every
+        // earlier redirect onto a path this segment tombstones gets its own
+        // tombstone, unless this segment re-adds that alias. One streaming
+        // pass over the existing merged index, and only when something was
+        // deleted — a publisher-side cost, never a reader's.
+        if self.tombstones > 0 {
+            if let Some(existing) = &self.external_paths {
+                let mut orphaned = Vec::new();
+                for e in existing.entries() {
+                    let e = e?;
+                    if let Some(to) = &e.redirect_to {
+                        if self.index.is_tombstoned(to)? && !self.index.has_row(&e.path)? {
+                            orphaned.push(e.path);
+                        }
+                    }
+                }
+                for alias in orphaned {
+                    self.index.insert(&SegRow {
+                        path: alias,
+                        title: None,
+                        offset: 0,
+                        length: 0,
+                        uncompressed_length: 0,
+                        mime: None,
+                        compression: crate::model::TOMBSTONE.to_string(),
+                        sha256: None,
+                        volume_id: 0,
+                        redirect_to: None,
+                    })?;
+                    self.tombstones += 1;
+                }
+            }
+        }
+
         // Redirect flattening + validation (SPEC §6.2), entirely in SQL.
         self.index
             .flatten_redirects(self.external_paths.as_ref())?;
+
+        // The merged live count after this segment (SPEC v0.12 §4.2), so no
+        // reader ever walks the chain to count. One point lookup per row this
+        // segment writes, against the prior state; the prior count comes from
+        // the prior segment's own key when it has one.
+        let live_entry_count = match &self.external_paths {
+            None => self.index.row_count()?,
+            Some(existing) => {
+                let mut n = existing.entry_count()? as i64;
+                self.index.for_each_row(|path, is_tombstone| {
+                    let was = existing.contains(path)?;
+                    n += (!is_tombstone) as i64 - was as i64;
+                    Ok(())
+                })?;
+                n as u64
+            }
+        };
         // The reader on the prior segments is no longer needed; drop it
         // before the file is extended and the header rewritten.
         self.external_paths = None;
@@ -603,6 +752,13 @@ impl StreamingWriter {
             meta.push(("prev_segment_offset".into(), po.to_string()));
             meta.push(("prev_segment_length".into(), pl.to_string()));
         }
+        if let Some(d) = self.prev_state_digest {
+            meta.push(("prev_state_digest".into(), hex(&d)));
+        }
+        if let Some(h) = self.prev_header {
+            meta.push(("prev_header".into(), hex(&h)));
+        }
+        meta.push(("live_entry_count".into(), live_entry_count.to_string()));
         self.index.write_meta(&meta)?;
 
         // The shared dictionary lives in the index segment, not the blob region,
@@ -616,9 +772,11 @@ impl StreamingWriter {
         // entries, but must not rewrite the table into its own segment —
         // a reader would ignore it there anyway, and duplicating it would
         // grow every append by ~110 KB for nothing.
-        // Search segment (SPEC §5.7), segment 0 only. The declared tokenizer is
-        // recorded even when it is the default, so a reader never has to assume.
-        if self.search_rows > 0 && self.segment_index == 0 {
+        // Search segment (SPEC v0.12 §5.7), in whichever segment indexed
+        // anything. The declared tokenizer and title fold are recorded even
+        // when they are the defaults, so a reader never has to assume.
+        if self.search_rows > 0 {
+            self.index.check_search_paths()?;
             let tok = self
                 .search_tokenizer
                 .clone()
@@ -658,7 +816,10 @@ impl StreamingWriter {
             },
             HeaderPlan::Append { old, created_at } => WaxHeader {
                 version_major: old.version_major,
-                version_minor: old.version_minor,
+                // The header names the newest minor any segment may use
+                // (SPEC v0.12 §10): an append by this writer can add
+                // tombstones or a search segment, so it never lowers it.
+                version_minor: old.version_minor.max(FORMAT_VERSION_MINOR),
                 flags: old.flags,
                 archive_uuid: old.archive_uuid,
                 created_at,
@@ -793,7 +954,7 @@ impl IndexBuilder {
                 id,
                 path,
                 title,
-                title.map(|t| t.to_lowercase())
+                title.and_then(|t| crate::fold::fold_title(crate::fold::TITLE_FOLD_NFKC_CF, t))
             ],
         )?;
         Ok(())
@@ -815,6 +976,10 @@ impl IndexBuilder {
         conn.execute(
             "INSERT OR REPLACE INTO segment_meta(key, value) VALUES ('search_tokenizer', ?1)",
             rusqlite::params![tokenizer],
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO segment_meta(key, value) VALUES ('title_fold', ?1)",
+            rusqlite::params![crate::fold::TITLE_FOLD_NFKC_CF],
         )?;
         Ok(())
     }
@@ -856,6 +1021,29 @@ impl IndexBuilder {
         self.conn.as_ref().expect("index not yet sealed")
     }
 
+    fn row_count(&self) -> Result<u64> {
+        let n: i64 = self.conn().query_row(
+            "SELECT COUNT(*) FROM entries WHERE compression IS NOT 'tombstone' OR redirect_to IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n as u64)
+    }
+
+    /// Stream every row of this segment as (path, is_tombstone).
+    fn for_each_row(&self, mut f: impl FnMut(&str, bool) -> Result<()>) -> Result<()> {
+        let mut stmt = self.conn().prepare(
+            "SELECT path, (compression = 'tombstone' AND redirect_to IS NULL) FROM entries",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(r) = rows.next()? {
+            let path: String = r.get(0)?;
+            let tomb: bool = r.get(1)?;
+            f(&path, tomb)?;
+        }
+        Ok(())
+    }
+
     fn insert(&self, r: &SegRow) -> Result<()> {
         let res = self.conn().execute(
             "INSERT INTO entries
@@ -887,12 +1075,65 @@ impl IndexBuilder {
         }
     }
 
-    fn has_path(&self, path: &str) -> Result<bool> {
+    fn has_live_path(&self, path: &str) -> Result<bool> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT 1 FROM entries WHERE path = ?1
+                   AND (redirect_to IS NOT NULL OR compression IS NOT 'tombstone')",
+                [path],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    fn has_row(&self, path: &str) -> Result<bool> {
         Ok(self
             .conn()
             .query_row("SELECT 1 FROM entries WHERE path = ?1", [path], |_| Ok(()))
             .optional()?
             .is_some())
+    }
+
+    fn is_tombstoned(&self, path: &str) -> Result<bool> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT 1 FROM entries WHERE path = ?1
+                   AND redirect_to IS NULL AND compression = 'tombstone'",
+                [path],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// SPEC v0.12 §5.7: a segment's search rows describe only entries that
+    /// segment itself carries. A row for any other path would be dropped by
+    /// every reader (it fails the ownership test), so writing one is a bug in
+    /// the caller, reported here rather than shipped.
+    fn check_search_paths(&self) -> Result<()> {
+        let stray: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT d.path FROM search_docs d
+                  WHERE NOT EXISTS (SELECT 1 FROM entries e WHERE e.path = d.path
+                       AND (e.redirect_to IS NOT NULL OR e.compression IS NOT 'tombstone'))
+                  ORDER BY d.id LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match stray {
+            None => Ok(()),
+            Some(path) => Err(WaxError::Schema {
+                detail: format!(
+                    "search row for {path:?}, which this segment does not carry; a segment \
+                     indexes only its own entries (SPEC v0.12 §5.7)"
+                ),
+            }),
+        }
     }
 
     /// SPEC §6.2 at finish: every redirect ends up pointing at a non-redirect.
@@ -941,6 +1182,22 @@ impl IndexBuilder {
             return Err(WaxError::RedirectChainTooDeep { from, via });
         }
 
+        // A redirect in this segment onto a path this segment deletes is
+        // dangling by construction (SPEC v0.12 §5.5.1).
+        if let Some((from, to)) = conn
+            .query_row(
+                "SELECT r.path, r.redirect_to FROM entries r
+                   JOIN entries t ON t.path = r.redirect_to
+                  WHERE t.compression = 'tombstone' AND t.redirect_to IS NULL
+                  ORDER BY r.path LIMIT 1",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+        {
+            return Err(WaxError::DanglingRedirect { from, to });
+        }
+
         // Dangling: terminus not in this segment. Check the archive being
         // appended to for the survivors.
         let mut stmt = conn.prepare(
@@ -962,7 +1219,7 @@ impl IndexBuilder {
                         rehome.push((from, t));
                     }
                 }
-                Err(WaxError::EntryNotFound(_)) => {
+                Err(WaxError::EntryNotFound(_)) | Err(WaxError::EntryDeleted(_)) => {
                     return Err(WaxError::DanglingRedirect { from, to });
                 }
                 Err(e) => return Err(e),
@@ -1121,5 +1378,79 @@ fn read_segment_index(file: &mut File, offset: u64, length: u64) -> Result<u64> 
     )?;
     v.trim().parse::<u64>().map_err(|_| WaxError::BrokenSegmentChain {
         detail: format!("prev segment has non-numeric segment_index {v:?}"),
+    })
+}
+
+/// Lowercase hex of a digest, as stored in `segment_meta` (SPEC v0.12 §7.4).
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// What [`rollback_last_update`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollbackStats {
+    /// Segments in the chain after the rollback.
+    pub segments: usize,
+    /// File length after the rollback.
+    pub file_length: u64,
+}
+
+/// Undo the newest append (SPEC v0.12 §7.5): restore the header it
+/// overwrote and cut the file back to the end of the previous segment.
+///
+/// Checked before anything is written: the stored header must point at the
+/// previous segment, and the digest of (stored header ‖ earlier segments)
+/// must equal the newest segment's `prev_state_digest`. The result is then
+/// byte-identical to the edition before the update, so that edition's
+/// signature sidecar verifies again. Crash-safe in the same way as an
+/// append: the header is written first, and until the truncation lands the
+/// removed segment is just an orphaned tail (§7.2).
+pub fn rollback_last_update(archive: impl AsRef<Path>) -> Result<RollbackStats> {
+    let archive = archive.as_ref();
+    let (prev_raw, prev_end, upto) = {
+        let r = crate::reader::WaxReader::open_with(
+            archive,
+            crate::reader::ReadOptions {
+                verify_checksums: false,
+                lookup_cache_entries: 0,
+            },
+        )?;
+        let n = r.segment_count();
+        if n < 2 {
+            return Err(WaxError::Schema {
+                detail: "nothing to roll back: the archive has a single segment".into(),
+            });
+        }
+        let newest = r.segment_meta(n - 1);
+        let (Some(raw), Some(digest), Some((po, pl))) =
+            (newest.prev_header, newest.prev_state_digest, newest.prev_segment)
+        else {
+            return Err(WaxError::Schema {
+                detail: format!(
+                    "segment {} records no prev_header/prev_state_digest; it predates \
+                     verifiable rollback (SPEC v0.12 §7.5)",
+                    n - 1
+                ),
+            });
+        };
+        let old = WaxHeader::parse(&raw)?;
+        if (old.index_offset, old.index_length) != (po, pl) {
+            return Err(WaxError::BadPrevStateDigest { segment: (n - 1) as u64 });
+        }
+        if r.digest_of_state(&old, n - 1)? != digest {
+            return Err(WaxError::BadPrevStateDigest { segment: (n - 1) as u64 });
+        }
+        old.validate(po + pl)?;
+        (raw, po + pl, n - 1)
+    };
+    let mut file = OpenOptions::new().read(true).write(true).open(archive)?;
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(&prev_raw)?;
+    file.sync_all()?;
+    file.set_len(prev_end)?;
+    file.sync_all()?;
+    Ok(RollbackStats {
+        segments: upto,
+        file_length: prev_end,
     })
 }

@@ -386,8 +386,20 @@ fn neg_unexpected_volume_id() {
     row.volume_id = 1;
     let seg = craft_segment(&[row], blob.len() as u64);
     let bytes = assemble_single(&blob, &seg, |_| {});
+    // SPEC v0.12 §5.2: the archive opens (open reads nothing per entry) and
+    // the entry is refused wherever it is reached — lookup, read, listing.
+    let f = write_wax(&bytes);
+    let r = WaxReader::open(&f.path).expect("v0.12 opens; the check is per entry");
     assert!(matches!(
-        expect_open_err(&bytes),
+        r.read("p").unwrap_err(),
+        WaxError::UnexpectedVolumeId { found: 1, .. }
+    ));
+    assert!(matches!(
+        r.entry("p").unwrap_err(),
+        WaxError::UnexpectedVolumeId { found: 1, .. }
+    ));
+    assert!(matches!(
+        r.entries().next().unwrap().unwrap_err(),
         WaxError::UnexpectedVolumeId { found: 1, .. }
     ));
 }

@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use wax_builder::{
     WriteReport,
-    append_pack, build_pack, config::PackConfig, sign, verify_pack, WriteOptions,
+    append_pack_with_deletions, build_pack, config::PackConfig, sign, verify_pack, WriteOptions,
 };
 use wax_core::header::flag;
 use wax_core::WaxReader;
@@ -44,6 +44,13 @@ enum Commands {
         #[arg(long)]
         archive_uuid: Option<String>,
     },
+    /// Undo the newest append, restoring the previous edition byte for byte
+    /// (SPEC v0.12 §7.5). The previous edition's signature sidecar, if kept,
+    /// verifies again; the current sidecar no longer does.
+    Rollback {
+        #[arg(short, long)]
+        archive: PathBuf,
+    },
     /// Append a new segment (new tree) to an existing archive, then re-sign
     Append {
         #[arg(short, long)]
@@ -56,6 +63,10 @@ enum Commands {
         sign_key: Option<PathBuf>,
         #[arg(long)]
         created_at: Option<u64>,
+        /// Delete this archive path in the new segment (a tombstone, SPEC
+        /// v0.12 §5.5.1). Repeatable.
+        #[arg(long = "delete", value_name = "PATH")]
+        delete: Vec<String>,
     },
     /// Dump the header, manifest and segment chain (add --entries for the entry table)
     Inspect {
@@ -109,7 +120,20 @@ fn main() -> Result<()> {
             config,
             sign_key,
             created_at,
-        } => cmd_append(archive, input, config, sign_key, created_at),
+            delete,
+        } => cmd_append(archive, input, config, sign_key, created_at, delete),
+        Commands::Rollback { archive } => {
+            let s = wax_core::rollback_last_update(&archive)
+                .with_context(|| format!("rolling back {}", archive.display()))?;
+            println!(
+                "rolled back {} — now {} segment(s), {} bytes",
+                archive.display(),
+                s.segments,
+                s.file_length
+            );
+            println!("  the sidecar signature, if any, belongs to the removed edition: restore the earlier one or re-sign");
+            Ok(())
+        }
         Commands::Inspect { archive, entries } => cmd_inspect(archive, entries),
         Commands::Verify {
             archive,
@@ -162,6 +186,7 @@ fn cmd_append(
     config: Option<PathBuf>,
     sign_key: Option<PathBuf>,
     created_at: Option<u64>,
+    delete: Vec<String>,
 ) -> Result<()> {
     let cfg = PackConfig::discover(&input, config.as_deref())?;
     let opts = WriteOptions {
@@ -170,7 +195,7 @@ fn cmd_append(
         // append always reuses the archive's existing identity (SPEC §2)
         archive_uuid: None,
     };
-    let report = append_pack(&archive, &input, &cfg, &opts)?;
+    let report = append_pack_with_deletions(&archive, &input, &cfg, &opts, &delete)?;
 
     println!(
         "appended to {} — {} new entries, now {} segments",

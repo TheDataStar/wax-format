@@ -29,7 +29,7 @@ _Last updated: 2026-09-15, Directive 01._
 | `wax-builder` | `build` / `append` / `inspect` / `verify` / `ls` / `read`; manifest, aliases, compression policy, UUIDv4 identity, minisign hook (A7). | 95 tests |
 | `zim2wax` | Track B v0, text + image. §20 canonical paths, href rewriting, redirect flattening, manifest derivation, §11 licensing + build report. | 61 tests |
 | `fuzz/` | 3 `cargo-fuzz` targets: `header-parse`, `index-loader`, `segment-merge`. | seed corpora committed |
-| WAX format | **v0.9 frozen.** `SPEC.md` is normative and byte-exact. | — |
+| WAX format | **v0.12** (proposed on `track-a/spec-v0.12`: tombstones, search on appended segments, declared title fold, verifiable append deltas). `SPEC.md` is normative and byte-exact; §13 is the version history. | `crates/wax-core/tests/v0_12.rs` |
 
 **Test suite: 216 tests.** Platform results and all measured figures live in
 `docs/baseline.md` and the Directive 01 report. Read `docs/baseline.md` before
