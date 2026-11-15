@@ -73,9 +73,20 @@ pub struct Entry {
     pub redirect_to: Option<String>,
 }
 
+/// The `compression` value that marks a deletion (SPEC v0.12 §5.5.1). It is
+/// deliberately not a [`Compression`]: there are no bytes to decode, and a
+/// reader that predates it refuses the read with `UnknownCompression` rather
+/// than returning anything.
+pub const TOMBSTONE: &str = "tombstone";
+
 impl Entry {
     pub fn is_redirect(&self) -> bool {
         self.redirect_to.is_some()
+    }
+
+    /// True when this row deletes its path (SPEC v0.12 §5.5.1).
+    pub fn is_tombstone(&self) -> bool {
+        self.compression == TOMBSTONE && self.redirect_to.is_none()
     }
 }
 

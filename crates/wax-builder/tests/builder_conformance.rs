@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use wax_builder::config::PackConfig;
-use wax_builder::{append_pack, build_pack, verify_pack, sign, WriteOptions};
+use wax_builder::{append_pack, append_pack_with_deletions, build_pack, verify_pack, sign, WriteOptions};
 use wax_core::header::flag;
 use wax_core::WaxReader;
 
@@ -703,4 +703,38 @@ fn pinning_the_uuid_reproduces_it_in_the_header() {
         WaxReader::open(&archive).unwrap().header().archive_uuid,
         PINNED_UUID
     );
+}
+
+// ---------------------------------------------------------------------------
+// SPEC v0.12 §5.5.1: append can delete
+// ---------------------------------------------------------------------------
+
+#[test]
+fn append_can_delete_a_path_and_verify_still_passes() {
+    let base = tree(&[("a.txt", b"a"), ("gone.txt", b"bye")]);
+    let extra = tree(&[("b.txt", b"b")]);
+    let cfg = PackConfig::default();
+    let dst = tempfile::tempdir().unwrap();
+    let archive = out(&dst, "p.wax");
+    build_pack(base.path(), &archive, &cfg, &pinned()).unwrap();
+
+    append_pack_with_deletions(&archive, extra.path(), &cfg, &pinned(), &["gone.txt".to_string()])
+        .unwrap();
+
+    let r = WaxReader::open(&archive).unwrap();
+    assert!(matches!(r.read("gone.txt"), Err(wax_core::WaxError::EntryDeleted(_))));
+    assert_eq!(r.read("a.txt").unwrap(), b"a");
+    assert_eq!(r.read("b.txt").unwrap(), b"b");
+    assert!(verify_pack(&archive, None, false).unwrap().ok(), "a deleted path is not a failure");
+
+    // Deleting something the archive does not serve is refused.
+    let extra2 = tree(&[("c.txt", b"c")]);
+    assert!(append_pack_with_deletions(
+        &archive,
+        extra2.path(),
+        &cfg,
+        &pinned(),
+        &["gone.txt".to_string()]
+    )
+    .is_err());
 }

@@ -2,8 +2,10 @@
 //!
 //! Open path: parse header → validate → walk the segment chain backward to the
 //! base (each segment opened in place through the [`crate::vfs`] window) →
-//! check blob-section integrity → reject any non-zero `volume_id`. Nothing
-//! proportional to the entry count is held: opening costs O(segments).
+//! check blob-section integrity. Nothing proportional to the entry count is
+//! held or read: opening costs O(segments). (A non-zero `volume_id` is
+//! rejected when that entry is looked up, SPEC v0.12 §5.2, not by a scan at
+//! open.)
 //!
 //! Lookup path: a point query per segment, newest first — the first hit is the
 //! last-segment-wins answer (SPEC §5.5). Read path: resolve at most one
@@ -54,14 +56,15 @@ impl Default for ReadOptions {
 /// piecemeal: the bound is what matters, and the working set of a pack is
 /// re-warmed in a handful of lookups.
 struct LookupCache {
-    map: HashMap<String, Entry>,
+    /// path → (index into `segments` of the segment that answered, its row).
+    map: HashMap<String, (usize, Entry)>,
     cap: usize,
     hits: u64,
     misses: u64,
 }
 
 impl LookupCache {
-    fn get(&mut self, path: &str) -> Option<Entry> {
+    fn get(&mut self, path: &str) -> Option<(usize, Entry)> {
         let hit = self.map.get(path).cloned();
         if hit.is_some() {
             self.hits += 1;
@@ -71,14 +74,14 @@ impl LookupCache {
         hit
     }
 
-    fn put(&mut self, entry: &Entry) {
+    fn put(&mut self, seg: usize, entry: &Entry) {
         if self.cap == 0 {
             return;
         }
         if self.map.len() >= self.cap {
             self.map.clear();
         }
-        self.map.insert(entry.path.clone(), entry.clone());
+        self.map.insert(entry.path.clone(), (seg, entry.clone()));
     }
 }
 
@@ -102,9 +105,15 @@ pub struct WaxReader {
     segments: Vec<Segment>,
     /// Base-segment manifest (SPEC §5.6); small, held.
     manifest: BTreeMap<String, String>,
-    /// The tokenizer the base segment declares (SPEC §5.7), or None when this
-    /// pack carries no search index.
+    /// The tokenizer the earliest indexed segment declares (SPEC §5.7), or
+    /// None when no segment carries a search index.
     search_tokenizer: Option<String>,
+    /// Indices into `segments` of every segment carrying a search index,
+    /// ascending (SPEC v0.12 §5.7: any segment may carry one).
+    search_segments: Vec<usize>,
+    /// Set when two indexed segments declare different tokenizers; search is
+    /// then refused rather than merged (first, other).
+    tokenizer_conflict: Option<(String, String)>,
     /// The dictionary in zstd prepared form, digested once at open. Preparing
     /// it per read costs more than the codec saves -- measured 12.7us -> 16.3us
     /// on a real pack.
@@ -146,31 +155,43 @@ impl WaxReader {
         // --- blob-section integrity (SPEC §4.3) ---
         Self::check_blob_section(&header, &segments)?;
 
-        // --- volume_id guard (SPEC §5.2): a scan per segment, not a load ---
-        for seg in &segments {
-            if let Some((path, found)) = seg.first_nonzero_volume()? {
-                return Err(WaxError::UnexpectedVolumeId { path, found });
+        // --- volume_id (SPEC v0.12 §5.2): checked per entry at lookup. The
+        // open-time scan this replaced read every `entries` page of every
+        // segment — the one O(entries) cost left at open, seconds per pack
+        // on SD-card storage at Wikipedia scale. ---
+
+        // --- search segments: any segment may carry one (SPEC v0.12 §5.7) ---
+        let mut search_segments = Vec::new();
+        let mut search_tokenizer: Option<String> = None;
+        let mut tokenizer_conflict = None;
+        for (i, seg) in segments.iter().enumerate() {
+            if !seg.has_search_index()? {
+                continue;
             }
+            // An index built before the tokenizer was recorded is read as
+            // the default, which is what it would have used.
+            let declared = seg
+                .search_tokenizer()?
+                .unwrap_or_else(|| crate::writer::DEFAULT_TOKENIZER.to_string());
+            match &search_tokenizer {
+                None => search_tokenizer = Some(declared),
+                Some(first) if *first != declared && tokenizer_conflict.is_none() => {
+                    tokenizer_conflict = Some((first.clone(), declared));
+                }
+                Some(_) => {}
+            }
+            search_segments.push(i);
         }
 
         // --- manifest: base segment only (SPEC §5.6) ---
         let mut manifest = BTreeMap::new();
         let mut dictionary = None;
-        let mut search_tokenizer: Option<String> = None;
         if let Some(base) = segments.first() {
             for (k, v) in base.manifest()? {
                 manifest.insert(k, v);
             }
             // --- shared dictionary: base segment only (SPEC v0.10 §3.1) ---
             dictionary = base.dictionary()?;
-            // --- search segment: base segment only (SPEC §5.7) ---
-            if base.has_search_index()? {
-                // An index built before the tokenizer was recorded is read as
-                // the default, which is what it would have used.
-                let declared = base.search_tokenizer()?;
-                search_tokenizer =
-                    Some(declared.unwrap_or_else(|| crate::writer::DEFAULT_TOKENIZER.to_string()));
-            }
         }
 
         Ok(WaxReader {
@@ -181,6 +202,8 @@ impl WaxReader {
             segments,
             manifest,
             search_tokenizer,
+            search_segments,
+            tokenizer_conflict,
             dict_prepared: dictionary
                 .as_deref()
                 .map(zstd::dict::DecoderDictionary::copy),
@@ -365,40 +388,154 @@ impl WaxReader {
     /// Queried in place through the same windowing VFS entry lookups use, so
     /// this costs page reads rather than loading the index.
     ///
+    /// Every indexed segment is queried (SPEC v0.12 §5.7). A hit from segment
+    /// *s* counts only while its path still resolves, through the
+    /// last-segment-wins merge, to *s* itself: a newer segment that replaced
+    /// the entry carries its own row for the new text, and a tombstone
+    /// removes it. The surviving lists are therefore disjoint, and they are
+    /// merged by rank, newer segment first on a tie — the order Reciprocal
+    /// Rank Fusion gives for disjoint lists whatever its constant.
+    ///
     /// Errors when the pack has no index, or when it declares a tokenizer this
     /// build cannot reproduce — answering anyway would mean returning
     /// confidently wrong results for text that is present.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
-        let base = self.searchable_segment()?;
-        Ok(base
-            .search(query, limit)?
-            .into_iter()
-            .map(|(path, title)| SearchHit { path, title })
-            .collect())
+        self.check_searchable()?;
+        let mut ranked: Vec<(usize, usize, SearchHit)> = Vec::new(); // (rank, seg, hit)
+        for &si in self.search_segments.iter().rev() {
+            let seg = &self.segments[si];
+            let mut rank = 0usize;
+            let mut offset = 0usize;
+            let page = limit.max(16);
+            'seg: loop {
+                let rows = seg.search(query, page, offset)?;
+                let n = rows.len();
+                offset += n;
+                for (path, title) in rows {
+                    if self.owned_by(&path, si)? {
+                        ranked.push((rank, si, SearchHit { path, title }));
+                        rank += 1;
+                        if rank >= limit {
+                            break 'seg;
+                        }
+                    }
+                }
+                if n < page {
+                    break;
+                }
+            }
+        }
+        ranked.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+        Ok(ranked.into_iter().take(limit).map(|(_, _, h)| h).collect())
     }
 
-    /// Title prefix completion, for a search bar.
+    /// Title prefix completion, for a search bar, ordered by folded title.
+    ///
+    /// The prefix is folded under the fold the index declares (SPEC v0.12
+    /// §5.7.1); a fold this build cannot reproduce is refused, never
+    /// approximated. Hits are validated against the merge exactly as for
+    /// [`search`](Self::search).
     pub fn suggest(&self, prefix: &str, limit: usize) -> Result<Vec<Suggestion>> {
-        let base = self.searchable_segment()?;
-        Ok(base
-            .suggest(prefix, limit)?
+        self.check_searchable()?;
+        let mut all: Vec<(String, String, String)> = Vec::new(); // (fold, path, title)
+        let mut fold_name: Option<String> = None;
+        for &si in self.search_segments.iter().rev() {
+            let seg = &self.segments[si];
+            let fold = seg.title_fold()?;
+            match &fold_name {
+                None => fold_name = Some(fold.clone()),
+                Some(f) if *f != fold => {
+                    return Err(WaxError::UnknownTitleFold {
+                        fold: format!("{f} and {fold} mixed across segments"),
+                    })
+                }
+                Some(_) => {}
+            }
+            let lo = crate::fold::fold_title(&fold, prefix)
+                .ok_or_else(|| WaxError::UnknownTitleFold { fold: fold.clone() })?;
+            let mut hi = lo.clone();
+            hi.push('\u{10FFFF}');
+            let mut kept = 0usize;
+            let mut offset = 0usize;
+            let page = limit.max(16);
+            'seg: loop {
+                let rows = seg.suggest(&lo, &hi, page, offset)?;
+                let n = rows.len();
+                offset += n;
+                for (path, title, f) in rows {
+                    if self.owned_by(&path, si)? {
+                        all.push((f, path, title));
+                        kept += 1;
+                        if kept >= limit {
+                            break 'seg;
+                        }
+                    }
+                }
+                if n < page {
+                    break;
+                }
+            }
+        }
+        all.sort();
+        all.dedup_by(|a, b| a.1 == b.1);
+        Ok(all
             .into_iter()
-            .map(|(path, title)| Suggestion { path, title })
+            .take(limit)
+            .map(|(_, path, title)| Suggestion { path, title })
             .collect())
     }
 
-    /// The base segment, if this pack has an index this build can query.
-    fn searchable_segment(&self) -> Result<&Segment> {
+    /// Whether this pack has an index this build can query.
+    fn check_searchable(&self) -> Result<()> {
         let tok = self
             .search_tokenizer
             .as_deref()
             .ok_or(WaxError::SearchUnavailable)?;
+        if let Some((first, other)) = &self.tokenizer_conflict {
+            return Err(WaxError::TokenizerMismatch {
+                first: first.clone(),
+                other: other.clone(),
+            });
+        }
         if !crate::writer::SUPPORTED_TOKENIZERS.contains(&tok) {
             return Err(WaxError::UnknownTokenizer {
                 tokenizer: tok.to_string(),
             });
         }
-        self.segments.first().ok_or(WaxError::SearchUnavailable)
+        Ok(())
+    }
+
+    /// True when `path`, through the merge, still lives in segment `si` and is
+    /// not deleted — the validity test for a search row from `si`.
+    ///
+    /// Probes the segments directly rather than through the lookup cache, so
+    /// searching never churns the cache that serves page reads: any newer
+    /// segment carrying the path supersedes the row, and `si`'s own row must
+    /// exist and not be a tombstone.
+    fn owned_by(&self, path: &str, si: usize) -> Result<bool> {
+        for seg in &self.segments[si + 1..] {
+            if seg.lookup(path)?.is_some() {
+                return Ok(false);
+            }
+        }
+        Ok(match self.segments[si].lookup(path)? {
+            Some(e) => !e.is_tombstone() && e.volume_id == 0,
+            None => false,
+        })
+    }
+
+    /// The SPEC v0.12 §7.4 `prev_state_digest` of segment `segment_index`:
+    /// the §8.1 digest of the archive state that segment was appended to.
+    /// `None` for the base and for segments written before v0.12.
+    ///
+    /// A box applying an update compares this against
+    /// [`signable_digest`](Self::signable_digest) of its own copy *before*
+    /// appending the received tail; a mismatch means the update was built
+    /// against a different edition and must not be applied.
+    pub fn prev_state_digest(&self, segment_index: usize) -> Option<[u8; 32]> {
+        self.segments
+            .get(segment_index)
+            .and_then(|s| s.meta.prev_state_digest)
     }
 
     /// The pack's shared dictionary (SPEC v0.10 §3.1), or `None` for a v0.9
@@ -421,29 +558,49 @@ impl WaxReader {
     /// The merged (pre-redirect-resolution) entry for `path`, or `None`.
     /// Newest segment first; the first segment that has the path wins
     /// (SPEC §5.5).
+    ///
+    /// The row may be a tombstone; callers decide what that means.
     fn lookup(&self, path: &str) -> Result<Option<Entry>> {
+        Ok(self.lookup_seg(path)?.map(|(_, e)| e))
+    }
+
+    /// As [`lookup`](Self::lookup), also naming the segment (index into
+    /// `segments`) that answered. Rejects a non-zero `volume_id` here, per
+    /// entry, rather than by a scan at open (SPEC v0.12 §5.2).
+    fn lookup_seg(&self, path: &str) -> Result<Option<(usize, Entry)>> {
         if let Some(hit) = self.cache.borrow_mut().get(path) {
             return Ok(Some(hit));
         }
-        for seg in self.segments.iter().rev() {
+        for (i, seg) in self.segments.iter().enumerate().rev() {
             if let Some(e) = seg.lookup(path)? {
-                self.cache.borrow_mut().put(&e);
-                return Ok(Some(e));
+                if e.volume_id != 0 {
+                    return Err(WaxError::UnexpectedVolumeId {
+                        path: e.path,
+                        found: e.volume_id,
+                    });
+                }
+                self.cache.borrow_mut().put(i, &e);
+                return Ok(Some((i, e)));
             }
         }
         Ok(None)
     }
 
     /// The merged (pre-redirect-resolution) entry for `path`.
-    /// [`WaxError::EntryNotFound`] if no segment carries it.
+    /// [`WaxError::EntryNotFound`] if no segment carries it,
+    /// [`WaxError::EntryDeleted`] if the newest segment that does deletes it.
     pub fn entry(&self, path: &str) -> Result<Entry> {
-        self.lookup(path)?
-            .ok_or_else(|| WaxError::EntryNotFound(path.to_string()))
+        match self.lookup(path)? {
+            None => Err(WaxError::EntryNotFound(path.to_string())),
+            Some(e) if e.is_tombstone() => Err(WaxError::EntryDeleted(path.to_string())),
+            Some(e) => Ok(e),
+        }
     }
 
-    /// Whether any segment carries `path` (redirect aliases included).
+    /// Whether `path` exists in the merged view (redirect aliases included,
+    /// deleted paths not).
     pub fn contains(&self, path: &str) -> Result<bool> {
-        Ok(self.lookup(path)?.is_some())
+        Ok(self.lookup(path)?.is_some_and(|e| !e.is_tombstone()))
     }
 
     /// Number of distinct paths across the segment chain. One `COUNT(*)` for
@@ -462,6 +619,7 @@ impl WaxReader {
 
     /// All merged entries, ascending by path, streamed (SPEC §5.5). Holds at
     /// most [`PAGE_ROWS`] rows per segment. An error ends the iteration.
+    /// Deleted paths (SPEC v0.12 §5.5.1) are left out.
     pub fn entries(&self) -> Entries<'_> {
         Entries {
             cursors: self
@@ -499,6 +657,11 @@ impl WaxReader {
                         from: path.to_string(),
                         to: target.clone(),
                     })?;
+                // An alias whose target a later segment deleted is gone too
+                // (SPEC v0.12 §5.5.1), not malformed.
+                if t.is_tombstone() {
+                    return Err(WaxError::EntryDeleted(path.to_string()));
+                }
                 if t.redirect_to.is_some() {
                     return Err(WaxError::RedirectChainTooDeep {
                         from: path.to_string(),
@@ -680,6 +843,25 @@ impl Iterator for Entries<'_> {
     type Item = Result<Entry>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.next_merged() {
+                Some(Ok(e)) if e.is_tombstone() => continue,
+                Some(Ok(e)) if e.volume_id != 0 => {
+                    self.done = true;
+                    return Some(Err(WaxError::UnexpectedVolumeId {
+                        path: e.path,
+                        found: e.volume_id,
+                    }));
+                }
+                other => return other,
+            }
+        }
+    }
+}
+
+impl Entries<'_> {
+    /// The next row of the k-way merge, tombstones included.
+    fn next_merged(&mut self) -> Option<Result<Entry>> {
         if self.done {
             return None;
         }

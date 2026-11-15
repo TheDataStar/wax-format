@@ -31,6 +31,10 @@ pub struct SegmentMeta {
     pub created_at: i64,
     /// `(offset, length)` of the previous segment's database. `None` ⇒ base.
     pub prev_segment: Option<(u64, u64)>,
+    /// The SPEC §8.1 signable digest of the archive state this segment was
+    /// appended to (SPEC v0.12 §7.4). `None` on the base and on any segment
+    /// written before v0.12.
+    pub prev_state_digest: Option<[u8; 32]>,
 }
 
 /// An opened index segment: a read-only connection onto a window of the
@@ -202,12 +206,20 @@ impl Segment {
             }
         };
 
+        let prev_state_digest = match get("prev_state_digest")? {
+            None => None,
+            Some(h) => Some(parse_hex32(h.trim()).ok_or(WaxError::BadPrevStateDigest {
+                segment: segment_index,
+            })?),
+        };
+
         Ok(SegmentMeta {
             segment_index,
             blob_region_offset,
             blob_region_length,
             created_at,
             prev_segment,
+            prev_state_digest,
         })
     }
 
@@ -279,11 +291,14 @@ impl Segment {
         Ok(out)
     }
 
-    /// Number of rows in `entries`.
+    /// Number of rows in `entries` that are not tombstones (SPEC v0.12 §5.5.1).
     pub fn count(&self) -> Result<u64> {
-        let n: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM entries
+              WHERE redirect_to IS NOT NULL OR compression IS NOT 'tombstone'",
+            [],
+            |r| r.get(0),
+        )?;
         Ok(u64::try_from(n).unwrap_or(0))
     }
 
@@ -336,16 +351,24 @@ impl Segment {
     /// The index is queried **in place** through the same windowing VFS the
     /// entry lookups use, so searching a full-Wikipedia pack costs page reads,
     /// not a load. Returns `(path, title)` pairs in rank order.
-    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<(String, Option<String>)>> {
-        let mut st = self.conn.prepare(
+    ///
+    /// `offset` pages through the ranked list: the reader drops hits a newer
+    /// segment has superseded (SPEC v0.12 §5.7) and asks for more.
+    pub fn search(
+        &self,
+        query: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<(String, Option<String>)>> {
+        let mut st = self.conn.prepare_cached(
             "SELECT d.path, d.title
                FROM search_index s
                JOIN search_docs d ON d.id = s.rowid
               WHERE search_index MATCH ?1
-              ORDER BY rank
-              LIMIT ?2",
+              ORDER BY rank, d.id
+              LIMIT ?2 OFFSET ?3",
         )?;
-        let rows = st.query_map(rusqlite::params![query, limit as i64], |r| {
+        let rows = st.query_map(rusqlite::params![query, limit as i64, offset as i64], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
         })?;
         let mut out = Vec::new();
@@ -355,30 +378,58 @@ impl Segment {
         Ok(out)
     }
 
-    /// Title prefix completion, for a search bar.
+    /// Title prefix completion, for a search bar: `search_docs` rows whose
+    /// `title_fold` lies in `[lo, hi)`, as `(path, title, title_fold)`.
     ///
-    /// A plain indexed range scan rather than a second FTS table: prefix
-    /// completion is a b-tree range, and paying an inverted index for it would
-    /// cost size the format cannot spare.
-    pub fn suggest(&self, prefix: &str, limit: usize) -> Result<Vec<(String, String)>> {
-        let lo = prefix.to_lowercase();
-        // The half-open upper bound for "everything starting with lo".
-        let mut hi = lo.clone();
-        hi.push('\u{10FFFF}');
-        let mut st = self.conn.prepare(
-            "SELECT path, title FROM search_docs
+    /// The caller folds the prefix under this segment's declared fold
+    /// ([`Segment::title_fold`]); this only runs the range scan. A plain
+    /// indexed range rather than a second FTS table: prefix completion is a
+    /// b-tree range, and paying an inverted index for it would cost size the
+    /// format cannot spare.
+    pub fn suggest(
+        &self,
+        lo: &str,
+        hi: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<(String, String, String)>> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT path, title, title_fold FROM search_docs
               WHERE title_fold >= ?1 AND title_fold < ?2
               ORDER BY title_fold, path
-              LIMIT ?3",
+              LIMIT ?3 OFFSET ?4",
         )?;
-        let rows = st.query_map(rusqlite::params![lo, hi, limit as i64], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default()))
-        })?;
+        let rows = st.query_map(
+            rusqlite::params![lo, hi, limit as i64, offset as i64],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                ))
+            },
+        )?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    /// The title fold this segment's `search_docs` was built with (SPEC v0.12
+    /// §5.7.1). A segment with an index but no declaration predates v0.12 and
+    /// used plain lowercasing, so it reads as
+    /// [`TITLE_FOLD_LEGACY_LOWER`](crate::fold::TITLE_FOLD_LEGACY_LOWER).
+    pub fn title_fold(&self) -> Result<String> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT value FROM segment_meta WHERE key = 'title_fold'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| crate::fold::TITLE_FOLD_LEGACY_LOWER.to_string()))
     }
 
     /// The pack's shared dictionary (SPEC v0.10 §3.1), if this segment carries
@@ -465,6 +516,18 @@ impl Segment {
         }
         Ok(out.join("\n"))
     }
+}
+
+/// 64 hex characters → 32 bytes. Either case accepted; anything else is `None`.
+pub(crate) fn parse_hex32(h: &str) -> Option<[u8; 32]> {
+    if h.len() != 64 || !h.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(out)
 }
 
 struct RawRow {

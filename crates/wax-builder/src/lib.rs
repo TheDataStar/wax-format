@@ -451,6 +451,19 @@ pub fn append_pack(
     cfg: &PackConfig,
     opts: &WriteOptions,
 ) -> Result<WriteReport> {
+    append_pack_with_deletions(archive, input, cfg, opts, &[])
+}
+
+/// [`append_pack`], also deleting `deletions` from the archive with
+/// tombstones in the new segment (SPEC v0.12 §5.5.1). Each must name a path
+/// the archive currently serves, and must not also be in `input`.
+pub fn append_pack_with_deletions(
+    archive: &Path,
+    input: &Path,
+    cfg: &PackConfig,
+    opts: &WriteOptions,
+    deletions: &[String],
+) -> Result<WriteReport> {
     if !archive.is_file() {
         bail!("archive {} does not exist", archive.display());
     }
@@ -474,9 +487,16 @@ pub fn append_pack(
     if let Some(t) = opts.effective_created_at() {
         writer = writer.created_at(t);
     }
-    writer
-        .append(archive, entries)
-        .with_context(|| format!("appending to {}", archive.display()))?;
+    let appended = (|| -> wax_core::Result<()> {
+        let mut w = writer.open_append(archive)?;
+        w.add_all(entries)?;
+        for d in deletions {
+            w.add_tombstone(d)?;
+        }
+        w.finish()?;
+        Ok(())
+    })();
+    appended.with_context(|| format!("appending to {}", archive.display()))?;
 
     let sidecar = maybe_sign(archive, opts)?;
     let reader = WaxReader::open(archive)?;

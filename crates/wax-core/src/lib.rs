@@ -20,6 +20,7 @@
 //! Nothing here ever panics on malformed archive input; every failure path is a
 //! [`WaxError`].
 
+pub mod fold;
 pub mod fuzz;
 pub mod header;
 pub mod model;
@@ -42,7 +43,7 @@ pub const HEADER_LEN: usize = 128;
 /// Format version implemented by this crate (SPEC §10).
 pub const FORMAT_VERSION_MAJOR: u8 = 0;
 /// Format minor version implemented by this crate.
-pub const FORMAT_VERSION_MINOR: u8 = 11;
+pub const FORMAT_VERSION_MINOR: u8 = 12;
 
 /// Smallest possible SQLite database (one 512-byte page). Used as the lower
 /// bound for `index_length` and `prev_segment_length` (SPEC §2.2, §5.1).
@@ -94,10 +95,17 @@ pub enum WaxError {
     Schema { detail: String },
     #[error("entry {path:?} has volume_id {found}, but v0.9 archives are single-volume (must be 0)")]
     UnexpectedVolumeId { path: String, found: i64 },
+    #[error("segment_meta.prev_state_digest in segment {segment} is not 64 hex characters")]
+    BadPrevStateDigest { segment: u64 },
 
     // --- Lookup (returned at get / resolve) ----------------------------
     #[error("entry not found: {0:?}")]
     EntryNotFound(String),
+    /// The path existed in an earlier edition and a later segment deleted it
+    /// with a tombstone (SPEC v0.12 §5.5.1). Distinct from `EntryNotFound` so
+    /// a server can answer 410 Gone rather than 404.
+    #[error("entry {0:?} was deleted by a later segment")]
+    EntryDeleted(String),
     #[error("redirect from {from:?} points at {to:?}, which does not exist")]
     DanglingRedirect { from: String, to: String },
     #[error("redirect from {from:?} via {via:?} is deeper than one hop (chain not flattened)")]
@@ -118,6 +126,10 @@ pub enum WaxError {
     SearchUnavailable,
     #[error("archive was indexed with tokenizer {tokenizer:?}, which this build cannot reproduce; refusing to answer rather than return wrong results")]
     UnknownTokenizer { tokenizer: String },
+    #[error("search segments declare different tokenizers ({first:?} and {other:?}); refusing to merge results built two ways")]
+    TokenizerMismatch { first: String, other: String },
+    #[error("archive folds titles with {fold:?}, which this build cannot reproduce; refusing title completion rather than miss titles that are present")]
+    UnknownTitleFold { fold: String },
 
     // --- Shared dictionary (v0.10) -------------------------------------
     #[error("shared dictionary: {detail}")]

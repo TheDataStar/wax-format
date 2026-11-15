@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use wax_builder::{
     WriteReport,
-    append_pack, build_pack, config::PackConfig, sign, verify_pack, WriteOptions,
+    append_pack_with_deletions, build_pack, config::PackConfig, sign, verify_pack, WriteOptions,
 };
 use wax_core::header::flag;
 use wax_core::WaxReader;
@@ -56,6 +56,10 @@ enum Commands {
         sign_key: Option<PathBuf>,
         #[arg(long)]
         created_at: Option<u64>,
+        /// Delete this archive path in the new segment (a tombstone, SPEC
+        /// v0.12 §5.5.1). Repeatable.
+        #[arg(long = "delete", value_name = "PATH")]
+        delete: Vec<String>,
     },
     /// Dump the header, manifest and segment chain (add --entries for the entry table)
     Inspect {
@@ -109,7 +113,8 @@ fn main() -> Result<()> {
             config,
             sign_key,
             created_at,
-        } => cmd_append(archive, input, config, sign_key, created_at),
+            delete,
+        } => cmd_append(archive, input, config, sign_key, created_at, delete),
         Commands::Inspect { archive, entries } => cmd_inspect(archive, entries),
         Commands::Verify {
             archive,
@@ -162,6 +167,7 @@ fn cmd_append(
     config: Option<PathBuf>,
     sign_key: Option<PathBuf>,
     created_at: Option<u64>,
+    delete: Vec<String>,
 ) -> Result<()> {
     let cfg = PackConfig::discover(&input, config.as_deref())?;
     let opts = WriteOptions {
@@ -170,7 +176,7 @@ fn cmd_append(
         // append always reuses the archive's existing identity (SPEC §2)
         archive_uuid: None,
     };
-    let report = append_pack(&archive, &input, &cfg, &opts)?;
+    let report = append_pack_with_deletions(&archive, &input, &cfg, &opts, &delete)?;
 
     println!(
         "appended to {} — {} new entries, now {} segments",
