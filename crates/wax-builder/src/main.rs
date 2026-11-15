@@ -44,6 +44,13 @@ enum Commands {
         #[arg(long)]
         archive_uuid: Option<String>,
     },
+    /// Undo the newest append, restoring the previous edition byte for byte
+    /// (SPEC v0.12 §7.5). The previous edition's signature sidecar, if kept,
+    /// verifies again; the current sidecar no longer does.
+    Rollback {
+        #[arg(short, long)]
+        archive: PathBuf,
+    },
     /// Append a new segment (new tree) to an existing archive, then re-sign
     Append {
         #[arg(short, long)]
@@ -115,6 +122,18 @@ fn main() -> Result<()> {
             created_at,
             delete,
         } => cmd_append(archive, input, config, sign_key, created_at, delete),
+        Commands::Rollback { archive } => {
+            let s = wax_core::rollback_last_update(&archive)
+                .with_context(|| format!("rolling back {}", archive.display()))?;
+            println!(
+                "rolled back {} — now {} segment(s), {} bytes",
+                archive.display(),
+                s.segments,
+                s.file_length
+            );
+            println!("  the sidecar signature, if any, belongs to the removed edition: restore the earlier one or re-sign");
+            Ok(())
+        }
         Commands::Inspect { archive, entries } => cmd_inspect(archive, entries),
         Commands::Verify {
             archive,

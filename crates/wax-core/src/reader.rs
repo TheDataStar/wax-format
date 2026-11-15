@@ -607,6 +607,9 @@ impl WaxReader {
     /// Number of distinct paths across the segment chain. One `COUNT(*)` for
     /// a single-segment archive; a streaming merge otherwise.
     pub fn entry_count(&self) -> Result<u64> {
+        if let Some(n) = self.stored_entry_count() {
+            return Ok(n);
+        }
         if self.segments.len() == 1 {
             return self.segments[0].count();
         }
@@ -762,11 +765,35 @@ impl WaxReader {
     /// Recompute the signable digest (SPEC §8.1): SHA-256 over the header bytes
     /// followed by every segment database, base-first, streamed through a
     /// 1 MiB buffer.
+    /// The live entry count the newest segment records (SPEC v0.12 §4.2
+    /// `live_entry_count`), when it records one. [`entry_count`](Self::entry_count)
+    /// uses it; `wax-builder verify` checks it against a full walk.
+    pub fn stored_entry_count(&self) -> Option<u64> {
+        self.segments.last().and_then(|s| s.meta.live_entry_count)
+    }
+
+    /// The 128 header bytes the newest segment's append overwrote (SPEC
+    /// v0.12 §7.5), when it recorded them.
+    pub fn prev_header(&self, segment_index: usize) -> Option<[u8; HEADER_LEN]> {
+        self.segments.get(segment_index).and_then(|s| s.meta.prev_header)
+    }
+
+    pub(crate) fn segment_meta(&self, i: usize) -> &crate::segment::SegmentMeta {
+        &self.segments[i].meta
+    }
+
     pub fn signable_digest(&self) -> Result<[u8; 32]> {
+        self.digest_of_state(&self.header, self.segments.len())
+    }
+
+    /// The §8.1 digest of the state made of `header` and the first `upto`
+    /// segments: what the archive's digest was before later appends, given
+    /// the header it had then (SPEC v0.12 §7.5 rollback check).
+    pub(crate) fn digest_of_state(&self, header: &WaxHeader, upto: usize) -> Result<[u8; 32]> {
         let mut hasher = Sha256::new();
-        hasher.update(self.header.to_bytes());
+        hasher.update(header.to_bytes());
         let mut buf = vec![0u8; 1 << 20];
-        for seg in &self.segments {
+        for seg in &self.segments[..upto] {
             let mut off = seg.disk_offset;
             let mut remaining = seg.db_len;
             while remaining > 0 {

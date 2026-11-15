@@ -14,7 +14,8 @@ v0.10 reader** — proven against real pre-v0.10 artifacts in the conformance
 suite, not against fixtures written for the test.
 
 **v0.12 is additive over v0.11.** No byte-layout change. It adds a deletion
-marker (§5.5.1), lets every appended segment carry search rows for its own
+marker (§5.5.1), verifiable rollback of an update (§7.5), a stored entry count
+(§4.2), lets every appended segment carry search rows for its own
 entries (§5.7), declares how titles are folded for completion (§5.7.1), links
 each appended segment to the exact state it was appended to (§7.4), and moves
 the `volume_id` check from open to lookup (§5.2). Every v0.11 archive opens
@@ -274,6 +275,8 @@ Optional keys *(v0.12)*:
 | `prev_state_digest`    | Lowercase hex, 64 characters: the §8.1 digest of the archive exactly as it stood before this segment was appended. Written by v0.12 writers in every segment except `segment[0]` (§7.4). A value that is not 64 hex characters → `BadPrevStateDigest` at open. |
 | `search_tokenizer`     | The tokenizer this segment's `search_index` was built with (§5.7). Required in a segment that has `search_index` rows. |
 | `title_fold`           | The fold applied to `search_docs.title_fold` (§5.7.1). Absent means `"lower"`, the v0.11 behaviour. |
+| `prev_header`          | Lowercase hex, 256 characters: the exact 128 header bytes this segment's append overwrote (§7.5). Written by v0.12 writers in every segment except `segment[0]`. Malformed → `NotAnIndexSegment` at open. |
+| `live_entry_count`     | Decimal: the number of live entries (§5.5, tombstones excluded, redirects included) in the merged archive **as of this segment**. Written by v0.12 writers in every segment. A reader MAY answer an entry count from the newest segment's value instead of walking the chain; a verifier MUST check it against the walk. |
 
 > **Design-gap flag (§12):** the Refinement doc states the on-disk shape must
 > already be "a chain of segments (base + append), reader-merged with
@@ -838,6 +841,31 @@ v0.12 makes that delta checkable before it is applied.
   `max(existing, its own)`, so a v0.9 archive appended to by a v0.12 writer
   says `12`. It never lowers the value.
 
+### 7.5 Rolling back an update *(v0.12)*
+
+An append overwrites the header, and the old header is not always
+reconstructible from the segments: its `version_minor` may have been raised
+(§7.4) and its reserved bytes are not recorded anywhere else. v0.12 therefore
+stores it: `segment_meta.prev_header` holds the 128 bytes the append replaced.
+
+Undoing the newest append, given segments `0…N`:
+
+1. Read `prev_header`, `prev_state_digest` and `prev_segment_*` from
+   `segment[N]`. If any is absent the segment predates v0.12 and cannot be
+   rolled back this way.
+2. Check that `prev_header`'s `index_offset`/`index_length` equal
+   `prev_segment_offset`/`prev_segment_length`, and that the §8.1 digest of
+   `prev_header ‖ segment[0] ‖ … ‖ segment[N-1]` equals `prev_state_digest`.
+   Either mismatch → `BadPrevStateDigest`, and nothing is written.
+3. Write `prev_header` at offset 0 and `fsync`; then truncate the file to
+   `prev_segment_offset + prev_segment_length` and `fsync`.
+
+The result is **byte-identical** to the archive before the append, so the
+earlier edition's signature sidecar verifies again. A crash between the two
+writes leaves a valid archive with an orphaned tail (§7.2). Repeating the
+procedure walks back further, one update at a time, as far as v0.12 segments
+go. `wax-builder rollback --archive PATH` does exactly this.
+
 ---
 
 ## 8. Signing (detached sidecar) — normative for v0.9/v1.x
@@ -950,7 +978,7 @@ The conformance suite (A4) asserts the *class* of failure, not the exact string.
 | `Header` | `BadMagic`, `TruncatedHeader`, `UnsupportedMajorVersion`, `IndexTooSmall`, `IndexOffsetInHeader`, `IndexOutOfBounds` | rejected at open |
 | `BlobSection` | `BlobSectionLengthMismatch` | rejected at open |
 | `Segment` | `NotAnIndexSegment`, `PrevSegmentOutOfBounds`, `SegmentChainCycle`, `TooManySegments`, `BrokenSegmentChain`, malformed-SQLite | rejected at open |
-| `Schema` | missing `entries`, `entries` wrong shape, `BadPrevStateDigest` (v0.12) | rejected at open |
+| `Schema` | missing `entries`, `entries` wrong shape, `BadPrevStateDigest` (v0.12; also returned by rollback, §7.5) | rejected at open |
 | `Lookup` | `EntryNotFound`, `DanglingRedirect`, `RedirectChainTooDeep`, `EntryDeleted` (v0.12), `UnexpectedVolumeId` (moved here in v0.12) | returned at `get`/`resolve`/`read` and by `list()` for the row concerned |
 | `Search` | search absent, `TokenizerMismatch`, unknown tokenizer, `UnknownTitleFold` (v0.12) | returned by `search`/`suggest`; the archive stays open |
 | `Content` | `UnknownCompression`, decompression failure, `ChecksumMismatch` | returned at `read` |
@@ -998,6 +1026,8 @@ The suite in `crates/wax-core/tests/` and the fuzz crate `fuzz/` MUST cover:
 | *(v0.12)* Indexed base + indexed append that replaces and deletes articles | hits come from both segments; no hit for a replaced or deleted path; all hits readable |
 | *(v0.12)* Title containing `ß` folded with `nfkc-cf-16` | `suggest("STRASSE")` finds it |
 | *(v0.12)* Append to an archive | new segment's `prev_state_digest` equals the pre-append §8.1 digest; pre-append bytes are a prefix of the result except the header |
+| *(v0.12)* Roll back the newest append (§7.5), including on a pre-v0.12 base | file is byte-identical to the pre-append archive |
+| *(v0.12)* `live_entry_count` after adds, replacements, deletions and a resurrection | equals the merged walk |
 
 ### 11.2 Negative corpus (must reject cleanly — error, no panic)
 
@@ -1021,6 +1051,7 @@ The suite in `crates/wax-core/tests/` and the fuzz crate `fuzz/` MUST cover:
 | *(v0.12)* Tombstone in `segment[0]`, or for a path not live | refused by the writer |
 | *(v0.12)* Append declaring a different `search_tokenizer` | `Search/TokenizerMismatch` from the writer |
 | *(v0.12)* Pre-v0.12 reader reading a tombstoned path | `Content/UnknownCompression` (never content) |
+| *(v0.12)* Rollback with a tampered `prev_header` | `BadPrevStateDigest`; file unchanged |
 | Entry `compression = "brotli"` | `Content/UnknownCompression` at `read` |
 | Entry blob truncated / `sha256` wrong | `Content/ChecksumMismatch` or decompression error at `read` |
 
@@ -1191,7 +1222,7 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
 
 | Format version | Date | Change |
 |----------------|------|--------|
-| 0.12 | 2026-11-15 | **Additive minor.** Tombstones as `compression = "tombstone"`, with aliases deleted alongside their target (§5.5.1). The search segment may appear in any segment, covering its own entries, with hits checked for ownership and merged by per-segment position (RRF), since bm25 scores from different segments are not comparable; one tokenizer per archive (§5.7); this also fixes §4.1, which already said "any segment". Declared title fold `nfkc-cf-16` (§5.7.1). `prev_state_digest` links each appended segment to the state it extends, so an update is the byte tail plus a header and can be checked before it is applied; header minor on append is `max(old, 12)`; an appending writer reclaims an orphaned tail and refuses to exceed the 64-segment limit (§7.1, §7.4). `volume_id` checked per entry at lookup rather than by a scan at open (§5.2). No byte-layout change. |
+| 0.12 | 2026-11-15 | **Additive minor.** Tombstones as `compression = "tombstone"`, with aliases deleted alongside their target (§5.5.1). The search segment may appear in any segment, covering its own entries, with hits checked for ownership and merged by per-segment position (RRF), since bm25 scores from different segments are not comparable; one tokenizer per archive (§5.7); this also fixes §4.1, which already said "any segment". Declared title fold `nfkc-cf-16` (§5.7.1). `prev_state_digest` links each appended segment to the state it extends, so an update is the byte tail plus a header and can be checked before it is applied; header minor on append is `max(old, 12)`; an appending writer reclaims an orphaned tail and refuses to exceed the 64-segment limit (§7.1, §7.4). Each appended segment stores the header it replaced, so an update can be rolled back to the exact previous bytes and the rollback checked (§7.5); every segment stores the merged `live_entry_count` (§4.2). `volume_id` checked per entry at lookup rather than by a scan at open (§5.2). No byte-layout change. |
 | 0.11 | 2026-10-14 | **Additive minor.** The embedded search segment (§5.7): a contentless FTS5 index plus a `search_docs` title map, present only in segment 0, with the tokenizer declared in `segment_meta` and a reader obliged to refuse one it cannot reproduce rather than answer wrongly. Fills the table name v0.9 reserved. No byte-layout change; an archive without the segment opens exactly as before and reports search absent, not failed. The stand-off segment behind `search_index_offset` is still v2 and still unused. Decision recorded in `docs/adr/ADR-0002`. |
 | 0.10 | 2026-10-14 | **Additive minor.** New `compression` value `zstd-dict` (§3) and a new segment-0 `dictionary` table (§5.9) holding one shared zstd dictionary. Per-entry framing is unchanged — still one frame per entry, so random access and the lookup path are untouched. Every v0.9 archive opens unmodified; the dictionary table and the new codec value are both additive under §5.4. Codec chosen from measurement, not argument — see [`docs/adr/ADR-0001`](docs/adr/ADR-0001-text-compression-codec.md). Carrying the dictionary forward across editions is normative (§5.9), because retraining reframes every entry and destroys the delta model. |
 | 0.9 | 2026-09-13 | A1b — no byte-layout change. §5.2: `entries` is declared `WITHOUT ROWID` by writers; readers MUST accept either layout. §4.1/§5.5 clarify that segments may be opened in place and that the merge is a definition, not a materialization. §11.3 fuzz target 2 walks the segment through the same path the reader uses. §12.23 records the measurements. |

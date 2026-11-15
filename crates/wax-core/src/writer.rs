@@ -138,6 +138,7 @@ impl WaxWriter {
             pack_tokenizer: None,
             search_rows: 0,
             prev_state_digest: None,
+            prev_header: None,
             tombstones: 0,
         })
     }
@@ -233,6 +234,7 @@ impl WaxWriter {
             pack_tokenizer,
             search_rows: 0,
             prev_state_digest: Some(prev_state_digest),
+            prev_header: Some(hbuf),
             tombstones: 0,
         })
     }
@@ -353,6 +355,8 @@ pub struct StreamingWriter {
     /// The §8.1 digest of the archive this segment is appended to (SPEC
     /// v0.12 §7.4). `None` for a fresh build.
     prev_state_digest: Option<[u8; 32]>,
+    /// The raw header this append will overwrite (SPEC v0.12 §7.5).
+    prev_header: Option<[u8; HEADER_LEN]>,
     /// Tombstones added to this segment (SPEC v0.12 §5.5.1).
     tombstones: u64,
 }
@@ -715,6 +719,23 @@ impl StreamingWriter {
         // Redirect flattening + validation (SPEC §6.2), entirely in SQL.
         self.index
             .flatten_redirects(self.external_paths.as_ref())?;
+
+        // The merged live count after this segment (SPEC v0.12 §4.2), so no
+        // reader ever walks the chain to count. One point lookup per row this
+        // segment writes, against the prior state; the prior count comes from
+        // the prior segment's own key when it has one.
+        let live_entry_count = match &self.external_paths {
+            None => self.index.row_count()?,
+            Some(existing) => {
+                let mut n = existing.entry_count()? as i64;
+                self.index.for_each_row(|path, is_tombstone| {
+                    let was = existing.contains(path)?;
+                    n += (!is_tombstone) as i64 - was as i64;
+                    Ok(())
+                })?;
+                n as u64
+            }
+        };
         // The reader on the prior segments is no longer needed; drop it
         // before the file is extended and the header rewritten.
         self.external_paths = None;
@@ -734,6 +755,10 @@ impl StreamingWriter {
         if let Some(d) = self.prev_state_digest {
             meta.push(("prev_state_digest".into(), hex(&d)));
         }
+        if let Some(h) = self.prev_header {
+            meta.push(("prev_header".into(), hex(&h)));
+        }
+        meta.push(("live_entry_count".into(), live_entry_count.to_string()));
         self.index.write_meta(&meta)?;
 
         // The shared dictionary lives in the index segment, not the blob region,
@@ -994,6 +1019,29 @@ impl IndexBuilder {
 
     fn conn(&self) -> &Connection {
         self.conn.as_ref().expect("index not yet sealed")
+    }
+
+    fn row_count(&self) -> Result<u64> {
+        let n: i64 = self.conn().query_row(
+            "SELECT COUNT(*) FROM entries WHERE compression IS NOT 'tombstone' OR redirect_to IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n as u64)
+    }
+
+    /// Stream every row of this segment as (path, is_tombstone).
+    fn for_each_row(&self, mut f: impl FnMut(&str, bool) -> Result<()>) -> Result<()> {
+        let mut stmt = self.conn().prepare(
+            "SELECT path, (compression = 'tombstone' AND redirect_to IS NULL) FROM entries",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(r) = rows.next()? {
+            let path: String = r.get(0)?;
+            let tomb: bool = r.get(1)?;
+            f(&path, tomb)?;
+        }
+        Ok(())
     }
 
     fn insert(&self, r: &SegRow) -> Result<()> {
@@ -1336,4 +1384,73 @@ fn read_segment_index(file: &mut File, offset: u64, length: u64) -> Result<u64> 
 /// Lowercase hex of a digest, as stored in `segment_meta` (SPEC v0.12 §7.4).
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// What [`rollback_last_update`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollbackStats {
+    /// Segments in the chain after the rollback.
+    pub segments: usize,
+    /// File length after the rollback.
+    pub file_length: u64,
+}
+
+/// Undo the newest append (SPEC v0.12 §7.5): restore the header it
+/// overwrote and cut the file back to the end of the previous segment.
+///
+/// Checked before anything is written: the stored header must point at the
+/// previous segment, and the digest of (stored header ‖ earlier segments)
+/// must equal the newest segment's `prev_state_digest`. The result is then
+/// byte-identical to the edition before the update, so that edition's
+/// signature sidecar verifies again. Crash-safe in the same way as an
+/// append: the header is written first, and until the truncation lands the
+/// removed segment is just an orphaned tail (§7.2).
+pub fn rollback_last_update(archive: impl AsRef<Path>) -> Result<RollbackStats> {
+    let archive = archive.as_ref();
+    let (prev_raw, prev_end, upto) = {
+        let r = crate::reader::WaxReader::open_with(
+            archive,
+            crate::reader::ReadOptions {
+                verify_checksums: false,
+                lookup_cache_entries: 0,
+            },
+        )?;
+        let n = r.segment_count();
+        if n < 2 {
+            return Err(WaxError::Schema {
+                detail: "nothing to roll back: the archive has a single segment".into(),
+            });
+        }
+        let newest = r.segment_meta(n - 1);
+        let (Some(raw), Some(digest), Some((po, pl))) =
+            (newest.prev_header, newest.prev_state_digest, newest.prev_segment)
+        else {
+            return Err(WaxError::Schema {
+                detail: format!(
+                    "segment {} records no prev_header/prev_state_digest; it predates \
+                     verifiable rollback (SPEC v0.12 §7.5)",
+                    n - 1
+                ),
+            });
+        };
+        let old = WaxHeader::parse(&raw)?;
+        if (old.index_offset, old.index_length) != (po, pl) {
+            return Err(WaxError::BadPrevStateDigest { segment: (n - 1) as u64 });
+        }
+        if r.digest_of_state(&old, n - 1)? != digest {
+            return Err(WaxError::BadPrevStateDigest { segment: (n - 1) as u64 });
+        }
+        old.validate(po + pl)?;
+        (raw, po + pl, n - 1)
+    };
+    let mut file = OpenOptions::new().read(true).write(true).open(archive)?;
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(&prev_raw)?;
+    file.sync_all()?;
+    file.set_len(prev_end)?;
+    file.sync_all()?;
+    Ok(RollbackStats {
+        segments: upto,
+        file_length: prev_end,
+    })
 }

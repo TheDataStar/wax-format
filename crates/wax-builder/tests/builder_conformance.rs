@@ -738,3 +738,23 @@ fn append_can_delete_a_path_and_verify_still_passes() {
     )
     .is_err());
 }
+
+#[test]
+fn an_append_rolls_back_to_the_exact_previous_pack_and_verify_passes_throughout() {
+    let base = tree(&[("a.txt", b"a"), ("gone.txt", b"bye")]);
+    let extra = tree(&[("b.txt", b"b")]);
+    let cfg = PackConfig::default();
+    let dst = tempfile::tempdir().unwrap();
+    let archive = out(&dst, "p.wax");
+    build_pack(base.path(), &archive, &cfg, &pinned()).unwrap();
+    let before = std::fs::read(&archive).unwrap();
+
+    append_pack_with_deletions(&archive, extra.path(), &cfg, &pinned(), &["gone.txt".to_string()])
+        .unwrap();
+    assert!(verify_pack(&archive, None, false).unwrap().ok(), "stored count matches the walk");
+
+    wax_core::rollback_last_update(&archive).unwrap();
+    assert_eq!(std::fs::read(&archive).unwrap(), before);
+    assert!(verify_pack(&archive, None, false).unwrap().ok());
+    assert_eq!(WaxReader::open(&archive).unwrap().read("gone.txt").unwrap(), b"bye");
+}

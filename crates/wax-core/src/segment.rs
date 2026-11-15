@@ -35,6 +35,12 @@ pub struct SegmentMeta {
     /// appended to (SPEC v0.12 §7.4). `None` on the base and on any segment
     /// written before v0.12.
     pub prev_state_digest: Option<[u8; 32]>,
+    /// The exact 128 header bytes this segment's append overwrote (SPEC
+    /// v0.12 §7.5), so the update can be undone and the undo checked.
+    pub prev_header: Option<[u8; crate::HEADER_LEN]>,
+    /// Live (non-deleted) entries in the merged archive as of this segment
+    /// (SPEC v0.12 §4.2), so a count needs no walk.
+    pub live_entry_count: Option<u64>,
 }
 
 /// An opened index segment: a read-only connection onto a window of the
@@ -213,6 +219,20 @@ impl Segment {
             })?),
         };
 
+        let prev_header = match get("prev_header")? {
+            None => None,
+            Some(h) => Some(parse_hex_header(h.trim()).ok_or_else(|| {
+                WaxError::NotAnIndexSegment {
+                    offset: disk_offset,
+                    reason: "segment_meta.prev_header is not 256 hex characters".into(),
+                }
+            })?),
+        };
+        let live_entry_count = match get("live_entry_count")? {
+            None => None,
+            Some(v) => Some(parse_u64("live_entry_count", &v)?),
+        };
+
         Ok(SegmentMeta {
             segment_index,
             blob_region_offset,
@@ -220,6 +240,8 @@ impl Segment {
             created_at,
             prev_segment,
             prev_state_digest,
+            prev_header,
+            live_entry_count,
         })
     }
 
@@ -519,6 +541,20 @@ impl Segment {
 }
 
 /// 64 hex characters → 32 bytes. Either case accepted; anything else is `None`.
+fn parse_hex_header(s: &str) -> Option<[u8; crate::HEADER_LEN]> {
+    let b = s.as_bytes();
+    if b.len() != crate::HEADER_LEN * 2 {
+        return None;
+    }
+    let mut out = [0u8; crate::HEADER_LEN];
+    for (i, pair) in b.chunks(2).enumerate() {
+        let hi = (pair[0] as char).to_digit(16)?;
+        let lo = (pair[1] as char).to_digit(16)?;
+        out[i] = (hi * 16 + lo) as u8;
+    }
+    Some(out)
+}
+
 pub(crate) fn parse_hex32(h: &str) -> Option<[u8; 32]> {
     if h.len() != 64 || !h.is_ascii() {
         return None;

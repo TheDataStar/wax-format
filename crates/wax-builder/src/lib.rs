@@ -585,6 +585,17 @@ pub fn verify_pack(
             Err(e) => bad.push((entry.path, e.to_string())),
         }
     }
+    // SPEC v0.12 §4.2: the stored live count must match what a walk finds,
+    // or every reader that trusts it reports a wrong number.
+    if let Some(stored) = reader.stored_entry_count() {
+        let walked = (checked + bad.len()) as u64;
+        if stored != walked {
+            bad.push((
+                "<segment_meta.live_entry_count>".to_string(),
+                format!("stores {stored} but the archive lists {walked} entries"),
+            ));
+        }
+    }
 
     let (signature, signature_error) = match pubkey {
         Some(pk) => match sign::verify(archive, pk) {

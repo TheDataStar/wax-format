@@ -287,3 +287,94 @@ fn appending_to_an_older_pack_raises_the_header_minor_and_keeps_it_readable() {
     assert_eq!(r.read(&ep).unwrap(), ep_bytes);
     assert_eq!(r.read("new.html").unwrap(), b"fresh");
 }
+
+// --- §7.5 rollback and §4.2 live_entry_count ---------------------------------
+
+#[test]
+fn rolling_back_an_update_restores_the_previous_edition_byte_for_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let pack = edition_one(dir.path());
+    let ed1 = std::fs::read(&pack).unwrap();
+    edition_two(&pack);
+    let ed2 = std::fs::read(&pack).unwrap();
+    assert_ne!(ed1, ed2);
+
+    let stats = wax_core::rollback_last_update(&pack).unwrap();
+    assert_eq!(stats.segments, 1);
+    assert_eq!(std::fs::read(&pack).unwrap(), ed1, "identical, so edition 1's signature verifies again");
+    let r = WaxReader::open(&pack).unwrap();
+    assert_eq!(r.read("Carbon.html").unwrap(), b"Carbon forms more compounds than any element.");
+
+    // A base-only archive has nothing to undo.
+    assert!(wax_core::rollback_last_update(&pack).is_err());
+    assert_eq!(std::fs::read(&pack).unwrap(), ed1);
+}
+
+#[test]
+fn a_rollback_whose_stored_header_does_not_check_out_changes_nothing() {
+    // Corrupt one byte of the stored header inside the newest segment's
+    // prev_header (its created_at field) and the digest check must refuse.
+    let dir = tempfile::tempdir().unwrap();
+    let pack = edition_one(dir.path());
+    edition_two(&pack);
+    let r = WaxReader::open(&pack).unwrap();
+    let stored = r.prev_header(1).expect("v0.12 appends store the header they replace");
+    drop(r);
+    let mut bytes = std::fs::read(&pack).unwrap();
+    let hex_old: String = stored.iter().map(|b| format!("{b:02x}")).collect();
+    let mut tampered = stored;
+    tampered[24] ^= 0x01;
+    let hex_new: String = tampered.iter().map(|b| format!("{b:02x}")).collect();
+    let at = bytes
+        .windows(hex_old.len())
+        .position(|w| w == hex_old.as_bytes())
+        .expect("prev_header is stored as hex text in segment_meta");
+    bytes[at..at + hex_new.len()].copy_from_slice(hex_new.as_bytes());
+    std::fs::write(&pack, &bytes).unwrap();
+
+    let err = wax_core::rollback_last_update(&pack).unwrap_err();
+    assert!(matches!(err, WaxError::BadPrevStateDigest { segment: 1 }), "got {err}");
+    assert_eq!(std::fs::read(&pack).unwrap(), bytes, "a refused rollback writes nothing");
+}
+
+#[test]
+fn the_live_entry_count_is_stored_and_matches_a_full_walk() {
+    let dir = tempfile::tempdir().unwrap();
+    let pack = edition_one(dir.path());
+    assert_eq!(WaxReader::open(&pack).unwrap().stored_entry_count(), Some(5));
+    edition_two(&pack);
+    let r = WaxReader::open(&pack).unwrap();
+    // 5 - Carbon - its alias C + Boron (Helium is a replacement, not new).
+    assert_eq!(r.stored_entry_count(), Some(4));
+    assert_eq!(r.entry_count().unwrap(), r.paths().count() as u64);
+
+    // A resurrected path counts again.
+    let mut sw = WaxWriter::new(UUID).created_at(1_700_200_000).open_append(&pack).unwrap();
+    add(&mut sw, "Carbon.html", "Carbon", "Carbon is back.", false);
+    sw.finish().unwrap();
+    let r = WaxReader::open(&pack).unwrap();
+    assert_eq!(r.stored_entry_count(), Some(5));
+    assert_eq!(r.paths().count(), 5);
+}
+
+#[test]
+fn a_legacy_pack_gets_a_correct_count_on_its_first_v0_12_append() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../wax-builder/tests/fixtures/legacy-tier-pi_5.wax");
+    let pack = dir.path().join("legacy.wax");
+    std::fs::copy(&src, &pack).unwrap();
+    let before = WaxReader::open(&pack).unwrap();
+    assert_eq!(before.stored_entry_count(), None, "predates the key");
+    let n = before.entry_count().unwrap();
+    drop(before);
+    let mut sw = WaxWriter::new(UUID).created_at(1_700_300_000).open_append(&pack).unwrap();
+    add(&mut sw, "brand-new.html", "New", "new", false);
+    sw.finish().unwrap();
+    let r = WaxReader::open(&pack).unwrap();
+    assert_eq!(r.stored_entry_count(), Some(n + 1));
+    assert_eq!(r.paths().count() as u64, n + 1);
+    // And it rolls back to the exact legacy bytes.
+    wax_core::rollback_last_update(&pack).unwrap();
+    assert_eq!(std::fs::read(&pack).unwrap(), std::fs::read(&src).unwrap());
+}

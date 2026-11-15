@@ -32,7 +32,7 @@ pub mod writer;
 pub use header::WaxHeader;
 pub use model::{Compression, Entry, EntryContent, EntryInput, Resolved, SearchHit, Suggestion};
 pub use reader::{Entries, ReadOptions, WaxReader};
-pub use writer::{EntryMeta, EntryStats, FinishStats, StreamingWriter, WaxWriter};
+pub use writer::{rollback_last_update, EntryMeta, EntryStats, FinishStats, RollbackStats, StreamingWriter, WaxWriter};
 
 /// Magic bytes at offset 0: ASCII `"WAX1"`.
 pub const WAX_MAGIC: [u8; 4] = *b"WAX1";
