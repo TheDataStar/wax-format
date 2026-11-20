@@ -1,6 +1,6 @@
 # The box's own network: names, addresses and DHCP
 
-*Design, no code. Written 2026-11-20 alongside the first `deltd` build (`crates/deltlib`). Answers the question "must the box host its own DNS and DHCP, and does it need an IPAM tool?" against contract §8 and §16, Track E §6 and §14, and `docs/privilege-boundary.md`.*
+*Written 2026-11-20 alongside the first `deltd` build (`crates/deltlib`). **Built the same day in `crates/deltos-net`** (build order steps 1 and 2, §9): the registry, the generated `dnsmasq` and `nftables` settings, the checked actions, and `deltd`'s answers to phones' internet checks, tested against a real `dnsmasq` on a virtual network. Answers the question "must the box host its own DNS and DHCP, and does it need an IPAM tool?" against contract §8 and §16, Track E §6 and §14, and `docs/privilege-boundary.md`.*
 
 **What this document owns:** how a phone on the box's network finds the box's names, gets an address, and why; and what the box tracks about names and addresses. **What it does not own:** the hostname scheme (contract §8), the Wi-Fi radio and captive-portal behaviour (Track E §6, E3), and who may change any of it (`docs/privilege-boundary.md`). Contract values proposed here are marked **proposed** and are not binding until contract §8 or §13.2 says so.
 
@@ -112,7 +112,8 @@ And one listing: `GET /network/leases`, `network.configure`, Secure.
 
 ## 9. Build order
 
-1. **E10 network registry and `dnsmasq` configuration generator**, run by `deltos-shelld` (the registry table, the wildcard records, the hotspot DHCP settings, the watched names directory). Tested without a radio: `dnsmasq` on a virtual network with test clients.
-2. **`deltd`'s connectivity-check answers** (§6), with tests that they answer only those exact paths and set no cookie.
+1. ~~**E10 network registry and `dnsmasq` configuration generator**~~ **Built** (`crates/deltos-net`): the registry, the wildcard records, the hotspot DHCP settings, the watched names and reservations directories, the uplink firewall file, and the §7 actions behind shelld's checks. Tested without a radio: a real `dnsmasq` on a virtual ethernet pair, with a DHCP client in its own network namespace standing in for a phone.
+2. ~~**`deltd`'s connectivity-check answers**~~ **Built** (`deltd --answer-connectivity-checks`), answering only the listed paths, `GET`/`HEAD` only, no cookie.
+   Not built yet: the radio itself (`configure_ap`, `join_network`, Track E's E3), the supervisor units that run `dnsmasq`, the firewall and `deltos-net-render` at boot, and the `deltos-shelld` socket that calls the actions.
 3. **Admin endpoints** for §7, built with the rest of deltd API step 4.
 4. **Real handset testing** of §3 and §6, when Commander starts hardware testing.
