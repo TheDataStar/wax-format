@@ -491,3 +491,158 @@ fn reclaiming_the_tail_keeps_the_signature_digest() {
     assert_eq!(std::fs::read(&pack).unwrap(), clean);
     assert_eq!(signable_digest_of(&pack).unwrap().0, digest);
 }
+
+// ---------------------------------------------------------------------------
+// Manifest updates (SPEC v0.13 §5.6.1)
+// ---------------------------------------------------------------------------
+
+fn manifest_v(version: &str) -> BTreeMap<String, String> {
+    let mut m = manifest();
+    m.insert("version".into(), version.into());
+    m
+}
+
+/// Edition 1 with a versioned manifest, then an append that adds a page and
+/// replaces the manifest.
+fn versioned_pack(dir: &Path) -> (PathBuf, Vec<u8>) {
+    let out = dir.join("versioned.wax");
+    let mut sw = WaxWriter::new(UUID).created_at(1_700_000_000).create(&out, &manifest_v("2026.09.1")).unwrap();
+    add(&mut sw, "A.html", "A", &html("A", &[("One", "first")]));
+    sw.finish().unwrap();
+    let before = std::fs::read(&out).unwrap();
+    let mut sw = WaxWriter::new(UUID).created_at(1_700_100_000).open_append(&out).unwrap();
+    add(&mut sw, "B.html", "B", &html("B", &[("Two", "second")]));
+    sw.set_manifest(&manifest_v("2026.10.1"));
+    sw.finish().unwrap();
+    (out, before)
+}
+
+#[test]
+fn an_append_can_replace_the_manifest_and_rollback_undoes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (pack, before) = versioned_pack(dir.path());
+    let r = WaxReader::open(&pack).unwrap();
+    assert_eq!(r.manifest(), &manifest_v("2026.10.1"));
+    assert_eq!(r.manifest_segment(), 1);
+    assert!(!r.read("A.html").unwrap().is_empty(), "older entries untouched");
+    drop(r);
+
+    // A later append that sets nothing keeps the replacement.
+    let mut sw = WaxWriter::new(UUID).created_at(1_700_200_000).open_append(&pack).unwrap();
+    add(&mut sw, "C.html", "C", &html("C", &[("Three", "third")]));
+    sw.finish().unwrap();
+    let r = WaxReader::open(&pack).unwrap();
+    assert_eq!(r.manifest(), &manifest_v("2026.10.1"));
+    assert_eq!(r.manifest_segment(), 1);
+    drop(r);
+
+    rollback_last_update(&pack).unwrap();
+    rollback_last_update(&pack).unwrap();
+    let r = WaxReader::open(&pack).unwrap();
+    assert_eq!(r.manifest(), &manifest_v("2026.09.1"));
+    assert_eq!(r.manifest_segment(), 0);
+    drop(r);
+    assert_eq!(std::fs::read(&pack).unwrap(), before, "byte-identical after undo");
+}
+
+#[test]
+fn a_manifest_update_travels_in_the_update_tail() {
+    // SPEC §7.4: an update is the old pack's bytes up to its logical end, then
+    // the new segment. Replacing the manifest must not touch earlier bytes.
+    let dir = tempfile::tempdir().unwrap();
+    let (pack, before) = versioned_pack(dir.path());
+    let after = std::fs::read(&pack).unwrap();
+    let old_end = before.len() - 128; // minus the mirror
+    assert_eq!(&after[128..old_end], &before[128..old_end]);
+    // Applying exactly that tail to the old copy gives the new edition.
+    let mut applied = after[..128].to_vec();
+    applied.extend_from_slice(&before[128..old_end]);
+    applied.extend_from_slice(&after[old_end..]);
+    assert_eq!(applied, after);
+    let f = dir.path().join("before.wax");
+    std::fs::write(&f, &before).unwrap();
+    assert_ne!(signable_digest_of(&f).unwrap(), signable_digest_of(&pack).unwrap());
+}
+
+#[test]
+fn compaction_keeps_the_replaced_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    let (pack, _) = versioned_pack(dir.path());
+    let out = dir.path().join("compact.wax");
+    compact(&pack, &out, CompactOptions::default()).unwrap();
+    let r = WaxReader::open(&out).unwrap();
+    assert_eq!(r.segment_count(), 1);
+    assert_eq!(r.manifest(), &manifest_v("2026.10.1"));
+    assert_eq!(r.manifest_segment(), 0);
+}
+
+#[test]
+fn setting_the_manifest_on_a_fresh_build_just_sets_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("fresh.wax");
+    let mut sw = WaxWriter::new(UUID).created_at(1_700_000_000).create(&out, &manifest_v("2026.09.1")).unwrap();
+    add(&mut sw, "A.html", "A", &html("A", &[("One", "first")]));
+    sw.set_manifest(&manifest_v("2026.09.2"));
+    sw.finish().unwrap();
+    let r = WaxReader::open(&out).unwrap();
+    assert_eq!(r.manifest(), &manifest_v("2026.09.2"));
+    assert_eq!(r.manifest_segment(), 0, "only an appended segment declares an update");
+}
+
+/// Rewrite the newest segment of `pack` with `f`, fixing the header's
+/// `index_length` and check; the mirror is dropped.
+fn rewrite_newest_segment(pack: &Path, f: impl FnOnce(&rusqlite::Connection)) {
+    let bytes = std::fs::read(pack).unwrap();
+    let h = wax_core::header::WaxHeader::parse(&bytes[..128]).unwrap();
+    let (o, l) = (h.index_offset as usize, h.index_length as usize);
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("seg.db");
+    std::fs::write(&p, &bytes[o..o + l]).unwrap();
+    {
+        let conn = rusqlite::Connection::open(&p).unwrap();
+        f(&conn);
+        conn.execute("VACUUM", []).unwrap();
+        conn.close().unwrap();
+    }
+    let seg = std::fs::read(&p).unwrap();
+    let mut h2 = h;
+    h2.index_length = seg.len() as u64;
+    let mut out = h2.to_bytes().to_vec();
+    out.extend_from_slice(&bytes[128..o]);
+    out.extend_from_slice(&seg);
+    std::fs::write(pack, out).unwrap();
+}
+
+#[test]
+fn a_manifest_table_in_a_segment_that_declares_nothing_is_ignored() {
+    // Every version before v0.13 told readers to ignore a manifest outside
+    // segment 0; that stays true unless the segment declares the update.
+    let dir = tempfile::tempdir().unwrap();
+    let (pack, _) = versioned_pack(dir.path());
+    rewrite_newest_segment(&pack, |c| {
+        c.execute("DELETE FROM segment_meta WHERE key = 'manifest_update'", []).unwrap();
+    });
+    let r = WaxReader::open(&pack).unwrap();
+    assert_eq!(r.manifest(), &manifest_v("2026.09.1"));
+    assert_eq!(r.manifest_segment(), 0);
+}
+
+#[test]
+fn a_malformed_manifest_update_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (pack, _) = versioned_pack(dir.path());
+    let copy = dir.path().join("copy.wax");
+    std::fs::copy(&pack, &copy).unwrap();
+
+    rewrite_newest_segment(&pack, |c| {
+        c.execute("UPDATE segment_meta SET value = 'merge' WHERE key = 'manifest_update'", []).unwrap();
+    });
+    let err = WaxReader::open(&pack).unwrap_err();
+    assert!(matches!(err, WaxError::BadManifestUpdate { segment: 1, .. }), "{err}");
+
+    rewrite_newest_segment(&copy, |c| {
+        c.execute("DROP TABLE manifest", []).unwrap();
+    });
+    let err = WaxReader::open(&copy).unwrap_err();
+    assert!(matches!(err, WaxError::BadManifestUpdate { segment: 1, .. }), "{err}");
+}

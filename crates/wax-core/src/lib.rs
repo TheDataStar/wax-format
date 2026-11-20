@@ -148,6 +148,10 @@ pub enum WaxError {
     #[error("archive declares passage rule {rule:?}, which this build does not know")]
     UnknownPassageRule { rule: String },
 
+    // --- Manifest updates (SPEC v0.13 §5.6.1) -------------------------
+    #[error("segment {segment} declares a manifest update the reader cannot apply: {detail}")]
+    BadManifestUpdate { segment: usize, detail: String },
+
     // --- Compaction (SPEC v0.13 §7.6) ---------------------------------
     #[error("compaction refused: {detail}")]
     Compaction { detail: String },

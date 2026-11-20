@@ -370,6 +370,7 @@ Optional keys *(v0.12)*:
 | `search_tokenizer`     | The tokenizer this segment's `search_index` was built with (§5.7). Required in a segment that has `search_index` rows. |
 | `title_fold`           | The fold applied to `search_docs.title_fold` (§5.7.1). Absent means `"lower"`, the v0.11 behaviour. |
 | `prev_header`          | Lowercase hex, 256 characters: the exact 128 header bytes this segment's append overwrote (§7.5). Written by v0.12 writers in every segment except `segment[0]`. Malformed → `NotAnIndexSegment` at open. |
+| `manifest_update`      | *(v0.13)* `"replace"`: this segment's `manifest` table replaces the pack's manifest (§5.6.1). Absent in `segment[0]`. Any other value, or `"replace"` without a `manifest` table → `BadManifestUpdate` at open. |
 | `passage_rule`         | *(v0.13)* The rule this segment's `entries.passages` values were cut with (§5.10). Required in a segment where any row has `passages`; `html-headings-1` is the one value defined. |
 | `live_entry_count`     | Decimal: the number of live entries (§5.5, tombstones excluded, redirects included) in the merged archive **as of this segment**. Written by v0.12 writers in every segment. A reader MAY answer an entry count from the newest segment's value instead of walking the chain; a verifier MUST check it against the walk. |
 
@@ -563,16 +564,45 @@ CREATE TABLE manifest (
 );
 ```
 
-* Present **only in `segment[0]`**. A reader MUST ignore any `manifest` table
-  found in `segment[1…N]`.
-* **Immutable across appends.** Changing manifest content is by definition a new
-  pack version (new build, possibly new `archive_uuid` policy per Track B), not
-  an append.
+* Written in `segment[0]`. A reader MUST ignore any `manifest` table found in
+  `segment[1…N]` **unless that segment declares a manifest update** (§5.6.1).
+* *(v0.13; was "immutable across appends")* **Replaceable by an append, never
+  edited in place.** A segment's own `manifest` table is never changed after
+  it is written; an append that brings a new edition MAY carry a whole new
+  manifest instead (§5.6.1). Before v0.13 a manifest change could only be a
+  rebuild, so an appended edition kept reporting its old `version`.
 * The **set of keys and their semantics is Track B's manifest-schema work** and
   is deliberately not specified in A3. A3 fixes only: table name, location,
   immutability, and `(key TEXT PRIMARY KEY, value TEXT)` shape. `wax-core` in
   this phase exposes `manifest()` as an opaque `Map<String,String>` and does not
   validate keys.
+
+### 5.6.1 Manifest updates *(v0.13)*
+
+An appended segment replaces the pack's manifest by carrying a `manifest`
+table **and** `segment_meta.manifest_update = "replace"` (§4.2).
+
+* **Whole replacement, no merge.** The effective manifest is the `manifest`
+  table of the **newest** segment that declares `manifest_update`, or
+  `segment[0]`'s when none does. Keys absent from the replacement are gone;
+  there is no per-key overlay and nothing to delete.
+* **A reader MUST refuse** (`BadManifestUpdate`, at open) a segment whose
+  `manifest_update` is any other value, or which declares `"replace"` but has
+  no `manifest` table. An empty table is a valid, empty manifest.
+* **The declaration is what counts.** A `manifest` table in a segment that does
+  not declare an update is ignored, as every earlier version required.
+* **Everything else stays where it was.** `archive_uuid` (header), the shared
+  dictionary (§5.9, segment 0 only) and every older segment are untouched, so
+  the update is still the byte tail of §7.4 and rolling it back (§7.5)
+  restores the old manifest exactly. Compaction (§7.6) writes the effective
+  manifest into its single segment.
+* **Older readers.** A pre-v0.13 reader ignores the replacement and shows
+  `segment[0]`'s manifest: the pack opens and serves, with its old metadata.
+* The format keeps the manifest opaque. Which keys may change and how
+  `version` must move is the builder's rule: `wax-builder append` validates a
+  replacement exactly as a build (contract §11, including `icon` and
+  `entry_point` resolving in the updated pack) and refuses one whose CalVer
+  `version` is not newer than the pack's.
 
 ### 5.7 `search_index` *(v0.11; placement widened in v0.12)*
 
@@ -1277,7 +1307,7 @@ The conformance suite (A4) asserts the *class* of failure, not the exact string.
 | `Header` | `BadMagic`, `TruncatedHeader`, `UnsupportedMajorVersion`, `IndexTooSmall`, `IndexOffsetInHeader`, `IndexOutOfBounds`, `HeaderCheckMismatch` (v0.13; only when no mirror can stand in, §2.4) | rejected at open |
 | `BlobSection` | `BlobSectionLengthMismatch` | rejected at open |
 | `Segment` | `NotAnIndexSegment`, `PrevSegmentOutOfBounds`, `SegmentChainCycle`, `TooManySegments`, `BrokenSegmentChain`, malformed-SQLite | rejected at open |
-| `Schema` | missing `entries`, `entries` wrong shape, `BadPrevStateDigest` (v0.12; also returned by rollback, §7.5) | rejected at open |
+| `Schema` | missing `entries`, `entries` wrong shape, `BadPrevStateDigest` (v0.12; also returned by rollback, §7.5), `BadManifestUpdate` (v0.13, §5.6.1) | rejected at open |
 | `Lookup` | `EntryNotFound`, `DanglingRedirect`, `RedirectChainTooDeep`, `EntryDeleted` (v0.12), `UnexpectedVolumeId` (moved here in v0.12) | returned at `get`/`resolve`/`read` and by `list()` for the row concerned |
 | `Search` | search absent, `TokenizerMismatch`, unknown tokenizer, `UnknownTitleFold` (v0.12) | returned by `search`/`suggest`; the archive stays open |
 | `Passage` *(v0.13)* | `PassagesUnavailable`, `BadPassageTable`, `UnknownPassageRule` | returned by `passages`/`search_passages`; the archive stays open |
@@ -1368,6 +1398,9 @@ The suite in `crates/wax-core/tests/` and the fuzz crate `fuzz/` MUST cover:
 | *(v0.13)* Writer given passages for an entry it does not carry | refused at `finish` |
 | *(v0.13)* Compaction of a `trigram` pack | `Compaction`, no output file; with `--drop-search`, a pack without an index |
 | *(v0.13)* Compaction of a pack with a corrupted entry | `Content/ChecksumMismatch`, no output used |
+| *(v0.13)* `manifest_update` other than `"replace"`, or `"replace"` with no `manifest` table | `Schema/BadManifestUpdate` |
+| *(v0.13, positive)* Append replacing the manifest; a later append that does not | both open with the replacement; rolling back both restores the base manifest byte for byte |
+| *(v0.13, positive)* `manifest` table in an appended segment without `manifest_update` | opens; table ignored |
 | Entry `compression = "brotli"` | `Content/UnknownCompression` at `read` |
 | Entry blob truncated / `sha256` wrong | `Content/ChecksumMismatch` or decompression error at `read` |
 
@@ -1582,7 +1615,7 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
 
 | Format version | Date | Change |
 |----------------|------|--------|
-| 0.13 | 2026-11-20 | **Additive minor.** Header check in the last 8 reserved bytes and flag bit 4 (§2.3); a mirror of the header at the end of the file, written and synced before slot A, and a normative rule for choosing between them, so a torn header write is recovered (§2.4, §7.1–§7.3, §7.5); this closes the §7.3 atomicity assumption. Declared tokenizer `wax-bigram-16`: `nfkc-cf-16` fold, then CJK runs as overlapping pairs, into a plain `unicode61` table, so CJK packs are searchable on every box; writers SHOULD declare it for every new pack; `trigram` is kept readable but corrected as unusable under `detail=none` (§5.7, §5.7.2). Passages: `entries.passages` (new nullable column) stores where each passage starts, cut by the declared rule `html-headings-1`; a passage is named by path and position (§5.10). `wax-builder gc` reclaims orphaned tails in place (signature-preserving) and compacts a pack into a deterministic single-segment edition, carrying the search index term for term (§7.6). |
+| 0.13 | 2026-11-20 | **Additive minor.** Header check in the last 8 reserved bytes and flag bit 4 (§2.3); a mirror of the header at the end of the file, written and synced before slot A, and a normative rule for choosing between them, so a torn header write is recovered (§2.4, §7.1–§7.3, §7.5); this closes the §7.3 atomicity assumption. Declared tokenizer `wax-bigram-16`: `nfkc-cf-16` fold, then CJK runs as overlapping pairs, into a plain `unicode61` table, so CJK packs are searchable on every box; writers SHOULD declare it for every new pack; `trigram` is kept readable but corrected as unusable under `detail=none` (§5.7, §5.7.2). Manifest updates: an appended segment declaring `manifest_update = "replace"` carries a whole new manifest, so an appended edition can change its `version`; was "immutable across appends" (§5.6, §5.6.1). Passages: `entries.passages` (new nullable column) stores where each passage starts, cut by the declared rule `html-headings-1`; a passage is named by path and position (§5.10). `wax-builder gc` reclaims orphaned tails in place (signature-preserving) and compacts a pack into a deterministic single-segment edition, carrying the search index term for term (§7.6). |
 | 0.12 | 2026-11-15 | **Additive minor.** Tombstones as `compression = "tombstone"`, with aliases deleted alongside their target (§5.5.1). The search segment may appear in any segment, covering its own entries, with hits checked for ownership and merged by per-segment position (RRF), since bm25 scores from different segments are not comparable; one tokenizer per archive (§5.7); this also fixes §4.1, which already said "any segment". Declared title fold `nfkc-cf-16` (§5.7.1). `prev_state_digest` links each appended segment to the state it extends, so an update is the byte tail plus a header and can be checked before it is applied; header minor on append is `max(old, 12)`; an appending writer reclaims an orphaned tail and refuses to exceed the 64-segment limit (§7.1, §7.4). Each appended segment stores the header it replaced, so an update can be rolled back to the exact previous bytes and the rollback checked (§7.5); every segment stores the merged `live_entry_count` (§4.2). `volume_id` checked per entry at lookup rather than by a scan at open (§5.2). No byte-layout change. |
 | 0.11 | 2026-10-14 | **Additive minor.** The embedded search segment (§5.7): a contentless FTS5 index plus a `search_docs` title map, present only in segment 0, with the tokenizer declared in `segment_meta` and a reader obliged to refuse one it cannot reproduce rather than answer wrongly. Fills the table name v0.9 reserved. No byte-layout change; an archive without the segment opens exactly as before and reports search absent, not failed. The stand-off segment behind `search_index_offset` is still v2 and still unused. Decision recorded in `docs/adr/ADR-0002`. |
 | 0.10 | 2026-10-14 | **Additive minor.** New `compression` value `zstd-dict` (§3) and a new segment-0 `dictionary` table (§5.9) holding one shared zstd dictionary. Per-entry framing is unchanged — still one frame per entry, so random access and the lookup path are untouched. Every v0.9 archive opens unmodified; the dictionary table and the new codec value are both additive under §5.4. Codec chosen from measurement, not argument — see [`docs/adr/ADR-0001`](docs/adr/ADR-0001-text-compression-codec.md). Carrying the dictionary forward across editions is normative (§5.9), because retraining reframes every entry and destroys the delta model. |

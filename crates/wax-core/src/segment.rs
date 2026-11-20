@@ -454,6 +454,32 @@ impl Segment {
             .optional()?)
     }
 
+    /// The value of `segment_meta.manifest_update` (SPEC v0.13 §5.6.1), or
+    /// `None` when this segment does not replace the manifest.
+    pub fn manifest_update(&self) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT value FROM segment_meta WHERE key = 'manifest_update'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
+    /// Whether this segment holds a `manifest` table at all.
+    pub fn has_manifest_table(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='manifest'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
     /// The encoded `entries.passages` of `path` in this segment, if any
     /// (SPEC v0.13 §5.10). Read on its own, so ordinary lookups never load it.
     pub fn passage_starts(&self, path: &str) -> Result<Option<Vec<u8>>> {
@@ -541,7 +567,8 @@ impl Segment {
     }
 
     /// `manifest` as an opaque string map. Caller decides whether to read it
-    /// (only segment 0, SPEC §5.6).
+    /// (segment 0, or the newest segment declaring a manifest update, SPEC
+    /// v0.13 §5.6.1).
     pub fn manifest(&self) -> Result<Vec<(String, String)>> {
         let present = self
             .conn

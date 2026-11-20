@@ -48,6 +48,10 @@ const STREAM_BUF: usize = 64 * 1024;
 /// exactly why the tokenizer is per-pack rather than fixed by the format.
 pub const DEFAULT_TOKENIZER: &str = "unicode61";
 
+/// `segment_meta.manifest_update` value: this segment's `manifest` table
+/// replaces the pack's manifest whole (SPEC v0.13 §5.6.1).
+pub const MANIFEST_UPDATE_REPLACE: &str = "replace";
+
 /// Tokenizers this build can reproduce on the query side. A pack declaring
 /// anything else is refused at query time rather than answered wrongly.
 pub const SUPPORTED_TOKENIZERS: [&str; 4] = [
@@ -146,6 +150,7 @@ impl WaxWriter {
             prev_state_digest: None,
             prev_header: None,
             tombstones: 0,
+            manifest_update: None,
         })
     }
 
@@ -248,6 +253,7 @@ impl WaxWriter {
             prev_state_digest: Some(prev_state_digest),
             prev_header: Some(hbuf),
             tombstones: 0,
+            manifest_update: None,
         })
     }
 
@@ -373,6 +379,8 @@ pub struct StreamingWriter {
     prev_header: Option<[u8; HEADER_LEN]>,
     /// Tombstones added to this segment (SPEC v0.12 §5.5.1).
     tombstones: u64,
+    /// A replacement manifest (SPEC v0.13 §5.6.1), written at `finish`.
+    manifest_update: Option<BTreeMap<String, String>>,
 }
 
 impl StreamingWriter {
@@ -536,6 +544,19 @@ impl StreamingWriter {
     /// Entries given passages in this segment so far.
     pub fn passage_count(&self) -> u64 {
         self.passage_rows
+    }
+
+    /// Replace the pack's manifest (SPEC v0.13 §5.6.1). On an append the new
+    /// segment carries the whole new manifest and declares
+    /// `manifest_update = "replace"`, so a reader shows it instead of the
+    /// base segment's; every older segment, the dictionary and the identity
+    /// are untouched, and rolling the update back (§7.5) restores the old
+    /// manifest with it. On a fresh build it simply sets the manifest.
+    ///
+    /// The format treats the manifest as opaque: which keys may change, and
+    /// how a `version` must move, is the builder's check, not this one.
+    pub fn set_manifest(&mut self, manifest: &BTreeMap<String, String>) {
+        self.manifest_update = Some(manifest.clone());
     }
 
     /// Delete `path` from the pack (SPEC v0.12 §5.5.1): a zero-length row
@@ -857,6 +878,12 @@ impl StreamingWriter {
             meta.push(("prev_header".into(), hex(&h)));
         }
         meta.push(("live_entry_count".into(), live_entry_count.to_string()));
+        if let Some(m) = self.manifest_update.take() {
+            self.index.write_manifest(&m)?;
+            if self.segment_index > 0 {
+                meta.push(("manifest_update".into(), MANIFEST_UPDATE_REPLACE.into()));
+            }
+        }
         self.index.write_meta(&meta)?;
 
         // The shared dictionary lives in the index segment, not the blob region,
@@ -1413,6 +1440,20 @@ impl IndexBuilder {
             conn.execute("UPDATE entries SET redirect_to = ?2 WHERE path = ?1", [from, to])?;
         }
         conn.execute_batch("DROP INDEX tmp_redirect_idx")?;
+        Ok(())
+    }
+
+    /// Write `m` as this segment's whole `manifest` table.
+    fn write_manifest(&self, m: &BTreeMap<String, String>) -> Result<()> {
+        let c = self.conn();
+        c.execute_batch(
+            "CREATE TABLE IF NOT EXISTS manifest (key TEXT PRIMARY KEY, value TEXT); \
+             DELETE FROM manifest;",
+        )?;
+        let mut stmt = c.prepare("INSERT INTO manifest (key, value) VALUES (?1, ?2)")?;
+        for (k, v) in m {
+            stmt.execute(rusqlite::params![k, v])?;
+        }
         Ok(())
     }
 

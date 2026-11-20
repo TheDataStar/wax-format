@@ -382,7 +382,10 @@ fn cmd_inspect(archive: PathBuf, list_entries: bool) -> Result<()> {
     if manifest.is_empty() {
         println!("manifest       : (empty)");
     } else {
-        println!("manifest:");
+        match reader.manifest_segment() {
+            0 => println!("manifest:"),
+            n => println!("manifest (replaced by segment {n}, SPEC 5.6.1):"),
+        }
         for (k, v) in manifest {
             println!("  {k} = {v}");
         }

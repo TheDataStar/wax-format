@@ -16,6 +16,7 @@
 use crate::header::WaxHeader;
 use crate::model::{Compression, Entry, Resolved, SearchHit, Suggestion};
 use crate::segment::Segment;
+use crate::writer::MANIFEST_UPDATE_REPLACE;
 use crate::{Result, WaxError, HEADER_LEN, MAX_SEGMENTS, MIN_SQLITE_LEN};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
@@ -120,8 +121,11 @@ pub struct WaxReader {
     header_source: HeaderSource,
     /// Segments in ascending `segment_index` order (base first).
     segments: Vec<Segment>,
-    /// Base-segment manifest (SPEC §5.6); small, held.
+    /// The effective manifest (SPEC §5.6, v0.13 §5.6.1); small, held.
     manifest: BTreeMap<String, String>,
+    /// The segment that supplied `manifest`: 0, or the newest segment that
+    /// declares a manifest update.
+    manifest_segment: usize,
     /// The tokenizer the earliest indexed segment declares (SPEC §5.7), or
     /// None when no segment carries a search index.
     search_tokenizer: Option<String>,
@@ -200,13 +204,40 @@ impl WaxReader {
             search_segments.push(i);
         }
 
-        // --- manifest: base segment only (SPEC §5.6) ---
+        // --- manifest (SPEC §5.6, v0.13 §5.6.1) ---
+        // The base segment's, unless a later segment declares a manifest
+        // update: then the newest such segment's table replaces it whole. A
+        // `manifest` table in a segment that declares nothing is ignored, as
+        // every earlier version required.
         let mut manifest = BTreeMap::new();
         let mut dictionary = None;
-        if let Some(base) = segments.first() {
-            for (k, v) in base.manifest()? {
+        let mut manifest_segment = 0usize;
+        for (i, seg) in segments.iter().enumerate().skip(1) {
+            match seg.manifest_update()?.as_deref() {
+                None => {}
+                Some(MANIFEST_UPDATE_REPLACE) => {
+                    if !seg.has_manifest_table()? {
+                        return Err(WaxError::BadManifestUpdate {
+                            segment: i,
+                            detail: "declares a replacement but has no manifest table".into(),
+                        });
+                    }
+                    manifest_segment = i;
+                }
+                Some(other) => {
+                    return Err(WaxError::BadManifestUpdate {
+                        segment: i,
+                        detail: format!("unknown manifest_update {other:?}"),
+                    });
+                }
+            }
+        }
+        if let Some(seg) = segments.get(manifest_segment) {
+            for (k, v) in seg.manifest()? {
                 manifest.insert(k, v);
             }
+        }
+        if let Some(base) = segments.first() {
             // --- shared dictionary: base segment only (SPEC v0.10 §3.1) ---
             dictionary = base.dictionary()?;
         }
@@ -220,6 +251,7 @@ impl WaxReader {
             header_source,
             segments,
             manifest,
+            manifest_segment,
             search_tokenizer,
             search_segments,
             tokenizer_conflict,
@@ -484,6 +516,12 @@ impl WaxReader {
 
     pub fn manifest(&self) -> &BTreeMap<String, String> {
         &self.manifest
+    }
+
+    /// The segment the manifest was read from (SPEC v0.13 §5.6.1): `0` for the
+    /// base, or the newest appended segment that replaced it.
+    pub fn manifest_segment(&self) -> usize {
+        self.manifest_segment
     }
 
     /// True when this pack carries an embedded search index (SPEC §5.7).
