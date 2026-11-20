@@ -1,7 +1,7 @@
 # WAX Archive Format — Specification
 
-**Format version: 0.12** (`version_major = 0`, `version_minor = 12`)
-**Status: FROZEN for v0.12.** Byte layout and index schema below are settled
+**Format version: 0.13** (`version_major = 0`, `version_minor = 13`)
+**Status: FROZEN for v0.13.** Byte layout and index schema below are settled
 decisions from the DeltOS *Track A Refinement* document (v2, post-review).
 This file is the authoritative, byte-exact contract. Code implements this
 document; this document is not reverse-engineered from code.
@@ -24,6 +24,19 @@ refuses a deleted path's read, but **its search on an updated archive is
 stale**: it consults only `segment[0]`'s index, so it misses new articles and
 may return replaced or deleted ones. A box MUST therefore run a v0.12 reader
 before it installs any v0.12 update (§12.27).
+
+**v0.13 is additive over v0.12.** It closes the four format gaps left open
+after v0.12. A header check and a **mirror** of the header at the end of the
+file make the header write safe against power loss (§2.3, §2.4, replacing the
+§7.3 assumption). A declared tokenizer, `wax-bigram-16`, makes Chinese,
+Japanese and Korean packs searchable with what every SQLite already has
+(§5.7.2). Passages — chunks of an entry cut at its headings — give search and
+citations a position inside a page (§5.10). And `wax-builder gc` reclaims the
+space updates leave behind (§7.6). Every v0.12 archive opens unmodified under
+a v0.13 reader. A v0.12 reader opens a v0.13 archive and reads every entry:
+it ignores the check (reserved bytes), the mirror (past the newest segment)
+and the new `entries` column (explicit column list, §5.4); it refuses search
+on a `wax-bigram-16` pack as an unknown tokenizer, which is the safe failure.
 
 Document component: **A3**. Related components: A1 (`wax-core` reader/writer),
 A2 (`wax-builder` CLI), A4 (conformance suite & fuzzers), A7 (pack signing).
@@ -129,9 +142,10 @@ All offsets are from the start of the file. The header occupies bytes `[0, 128)`
 | 48     | `blob_section_length`  | 8    | u64 LE  | Sum of the lengths of **all** blob regions in the file (§4.3). Rewritten on every append. Enables a fast integrity pre-check before opening SQLite. |
 | 56     | `search_index_offset`  | 8    | u64 LE  | Offset of the v2 stand-off search segment. **`0` = absent, which is the case for all of v0.9.** |
 | 64     | `search_index_length`  | 8    | u64 LE  | Length of that segment. `0` when `search_index_offset` is `0`. |
-| 72     | `reserved`             | 56   | bytes   | MUST be written as zero by v0.9 builders. Reader MUST ignore its contents entirely (any value, including all-`0xFF`, is still a valid header). Reserved for future fixed-header fields. |
+| 72     | `reserved`             | 48   | bytes   | MUST be written as zero. Reader MUST ignore its contents entirely (any value, including all-`0xFF`, is still a valid header). Reserved for future fixed-header fields. |
+| 120    | `header_check`         | 8    | bytes   | *(v0.13)* The header check, §2.3, when the header claims one; otherwise zero, and ignored like `reserved` (it was part of `reserved` through v0.12). |
 
-Total: `72 + 56 = 128` bytes.
+Total: `72 + 48 + 8 = 128` bytes.
 
 ### 2.1 `flags` bits
 
@@ -143,7 +157,8 @@ Total: `72 + 56 = 128` bytes.
 | 1   | `has_delta_base`  | This archive is a delta/patch pack built against a base pack (A6, later). Always 0 in v0.9. |
 | 2   | `is_multi_volume` | This archive is one volume of a multi-volume set (A8, later). Always 0 in v0.9. |
 | 3   | `is_signed`       | A detached signature sidecar (§8) is expected to exist alongside the file. Informational only; the reader's signature policy does not depend on this bit. |
-| 4–15| —                 | Reserved, MUST be written 0, reader MUST ignore. |
+| 4   | `has_header_check`| *(v0.13)* `header_check` holds the §2.3 check, and the writer ended the file with a mirror of this header (§2.4). Set by every v0.13 writer. |
+| 5–15| —                 | Reserved, MUST be written 0, reader MUST ignore. |
 
 > **Interpretation flag (§12):** the Refinement doc lists the four flag names
 > in order but does not assign explicit bit positions. Bit positions 0–3 in
@@ -163,8 +178,68 @@ In order:
 6. `index_offset + index_length` does not overflow `u64` and is
    `<= file_size` — else `IndexOutOfBounds`.
 7. `blob_section_length` consistency (§4.3).
+8. *(v0.13)* If the header claims a check (§2.3), it matches — else
+   `HeaderCheckMismatch`.
 
-Only after all of these does the reader open the SQLite segment.
+Before these steps a v0.13 reader decides **which** 128 bytes are the header:
+slot A at offset 0, or the mirror at the end of the file (§2.4). Steps 1–8
+then apply to the one chosen. Only after all of these does the reader open
+the SQLite segment.
+
+### 2.3 Header check *(v0.13)*
+
+`header_check` = the first 8 bytes of `SHA-256(header bytes 0..120)`.
+
+* A header **claims** a check when `version_minor >= 13` **and** flag bit 4
+  (`has_header_check`) is set. Both are required, so no header written
+  before v0.13 can claim one by accident: those kept bit 4 zero, and their
+  reserved bytes were allowed to hold anything.
+* A claimed check that does not match means the header bytes are not the
+  ones the writer wrote: a torn or damaged header.
+* A writer that clears bit 4 (any v0.12 writer appending to a v0.13 archive
+  does, since it clears bits it does not know) writes zero there, and the
+  header is then an ordinary unchecked header.
+
+SHA-256 is used because every reader already carries it (§3.1, §8.1); a
+CRC would add a dependency for no gain at 128 bytes.
+
+### 2.4 Header mirror — the B slot *(v0.13)*
+
+Slot A must stay at offset 0, because that is where every older reader looks.
+The second slot is therefore at the **end** of the file: a v0.13 writer
+ends the file with a byte-for-byte copy of the header it commits, written
+and synced **before** slot A is overwritten (§7.1). It sits past the newest
+index segment (`index_offset + index_length`), where every reader already
+ignores bytes (§7.2), so it changes nothing for older readers and is not
+covered by the §8.1 digest — it never needs to be, being a copy of the
+header the digest does cover.
+
+**The mirror** is the last 128 bytes of the file when all of these hold:
+the file is at least 256 bytes; those bytes claim and pass a check (§2.3);
+they pass §2.2 steps 1–6 against the file size; and their
+`index_offset + index_length` equals `file_size − 128`.
+
+**Choosing (reader, normative):**
+
+1. If there is no mirror, or the mirror is identical to slot A, slot A is
+   the header (and is validated as before).
+2. Otherwise slot A is still the header if it is **intact**: it passes §2.2
+   steps 1–6 and either (a) claims and passes its own check, or (b) is
+   byte-for-byte the `prev_header` (§4.2) recorded by the mirror's newest
+   segment. (a) covers a crash before the slot-A write when the previous
+   header was written by v0.13; (b) the same crash when it was older, and a
+   crash in the middle of a rollback (§7.5). In both the archive is exactly
+   its previous state, as §7.2 promises; the mirror and the segment before
+   it are an orphaned tail.
+3. Otherwise slot A was torn by a crash during its own write, and **the
+   mirror is the header**. Everything it points at was synced before slot A
+   was touched, so the archive is exactly the state that write was
+   committing.
+
+A reader never writes; it opens from the mirror and reports that it did. A
+writer that opens such an archive (append, rollback, `gc`) first copies the
+mirror into slot A. `wax-builder gc --tail-only` does only that, plus §7.6's
+tail reclaim.
 
 ---
 
@@ -295,6 +370,8 @@ Optional keys *(v0.12)*:
 | `search_tokenizer`     | The tokenizer this segment's `search_index` was built with (§5.7). Required in a segment that has `search_index` rows. |
 | `title_fold`           | The fold applied to `search_docs.title_fold` (§5.7.1). Absent means `"lower"`, the v0.11 behaviour. |
 | `prev_header`          | Lowercase hex, 256 characters: the exact 128 header bytes this segment's append overwrote (§7.5). Written by v0.12 writers in every segment except `segment[0]`. Malformed → `NotAnIndexSegment` at open. |
+| `manifest_update`      | *(v0.13)* `"replace"`: this segment's `manifest` table replaces the pack's manifest (§5.6.1). Absent in `segment[0]`. Any other value, or `"replace"` without a `manifest` table → `BadManifestUpdate` at open. |
+| `passage_rule`         | *(v0.13)* The rule this segment's `entries.passages` values were cut with (§5.10). Required in a segment where any row has `passages`; `html-headings-1` is the one value defined. |
 | `live_entry_count`     | Decimal: the number of live entries (§5.5, tombstones excluded, redirects included) in the merged archive **as of this segment**. Written by v0.12 writers in every segment. A reader MAY answer an entry count from the newest segment's value instead of walking the chain; a verifier MUST check it against the walk. |
 
 > **Design-gap flag (§12):** the Refinement doc states the on-disk shape must
@@ -358,7 +435,8 @@ CREATE TABLE entries (
     compression         TEXT,
     sha256              BLOB,
     volume_id           INTEGER DEFAULT 0,
-    redirect_to         TEXT DEFAULT NULL
+    redirect_to         TEXT DEFAULT NULL,
+    passages            BLOB DEFAULT NULL    -- v0.13, §5.10
 ) WITHOUT ROWID;
 ```
 
@@ -381,6 +459,7 @@ the measured difference — it is why the layout changed).
 | `sha256` | 32-byte BLOB, hash of uncompressed content (§3.1); nullable for redirects. |
 | `volume_id` | Multi-volume member that holds this entry's blob (A8, later). **Always `0` through v0.12**; a non-zero value is malformed → `UnexpectedVolumeId`. *(v0.12)* The check is made **per entry, when that entry is looked up, read or listed** — not by scanning every row at open, which cost a full-table walk per open on a large pack. An archive with one bad row still opens; that row (and only that row) is refused. |
 | `redirect_to` | If non-NULL, this `path` is an alias — §5.3. |
+| `passages` | *(v0.13)* Where this entry's passages start (§5.10), or NULL. Absent from segments written before v0.13, which a reader treats as all-NULL (the same `table_info` gate as `title`). A reader MUST NOT select it on the lookup path; it is read only when passages are asked for. |
 
 The reader MUST query `entries` with an **explicit column list**, never
 `SELECT *`, so that unknown columns added by a future minor version are ignored
@@ -485,16 +564,45 @@ CREATE TABLE manifest (
 );
 ```
 
-* Present **only in `segment[0]`**. A reader MUST ignore any `manifest` table
-  found in `segment[1…N]`.
-* **Immutable across appends.** Changing manifest content is by definition a new
-  pack version (new build, possibly new `archive_uuid` policy per Track B), not
-  an append.
+* Written in `segment[0]`. A reader MUST ignore any `manifest` table found in
+  `segment[1…N]` **unless that segment declares a manifest update** (§5.6.1).
+* *(v0.13; was "immutable across appends")* **Replaceable by an append, never
+  edited in place.** A segment's own `manifest` table is never changed after
+  it is written; an append that brings a new edition MAY carry a whole new
+  manifest instead (§5.6.1). Before v0.13 a manifest change could only be a
+  rebuild, so an appended edition kept reporting its old `version`.
 * The **set of keys and their semantics is Track B's manifest-schema work** and
   is deliberately not specified in A3. A3 fixes only: table name, location,
   immutability, and `(key TEXT PRIMARY KEY, value TEXT)` shape. `wax-core` in
   this phase exposes `manifest()` as an opaque `Map<String,String>` and does not
   validate keys.
+
+### 5.6.1 Manifest updates *(v0.13)*
+
+An appended segment replaces the pack's manifest by carrying a `manifest`
+table **and** `segment_meta.manifest_update = "replace"` (§4.2).
+
+* **Whole replacement, no merge.** The effective manifest is the `manifest`
+  table of the **newest** segment that declares `manifest_update`, or
+  `segment[0]`'s when none does. Keys absent from the replacement are gone;
+  there is no per-key overlay and nothing to delete.
+* **A reader MUST refuse** (`BadManifestUpdate`, at open) a segment whose
+  `manifest_update` is any other value, or which declares `"replace"` but has
+  no `manifest` table. An empty table is a valid, empty manifest.
+* **The declaration is what counts.** A `manifest` table in a segment that does
+  not declare an update is ignored, as every earlier version required.
+* **Everything else stays where it was.** `archive_uuid` (header), the shared
+  dictionary (§5.9, segment 0 only) and every older segment are untouched, so
+  the update is still the byte tail of §7.4 and rolling it back (§7.5)
+  restores the old manifest exactly. Compaction (§7.6) writes the effective
+  manifest into its single segment.
+* **Older readers.** A pre-v0.13 reader ignores the replacement and shows
+  `segment[0]`'s manifest: the pack opens and serves, with its old metadata.
+* The format keeps the manifest opaque. Which keys may change and how
+  `version` must move is the builder's rule: `wax-builder append` validates a
+  replacement exactly as a build (contract §11, including `icon` and
+  `entry_point` resolving in the updated pack) and refuses one whose CalVer
+  `version` is not newer than the pack's.
 
 ### 5.7 `search_index` *(v0.11; placement widened in v0.12)*
 
@@ -576,10 +684,21 @@ available**; term and boolean queries are. Both are the stand-off segment's job
 * Refusal is per query. The archive still opens and still serves entries.
 * **The query side must run the same tokenizer on every tier**, which is what
   bounds the choice. `unicode61` is the default because it is built into every
-  SQLite with FTS5, so no tier can fail to reproduce it. It does not segment
-  CJK; a CJK archive declares `trigram`, also built in. **This is precisely why
-  the tokenizer is declared per archive rather than fixed by the format**: one
-  fixed choice would be wrong for one of those two scripts.
+  SQLite with FTS5, so no tier can fail to reproduce it.
+* *(v0.13)* Declared values a reader MUST know: `unicode61`, `trigram`,
+  `porter unicode61` (each the SQLite tokenizer of that name, default
+  options) and `wax-bigram-16` (§5.7.2). **A writer building a new pack
+  SHOULD declare `wax-bigram-16`, whatever the language**: it indexes text
+  in any other script exactly as `unicode61` does, plus the fold, and it is
+  the only one of the four that can answer Chinese, Japanese and Korean
+  queries.
+* *(v0.13, correction)* v0.11 said a CJK archive declares `trigram`. **That
+  does not work under `detail=none`**, found while building the pack server
+  (2026-11-20): SQLite treats a `trigram` query term longer than three
+  characters as a phrase and refuses it, and a term shorter than three
+  characters can never match, which rules out most Chinese words. `trigram`
+  stays a known value so that any pack already declaring it is read as
+  before, but no writer should choose it.
 
 #### Title completion
 
@@ -617,6 +736,73 @@ still disagree. v0.12 names the fold in `segment_meta.title_fold`.
 * No Turkish dotted/dotless-i tailoring is applied; `İstanbul` folds to
   `i̇stanbul`. A locale-aware fold would be a new declared value, not a change
   to this one.
+
+#### 5.7.2 `wax-bigram-16` *(v0.13)*
+
+A declared tokenizer that is **not** a SQLite tokenizer: it is a rewrite of
+the text applied *before* SQLite sees it, by the writer to every indexed
+title and body and by the reader to every query, into an FTS5 table created
+with SQLite's own `unicode61`. So every box reproduces it with what SQLite
+already has, and nothing needs a dictionary or extra memory (contract §13.1).
+
+**The table (normative).** `tokenize = "unicode61 categories 'L* N* Co M*'"`
+— `unicode61` with its default diacritic removal, and with combining marks
+counted as part of a word. SQLite's default (`L* N* Co`) treats marks as
+separators, which **cuts every Indic word apart at its vowel signs and
+viramas** — measured: `हिन्दी` indexes as `ह`, `न`, `द` and `தமிழ்` as `தம`,
+`ம`, `ழ` — and vocalised Arabic at its harakat. So under plain `unicode61`,
+Hindi, Tamil, Bengali and the other Indic packs were not searchable either;
+this was found while closing the CJK gap and is closed with it. On Latin text
+the option changes nothing: accents are still removed (`café` → `cafe`).
+
+**Document side (normative).** Given text `t`:
+
+1. Fold `t` with `nfkc-cf-16` (§5.7.1). `Straße` → `strasse`, `ﬁ` → `fi`,
+   full-width `Ａ` → `a`, half-width `ｶ` → `カ`. (`unicode61` then removes
+   diacritics as it always does.)
+2. A **CJK character** is a code point in one of these inclusive ranges:
+   `1100–11FF`, `3005–3007`, `3021–3029`, `3031–3035`, `303B–303C`,
+   `3041–3098`, `309D–309F`, `30A1–30FA`, `30FC–30FF`, `3105–312F`,
+   `3131–318E`, `31A0–31BF`, `31F0–31FF`, `3400–4DBF`, `4E00–9FFF`,
+   `A960–A97F`, `AC00–D7AF`, `D7B0–D7FF`, `F900–FAFF`, `20000–3FFFD`
+   (Hangul, Kana, Bopomofo, Han and its extensions, and the iteration and
+   number marks). The set is pinned here rather than taken from a Unicode
+   script table, so every implementation agrees on it. The punctuation and
+   sound marks inside these blocks (`3099–309C`, `30A0`, `30FB`) are left out
+   on purpose; NFKC already joins a sound mark to its kana.
+3. Replace every maximal run `c1 … cn` of CJK characters with a space, then
+   the overlapping pairs `c1c2`, `c2c3`, …, `c(n−1)cn`, then `cn` alone, each
+   followed by a space. A run of one character becomes just that character.
+   Everything else is left in place for `unicode61` to split.
+
+`東京都庁` → ` 東京 京都 都庁 庁 `; `iPhone手机` → `iphone 手机 机 `.
+
+CJK characters are all letters to the table above, so each piece is exactly
+one token of it (checked for every code point by the test suite).
+
+**Query side (normative).** Fold the query with `nfkc-cf-16`; split it into
+words — runs of letters and digits (and marks attached to them) as
+`unicode61` would keep them, with a change between CJK and non-CJK
+characters also ending a word. A non-CJK word is one term. A CJK word of two
+or more characters is all of its overlapping pairs (and **not** its last
+character alone, which exists in the index only at the end of a run). A
+single CJK character is a **prefix** term (`"水"*`): it then matches the pairs
+it begins and the lone character at a run's end, so every occurrence is
+found. Every term is required; each is quoted, so no FTS5 syntax in a query
+has any effect.
+
+**What it costs and what it does not do.** Measured on the real
+`wikipedia_en_climate_change_mini` pack (3,821 articles): the index is the
+same size as under `unicode61`, to the byte (1,327,104 bytes), and the build
+took 0.4 s longer. A pair can match across a word boundary (`京都` matches
+`東京都庁`); that is the known cost of pairs, accepted by every pair-based
+CJK search, and the price of needing no dictionary. Real CJK pack sizes are
+still to be measured: no CJK ZIM was reachable from the build environment.
+**Still not covered:** Thai, Lao, Khmer and Myanmar, which write words
+without spaces and whose characters carry combining marks, so neither words
+nor code-point pairs are right; a run of them is one token, as under
+`unicode61`. Vocalised and unvocalised Arabic do not match each other (the
+harakat are kept). Both are recorded in §12.33 for a later tokenizer.
 
 #### Determinism
 
@@ -710,6 +896,53 @@ property, not a convenience.
   order. Without this, two builds of one source produce different archives and
   the reproducibility guarantee (§12) fails.
 
+### 5.10 Passages *(v0.13)*
+
+A **passage** is a span of one entry, cut at build time along its headings
+(contract §13 decision 5). Its identity is **the entry's path plus its
+position**, the ordinal, counting from 0. Passages let a search result or a
+citation point *inside* a long page, and stay valid across rebuilds: the same
+bytes cut by the same rule give the same passages.
+
+**Stored.** `entries.passages` (§5.2) holds where each passage starts: the
+start of passage 0 is always byte 0 and is not stored; each later start is
+stored as the unsigned LEB128 varint of its distance from the previous
+start. So passage *k* spans `[start_k, start_(k+1))` of the entry's
+**uncompressed** content, and the last one ends at `uncompressed_length`. An
+empty value means one passage, the whole entry. The segment declares the rule
+in `segment_meta.passage_rule`.
+
+* A row MAY carry `passages` only if it is content (not a redirect, not a
+  tombstone). A writer refuses anything else.
+* Every distance MUST be at least 1, and every start MUST be less than
+  `uncompressed_length`. A reader that finds otherwise refuses that entry's
+  passages (`BadPassageTable`) and nothing else.
+* A reader that does not know the declared rule refuses passages for that
+  segment (`UnknownPassageRule`); entries and search are unaffected.
+* Passages belong to the row that carries them: a newer segment that
+  replaces an entry carries its own (or none), exactly like search rows.
+
+**The rule `html-headings-1` (normative).** Over the entry's bytes, a cut is
+made at the `<` of every heading start tag: `<`, then `h` or `H`, then one
+digit `1`–`6`, then a tab, line feed, form feed, carriage return, space, `/`
+or `>`. Bytes inside a comment (from `<!--` to the next `-->`) and inside a
+`script` or `style` element (from its start tag — the name followed by one of
+those same characters — to the next `</script` or `</style`, ASCII
+case-insensitive) are never searched. A heading at byte 0 makes no cut, so
+there is never an empty first passage. Nothing else about HTML is
+interpreted, so any two writers cut the same bytes identically.
+
+**Not stored.** A passage's heading text and its link anchor (the heading
+tag's `id`, for `#anchor` links) are read from the entry when asked for, and
+so cost no space. Neither is there a second, passage-sized search index:
+passage search runs the §5.7 search, then, inside each hit, scores that
+entry's passages with the same tokenizer and query in a throwaway in-memory
+index. Measured on the real `wikipedia_en_climate_change_mini` pack: the
+passage starts cost **32,768 bytes (0.35% of the pack)**; a ten-result passage
+search took 7–10 ms on x86_64 (one decompressed page per hit), against
+0.1–0.5 ms for the page search alone. *(An earlier draft kept passages in
+their own table keyed by path, which repeated every path and cost 1.8%.)*
+
 ---
 
 ## 6. Builder obligations
@@ -767,7 +1000,9 @@ WAX archives support in-place append without rewriting existing content. The
 protocol below is what makes an interrupted append safe to detect.
 
 **Invariant:** the blob regions and index segments already in the file are never
-modified. The **only** bytes an append overwrites are the fixed 128-byte header.
+modified. The **only** bytes an append overwrites are the fixed 128-byte header
+and, *(v0.13)*, whatever lies past the old newest segment: the old header
+mirror (§2.4) or an orphaned tail.
 
 ### 7.1 Sequence (writer)
 
@@ -788,6 +1023,10 @@ Starting from a valid archive with `N+1` segments (`segment[0…N]`), header `H`
    `signatures` table, and **no `manifest`**.
 3. **`fsync`** the archive file (and the containing directory on POSIX) so that
    all appended bytes are durable.
+3a. *(v0.13)* **Write the mirror**: `H'`'s 128 bytes immediately after index
+   segment `N+1`, then **`fsync`** again (§2.4). A v0.13 writer sets flag
+   bit 4 and the header check in `H'` (§2.3), and writes this step for a
+   fresh build too.
 4. **Overwrite the header in place** at offset 0 with `H'`:
    `index_offset` / `index_length` → segment `N+1`;
    `blob_section_length` → old value + `|blob region N+1|`;
@@ -802,15 +1041,29 @@ Starting from a valid archive with `N+1` segments (`segment[0…N]`), header `H`
   (it never reads past the newest segment it knows about). The archive is
   exactly its pre-append state. A subsequent append or a `wax-builder gc` can
   reclaim / overwrite the orphaned tail.
-* Crash during step 4 (torn 128-byte write): see §7.3 — this is the residual
-  risk.
+* Crash during step 4 (torn 128-byte write): *(v0.13)* the reader finds slot
+  A neither intact nor equal to the mirror and opens from the mirror (§2.4),
+  so the archive is the new state. Before v0.13 this was the residual risk of
+  §7.3. A crash during step 3a leaves slot A intact and the archive in its
+  old state; a torn mirror simply fails its own check.
 * Because step 4 changes `blob_section_length` and `index_offset` together and
   they are validated against each other and the file size (§4.3), a header that
   is internally inconsistent (e.g. new `index_offset` but old
   `blob_section_length`) is detected as `BlobSectionLengthMismatch` rather than
   silently accepted.
 
-### 7.3 Atomicity assumption (flagged, §12)
+### 7.3 Atomicity assumption (flagged, §12) — *resolved in v0.13 by §2.4*
+
+*(v0.13)* The header check and mirror (§2.3, §2.4) remove the assumption
+below for every archive written by a v0.13 writer: a torn slot-A write is
+detected by the check (or by not being the recorded `prev_header`) and the
+mirror, synced first, stands in. What remains assumed is only that `fsync`
+means what it says — that bytes it returned for are durable — which every
+crash-safety design on these filesystems assumes. An archive whose newest
+header was written before v0.13 has no mirror and keeps the old residual
+risk until its next v0.13 write.
+
+The text below is the pre-v0.13 analysis, kept for the record.
 
 The protocol assumes the final 128-byte header write is **atomic with respect to
 power loss** on the target filesystems — a reader after a crash sees either the
@@ -837,6 +1090,11 @@ v0.12 makes that delta checkable before it is applied.
 * Every segment a v0.12 writer appends carries `segment_meta.prev_state_digest`:
   the §8.1 digest (`SHA-256(header ‖ segment chain)`) of the archive exactly as
   it stood before the append.
+* *(v0.13)* "The end of *A*" means *A*'s **logical end**, `index_offset +
+  index_length`: a v0.13 *A* is followed by its mirror, which *B*'s new blob
+  region overwrites. The delta is therefore *B*'s bytes from *A*'s logical
+  end to *B*'s end of file — which includes *B*'s own mirror — plus *B*'s
+  header.
 * **Applying a delta (informative procedure).** The receiver (a box) computes
   the §8.1 digest of its own copy; opens the delta's new segment(s) and
   compares the first new segment's `prev_state_digest` with that value, and
@@ -877,13 +1135,65 @@ Undoing the newest append, given segments `0…N`:
    `prev_header ‖ segment[0] ‖ … ‖ segment[N-1]` equals `prev_state_digest`.
    Either mismatch → `BadPrevStateDigest`, and nothing is written.
 3. Write `prev_header` at offset 0 and `fsync`; then truncate the file to
-   `prev_segment_offset + prev_segment_length` and `fsync`.
+   `prev_segment_offset + prev_segment_length` and `fsync`. *(v0.13)* If
+   `prev_header` claims a check (§2.3) — the previous edition was written by
+   v0.13 and so ended with its mirror — write `prev_header` again after the
+   cut, as that mirror, and `fsync`.
 
 The result is **byte-identical** to the archive before the append, so the
 earlier edition's signature sidecar verifies again. A crash between the two
 writes leaves a valid archive with an orphaned tail (§7.2). Repeating the
 procedure walks back further, one update at a time, as far as v0.12 segments
 go. `wax-builder rollback --archive PATH` does exactly this.
+
+### 7.6 Reclaiming space — `wax-builder gc` *(v0.13)*
+
+Appends never rewrite earlier bytes, so replaced and deleted entries keep
+their old bytes, and a crashed append can leave an orphaned tail. §7.4 said a
+publisher reclaims that space with a full rebuild from source; v0.13 adds a
+tool that does it from the pack alone. Two modes:
+
+**Tail reclaim (`gc --tail-only`), in place.** Copy the mirror into slot A if
+the reader chose the mirror (§2.4); cut the file to its logical end; if the
+header claims a check, write the mirror after it. No byte the §8.1 digest
+covers changes (except a torn slot A, back to the header the mirror proves),
+so **the publisher's signature still verifies**. Safe on the box.
+
+**Compaction (`gc`).** Write a new single-segment archive holding exactly the
+live state of the input (§5.5):
+
+* every live content entry, its stored bytes **copied verbatim** — same
+  frame, same `compression`, same `sha256`, nothing re-encoded — in `path`
+  order; every live redirect (each still resolving, else refused); no
+  tombstones;
+* the base segment's `manifest` and `dictionary` unchanged (§5.6, §5.9); the
+  input header's `archive_uuid`, `created_at` and flags;
+* every carried entry's `passages`, unchanged;
+* the search index rebuilt from **the terms the old index holds** for every
+  live document (via `fts5vocab`), not from text: the index is contentless,
+  so the text that was indexed is not in the pack. Each document is
+  re-inserted as its own terms, then the new index is read back and checked
+  term for term against the old. That is exact for a tokenizer whose tokens
+  are their own tokens (`unicode61`, `wax-bigram-16`); for `trigram` and
+  `porter unicode61` the check fails and compaction is **refused** rather
+  than shipping a different index — or, if asked (`--drop-search`), writes
+  the pack without one. Hit sets are unchanged; scores are not, because bm25
+  weighs each term by how many live documents hold it, which compaction
+  changes by design;
+* each entry is decoded and its hash checked before it is copied (unless the
+  caller opts out), so compaction never turns a corrupted entry into a
+  fresh-looking pack.
+
+The output is a function of the input's bytes alone: compacting the same
+edition twice, or on the publisher and on a box, gives the same bytes, so one
+signature covers both, and compacting a compacted pack changes nothing. It
+is a **new base edition**: it must be re-signed, deltas built against the
+uncompacted edition no longer apply to it (§7.4), and the 64-segment budget
+starts again. Written to a new file and renamed over the old one in the same
+directory, so a crash leaves one whole pack or the other. Measured on the
+real `wikipedia_en_climate_change_mini` pack (9.46 MB, one segment, nothing
+to reclaim): 8.5 s on x86_64, output 4 KB larger (the rebuilt index's page
+layout), every search returning the same set of pages.
 
 ---
 
@@ -994,12 +1304,14 @@ The conformance suite (A4) asserts the *class* of failure, not the exact string.
 
 | Group | Variants | Must be… |
 |-------|-----------------|----------|
-| `Header` | `BadMagic`, `TruncatedHeader`, `UnsupportedMajorVersion`, `IndexTooSmall`, `IndexOffsetInHeader`, `IndexOutOfBounds` | rejected at open |
+| `Header` | `BadMagic`, `TruncatedHeader`, `UnsupportedMajorVersion`, `IndexTooSmall`, `IndexOffsetInHeader`, `IndexOutOfBounds`, `HeaderCheckMismatch` (v0.13; only when no mirror can stand in, §2.4) | rejected at open |
 | `BlobSection` | `BlobSectionLengthMismatch` | rejected at open |
 | `Segment` | `NotAnIndexSegment`, `PrevSegmentOutOfBounds`, `SegmentChainCycle`, `TooManySegments`, `BrokenSegmentChain`, malformed-SQLite | rejected at open |
-| `Schema` | missing `entries`, `entries` wrong shape, `BadPrevStateDigest` (v0.12; also returned by rollback, §7.5) | rejected at open |
+| `Schema` | missing `entries`, `entries` wrong shape, `BadPrevStateDigest` (v0.12; also returned by rollback, §7.5), `BadManifestUpdate` (v0.13, §5.6.1) | rejected at open |
 | `Lookup` | `EntryNotFound`, `DanglingRedirect`, `RedirectChainTooDeep`, `EntryDeleted` (v0.12), `UnexpectedVolumeId` (moved here in v0.12) | returned at `get`/`resolve`/`read` and by `list()` for the row concerned |
 | `Search` | search absent, `TokenizerMismatch`, unknown tokenizer, `UnknownTitleFold` (v0.12) | returned by `search`/`suggest`; the archive stays open |
+| `Passage` *(v0.13)* | `PassagesUnavailable`, `BadPassageTable`, `UnknownPassageRule` | returned by `passages`/`search_passages`; the archive stays open |
+| `Compaction` *(v0.13)* | `Compaction` (index cannot be carried exactly; output is the input) | returned by `gc`; the input is never modified |
 | `Content` | `UnknownCompression`, decompression failure, `ChecksumMismatch` | returned at `read` |
 | `Signature` | `SignatureInvalid`, `SignatureArchiveMismatch`, `SignatureMissing` | returned by verify path |
 
@@ -1010,9 +1322,9 @@ allocation, or a non-terminating loop.** This is the core A4 fuzz property.
 
 ## 10. Versioning of this document
 
-* This is **WAX format 0.12**. A v0.12 writer creates archives with
-  `(version_major, version_minor) = (0, 12)`; on append it writes
-  `max(existing minor, 12)` (§7.4).
+* This is **WAX format 0.13**. A v0.13 writer creates archives with
+  `(version_major, version_minor) = (0, 13)`; on append it writes
+  `max(existing minor, 13)` (§7.4).
 * Backward-incompatible change → bump `version_major`, and readers of the old
   major refuse the new archives (§2.2).
 * Backward-compatible additive change (new optional table, new nullable
@@ -1047,6 +1359,15 @@ The suite in `crates/wax-core/tests/` and the fuzz crate `fuzz/` MUST cover:
 | *(v0.12)* Append to an archive | new segment's `prev_state_digest` equals the pre-append §8.1 digest; pre-append bytes are a prefix of the result except the header |
 | *(v0.12)* Roll back the newest append (§7.5), including on a pre-v0.12 base | file is byte-identical to the pre-append archive |
 | *(v0.12)* `live_entry_count` after adds, replacements, deletions and a resurrection | equals the merged walk |
+| *(v0.13)* Every write | slot A claims and passes its check; the file ends with an identical mirror |
+| *(v0.13)* Slot A torn at every byte split between the old and new header (both orders), and slot A zeroed | opens from the mirror, digest of the new state; an untouched old header opens as the old state |
+| *(v0.13)* Crash before the slot-A write, with a v0.13 and with a pre-v0.13 previous header; crash in the middle of a rollback | opens as the previous state |
+| *(v0.13)* Append to an archive whose slot A is torn, then roll it back | byte-identical to the state before that append |
+| *(v0.13)* `wax-bigram-16`: CJK words of one, two and four characters, mid-sentence; Latin text; `STRASSE` vs `Straße`; after replacing and deleting articles | found / not found exactly as written in §5.7.2 |
+| *(v0.13)* Every CJK code point | is one `unicode61` token |
+| *(v0.13)* Passages of an HTML entry with headings in a comment, `<script>`, `<style>`, `<header>` and `<h7>` | cut only at real headings; ids and heading text read back |
+| *(v0.13)* Compaction of an updated pack | same live paths and bytes, same stored frames, same search hit sets, same passages; deterministic; idempotent; appendable afterwards |
+| *(v0.13)* Tail reclaim after an orphaned tail | byte-identical to the clean archive; §8.1 digest unchanged |
 
 ### 11.2 Negative corpus (must reject cleanly — error, no panic)
 
@@ -1071,6 +1392,15 @@ The suite in `crates/wax-core/tests/` and the fuzz crate `fuzz/` MUST cover:
 | *(v0.12)* Append declaring a different `search_tokenizer` | `Search/TokenizerMismatch` from the writer |
 | *(v0.12)* Pre-v0.12 reader reading a tombstoned path | `Content/UnknownCompression` (never content) |
 | *(v0.12)* Rollback with a tampered `prev_header` | `BadPrevStateDigest`; file unchanged |
+| *(v0.13)* Each header damage of this table, with the mirror removed | the same error as before v0.13 |
+| *(v0.13)* Slot A failing its check, no mirror | `Header/HeaderCheckMismatch` |
+| *(v0.13)* `passages` start past the entry's end, zero distance, truncated or overflowing varint | `Passage/BadPassageTable` for that entry only |
+| *(v0.13)* Writer given passages for an entry it does not carry | refused at `finish` |
+| *(v0.13)* Compaction of a `trigram` pack | `Compaction`, no output file; with `--drop-search`, a pack without an index |
+| *(v0.13)* Compaction of a pack with a corrupted entry | `Content/ChecksumMismatch`, no output used |
+| *(v0.13)* `manifest_update` other than `"replace"`, or `"replace"` with no `manifest` table | `Schema/BadManifestUpdate` |
+| *(v0.13, positive)* Append replacing the manifest; a later append that does not | both open with the replacement; rolling back both restores the base manifest byte for byte |
+| *(v0.13, positive)* `manifest` table in an appended segment without `manifest_update` | opens; table ignored |
 | Entry `compression = "brotli"` | `Content/UnknownCompression` at `read` |
 | Entry blob truncated / `sha256` wrong | `Content/ChecksumMismatch` or decompression error at `read` |
 
@@ -1133,9 +1463,12 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
     A2/Track-B boundary. `wax-core` treats it as an opaque string map in this
     phase; `wax-builder` writes an empty `manifest` table if Track B has frozen
     no keys.
-12. **Open item — append atomicity on ext4 / F2FS-on-SD under power loss**
-    (§7.3). Not verifiable in this environment. Recorded as an assumption; a
-    header CRC + A/B header slot in `reserved` is the likely future fix.
+12. **Append atomicity on ext4 / F2FS-on-SD under power loss** (§7.3).
+    *Closed in v0.13* by the header check and the mirror (§2.3, §2.4): a torn
+    header no longer needs the write to be atomic. Still not tested under
+    real power loss on real SD cards (no real-hardware testing yet, by
+    decision); the crash states themselves are exercised byte by byte in
+    `crates/wax-core/tests/v0_13.rs`.
 13. **Open item — residual signature rollback risk** (§8.4). Documented, not
     fixed in v0.9; deferred to v2/TUF.
 14. **Open item — wax-delta chunker (FastCDC assumed).** Out of scope for
@@ -1245,12 +1578,44 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
     stays `"none"`: every codec saved under 0.1%. No new codec value, no
     version change; the 8 MiB window bound in §3 is the only new rule.
 
+30. **Why the second header slot is at the end, not beside the first.**
+    A classic A/B header keeps two fixed slots and alternates. Here slot A
+    must stay at offset 0 for every older reader, and a fixed slot B at byte
+    128 would sit inside blob region 0, which no append may touch (§7) and
+    which every delta assumes unchanged (§7.4). The end of the file is the
+    one place every reader already ignores. The cost is 128 bytes per pack
+    and one more `fsync` per write.
+31. **Why `wax-bigram-16` and not a dictionary segmenter.** Word
+    segmentation with a dictionary (as jieba or MeCab do) finds better word
+    boundaries, but needs megabytes of dictionary and a matching segmenter on
+    every box at query time — exactly what contract §13.1 rules out at the
+    2 GB floor — and a custom SQLite tokenizer that no stock SQLite has.
+    Pairs need neither, and are what most CJK search engines fall back to.
+    Making it the default for every language (not only CJK) costs nothing
+    measurable on Latin text and fixes `ß`, ligatures and full-width forms,
+    which `unicode61` alone does not (deltd NOTES, finding 3), and its `M*` option
+    makes Indic text searchable at all.
+32. **Why passages are scored on demand, not indexed.** A passage-level FTS
+    index would be a second inverted index over the same text, larger than
+    the page index (terms repeat across a page's passages). Scoring the few
+    pages a search returns costs milliseconds and no space. If passage
+    search across a whole pack becomes a need (for retrieval-augmented
+    answers, D6), that index belongs in the v2 stand-off segment (§5.7).
+33. **Gaps found but not closed in v0.13**, recorded for a later version:
+    ranking under `detail=none` stays weak (bm25 without term counts; deltd
+    boosts title matches); media byte ranges still cannot be verified, since
+    `sha256` covers whole entries; compaction cannot carry a `trigram`
+    or `porter` index; Thai, Lao, Khmer and Myanmar text is not segmented,
+    and vocalised Arabic does not match unvocalised (§5.7.2); `œ` does not
+    fold to `oe` (case folding does not map it).
+
 ---
 
 ## 13. Change log
 
 | Format version | Date | Change |
 |----------------|------|--------|
+| 0.13 | 2026-11-20 | **Additive minor.** Header check in the last 8 reserved bytes and flag bit 4 (§2.3); a mirror of the header at the end of the file, written and synced before slot A, and a normative rule for choosing between them, so a torn header write is recovered (§2.4, §7.1–§7.3, §7.5); this closes the §7.3 atomicity assumption. Declared tokenizer `wax-bigram-16`: `nfkc-cf-16` fold, then CJK runs as overlapping pairs, into a plain `unicode61` table, so CJK packs are searchable on every box; writers SHOULD declare it for every new pack; `trigram` is kept readable but corrected as unusable under `detail=none` (§5.7, §5.7.2). Manifest updates: an appended segment declaring `manifest_update = "replace"` carries a whole new manifest, so an appended edition can change its `version`; was "immutable across appends" (§5.6, §5.6.1). Passages: `entries.passages` (new nullable column) stores where each passage starts, cut by the declared rule `html-headings-1`; a passage is named by path and position (§5.10). `wax-builder gc` reclaims orphaned tails in place (signature-preserving) and compacts a pack into a deterministic single-segment edition, carrying the search index term for term (§7.6). |
 | 0.12 | 2026-11-15 | **Additive minor.** Tombstones as `compression = "tombstone"`, with aliases deleted alongside their target (§5.5.1). The search segment may appear in any segment, covering its own entries, with hits checked for ownership and merged by per-segment position (RRF), since bm25 scores from different segments are not comparable; one tokenizer per archive (§5.7); this also fixes §4.1, which already said "any segment". Declared title fold `nfkc-cf-16` (§5.7.1). `prev_state_digest` links each appended segment to the state it extends, so an update is the byte tail plus a header and can be checked before it is applied; header minor on append is `max(old, 12)`; an appending writer reclaims an orphaned tail and refuses to exceed the 64-segment limit (§7.1, §7.4). Each appended segment stores the header it replaced, so an update can be rolled back to the exact previous bytes and the rollback checked (§7.5); every segment stores the merged `live_entry_count` (§4.2). `volume_id` checked per entry at lookup rather than by a scan at open (§5.2). No byte-layout change. |
 | 0.11 | 2026-10-14 | **Additive minor.** The embedded search segment (§5.7): a contentless FTS5 index plus a `search_docs` title map, present only in segment 0, with the tokenizer declared in `segment_meta` and a reader obliged to refuse one it cannot reproduce rather than answer wrongly. Fills the table name v0.9 reserved. No byte-layout change; an archive without the segment opens exactly as before and reports search absent, not failed. The stand-off segment behind `search_index_offset` is still v2 and still unused. Decision recorded in `docs/adr/ADR-0002`. |
 | 0.10 | 2026-10-14 | **Additive minor.** New `compression` value `zstd-dict` (§3) and a new segment-0 `dictionary` table (§5.9) holding one shared zstd dictionary. Per-entry framing is unchanged — still one frame per entry, so random access and the lookup path are untouched. Every v0.9 archive opens unmodified; the dictionary table and the new codec value are both additive under §5.4. Codec chosen from measurement, not argument — see [`docs/adr/ADR-0001`](docs/adr/ADR-0001-text-compression-codec.md). Carrying the dictionary forward across editions is normative (§5.9), because retraining reframes every entry and destroys the delta model. |

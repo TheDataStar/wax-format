@@ -1,4 +1,5 @@
-//! HTML → plain text for the embedded search index (SPEC §5.7).
+//! HTML → plain text for the embedded search index (SPEC §5.7) and for passage
+//! scoring (SPEC v0.13 §5.10).
 //!
 //! The index is contentless (`content=''`), so what goes in is only ever
 //! tokenized, never shown: this does not need to render a page, only to hand
@@ -71,7 +72,7 @@ pub fn html_to_text(html: &str) -> String {
 
 /// Index just past the `>` closing the tag that starts at `i`, honouring
 /// quoted attribute values.
-fn tag_end(b: &[u8], i: usize) -> usize {
+pub(crate) fn tag_end(b: &[u8], i: usize) -> usize {
     let mut j = i + 1;
     let mut quote: Option<u8> = None;
     while j < b.len() {

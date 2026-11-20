@@ -177,3 +177,15 @@ pub struct Suggestion {
     pub path: String,
     pub title: String,
 }
+
+/// One passage-level search result (SPEC v0.13 §5.10): an entry hit plus
+/// the passage inside it that best matches the query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PassageHit {
+    pub path: String,
+    /// The entry's indexed title.
+    pub title: Option<String>,
+    /// The best-matching passage, or `None` when the entry carries no
+    /// passage table (then the whole entry is the answer).
+    pub passage: Option<crate::passage::Passage>,
+}

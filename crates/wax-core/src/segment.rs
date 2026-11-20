@@ -56,6 +56,8 @@ pub struct Segment {
     /// (SPEC §5.2 column tolerance).
     columns: String,
     has_volume: bool,
+    /// `entries.passages` exists (SPEC v0.13 §5.10).
+    has_passages: bool,
 }
 
 impl Segment {
@@ -142,6 +144,7 @@ impl Segment {
             conn,
             columns,
             has_volume: has("volume_id"),
+            has_passages: has("passages"),
         })
     }
 
@@ -438,6 +441,90 @@ impl Segment {
         Ok(out)
     }
 
+    /// The passage rule this segment declares (SPEC v0.13 §5.10), or `None`
+    /// when it carries no passage table.
+    pub fn passage_rule(&self) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT value FROM segment_meta WHERE key = 'passage_rule'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
+    /// The value of `segment_meta.manifest_update` (SPEC v0.13 §5.6.1), or
+    /// `None` when this segment does not replace the manifest.
+    pub fn manifest_update(&self) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT value FROM segment_meta WHERE key = 'manifest_update'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
+    /// Whether this segment holds a `manifest` table at all.
+    pub fn has_manifest_table(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='manifest'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// The encoded `entries.passages` of `path` in this segment, if any
+    /// (SPEC v0.13 §5.10). Read on its own, so ordinary lookups never load it.
+    pub fn passage_starts(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        if !self.has_passages {
+            return Ok(None);
+        }
+        Ok(self
+            .conn
+            .prepare_cached("SELECT passages FROM entries WHERE path = ?1")?
+            .query_row([path], |r| r.get::<_, Option<Vec<u8>>>(0))
+            .optional()?
+            .flatten())
+    }
+
+    /// Every `(document id, term)` pair of this segment's search index, in
+    /// term order, handed to `sink` (compaction, SPEC v0.13 §7.6). Reads the
+    /// posting lists through `fts5vocab`; the segment file itself is opened
+    /// read-only and is never written (the vocabulary table lives in the
+    /// connection's private `temp` schema).
+    pub fn for_each_search_term(&self, mut sink: impl FnMut(i64, &str) -> Result<()>) -> Result<()> {
+        self.conn.execute_batch(
+            "PRAGMA query_only=0;
+             CREATE VIRTUAL TABLE IF NOT EXISTS temp.wax_vocab USING fts5vocab(main, search_index, instance);
+             PRAGMA query_only=1;",
+        )?;
+        let mut st = self.conn.prepare("SELECT doc, term FROM temp.wax_vocab")?;
+        let mut rows = st.query([])?;
+        while let Some(r) = rows.next()? {
+            let doc: i64 = r.get(0)?;
+            let term: String = r.get(1)?;
+            sink(doc, &term)?;
+        }
+        Ok(())
+    }
+
+    /// Every `search_docs` row of this segment: `(id, path, title)`.
+    pub fn for_each_search_doc(&self, mut sink: impl FnMut(i64, String, Option<String>) -> Result<()>) -> Result<()> {
+        let mut st = self.conn.prepare("SELECT id, path, title FROM search_docs ORDER BY id")?;
+        let mut rows = st.query([])?;
+        while let Some(r) = rows.next()? {
+            sink(r.get(0)?, r.get(1)?, r.get(2)?)?;
+        }
+        Ok(())
+    }
+
     /// The title fold this segment's `search_docs` was built with (SPEC v0.12
     /// §5.7.1). A segment with an index but no declaration predates v0.12 and
     /// used plain lowercasing, so it reads as
@@ -480,7 +567,8 @@ impl Segment {
     }
 
     /// `manifest` as an opaque string map. Caller decides whether to read it
-    /// (only segment 0, SPEC §5.6).
+    /// (segment 0, or the newest segment declaring a manifest update, SPEC
+    /// v0.13 §5.6.1).
     pub fn manifest(&self) -> Result<Vec<(String, String)>> {
         let present = self
             .conn

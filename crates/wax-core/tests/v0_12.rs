@@ -193,7 +193,11 @@ fn the_update_is_the_byte_tail_plus_a_header() {
     let old = std::fs::read(&pack).unwrap();
     edition_two(&pack);
     let new = std::fs::read(&pack).unwrap();
-    assert_eq!(&new[128..old.len()], &old[128..], "nothing before the old EOF moved");
+    // The old file ends with its header mirror (SPEC v0.13 §2.4), which sits
+    // past its logical end and is the first thing the update overwrites.
+    let end = old.len() - 128;
+    assert_eq!(&old[end..], &old[..128], "edition one ends with its mirror");
+    assert_eq!(&new[128..end], &old[128..end], "nothing before the old logical end moved");
 
     // Apply it the way a box would: check the tail extends *this* copy, then
     // write the new header and append the tail.
@@ -202,8 +206,8 @@ fn the_update_is_the_byte_tail_plus_a_header() {
     let (mine, _, _) = signable_digest_of(&copy).unwrap();
     assert_eq!(WaxReader::open(&pack).unwrap().prev_state_digest(1), Some(mine));
     let mut applied = new[..128].to_vec();
-    applied.extend_from_slice(&old[128..]);
-    applied.extend_from_slice(&new[old.len()..]);
+    applied.extend_from_slice(&old[128..end]);
+    applied.extend_from_slice(&new[end..]);
     std::fs::write(&copy, &applied).unwrap();
     assert_eq!(std::fs::read(&copy).unwrap(), new);
     WaxReader::open(&copy).unwrap();
@@ -226,17 +230,18 @@ fn an_orphaned_tail_is_reclaimed_so_the_update_still_travels_as_a_byte_tail() {
     }
     edition_two(&pack);
     let new = std::fs::read(&pack).unwrap();
-    assert_eq!(&new[128..clean.len()], &clean[128..], "nothing before the logical end moved");
+    let end = clean.len() - 128; // logical end; the mirror follows it
+    assert_eq!(&new[128..end], &clean[128..end], "nothing before the logical end moved");
     assert_ne!(
-        &new[clean.len()..clean.len() + 4096],
+        &new[end + 128..end + 128 + 4096],
         &[0xAB; 4096][..],
         "the orphan must be reclaimed, not shipped inside the update"
     );
 
     let copy = dir.path().join("box-copy.wax");
     let mut applied = new[..128].to_vec();
-    applied.extend_from_slice(&clean[128..]);
-    applied.extend_from_slice(&new[clean.len()..]);
+    applied.extend_from_slice(&clean[128..end]);
+    applied.extend_from_slice(&new[end..]);
     std::fs::write(&copy, &applied).unwrap();
     assert_eq!(std::fs::read(&copy).unwrap(), new);
     let r = WaxReader::open(&copy).unwrap();
@@ -283,7 +288,7 @@ fn appending_to_an_older_pack_raises_the_header_minor_and_keeps_it_readable() {
     sw.finish().unwrap();
 
     let r = WaxReader::open(&pack).unwrap();
-    assert_eq!(r.header().version_minor, 12);
+    assert_eq!(r.header().version_minor, wax_core::FORMAT_VERSION_MINOR);
     assert_eq!(r.read(&ep).unwrap(), ep_bytes);
     assert_eq!(r.read("new.html").unwrap(), b"fresh");
 }

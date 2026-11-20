@@ -149,6 +149,7 @@ fn cmd_convert(
         zim2wax::SearchIndexOutcome::NotRequested => println!("search index : not built (--no-search-index)"),
         zim2wax::SearchIndexOutcome::Withheld { reason } => println!("search index : not built: {reason}"),
     }
+    println!("passages     : {} articles cut along their headings", r.stats.passage_entries);
     let w = &r.write;
     println!(
         "converted {} → {}",

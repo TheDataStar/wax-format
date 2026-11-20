@@ -187,7 +187,9 @@ fn chosen<'a>(snap: &'a Snapshot, s: &Session, q: &BTreeMap<String, String>) -> 
 fn search_status(p: &Pack) -> Value {
     match p.search_tokenizer.as_deref() {
         None => json!({ "available": false, "reason": Skip::NoIndex.code() }),
-        Some(t) if t == "unicode61" || t == "trigram" => json!({ "available": true, "tokenizer": t }),
+        Some(t) if t == "unicode61" || t == "trigram" || t == wax_core::tokenize::WAX_BIGRAM => {
+            json!({ "available": true, "tokenizer": t })
+        }
         Some(t) => json!({ "available": false, "tokenizer": t, "reason": Skip::UnknownTokenizer.code() }),
     }
 }

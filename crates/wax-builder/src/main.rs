@@ -15,7 +15,7 @@ use wax_core::WaxReader;
 #[command(
     name = "wax-builder",
     version,
-    about = "Assemble, append to, inspect and verify WAX archives (format v0.9, see SPEC.md)"
+    about = "Assemble, append to, inspect, verify and compact WAX archives (format v0.13, see SPEC.md)"
 )]
 struct Args {
     #[command(subcommand)]
@@ -50,6 +50,30 @@ enum Commands {
     Rollback {
         #[arg(short, long)]
         archive: PathBuf,
+    },
+    /// Reclaim space (SPEC v0.13 §7.6). By default, rewrite the archive as
+    /// one segment holding only what is live: replaced and deleted entries'
+    /// old bytes are dropped, stored bytes are copied unchanged, and the
+    /// search index is carried over term for term. The result is a new
+    /// edition: re-sign it (--sign-key), since the old sidecar no longer
+    /// matches. With --tail-only, only cut a crashed append's leftovers and
+    /// repair a torn header, in place; the signature stays valid.
+    Gc {
+        #[arg(short, long)]
+        archive: PathBuf,
+        /// Write the compacted pack here instead of replacing the archive
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Only reclaim an orphaned tail and repair the header; keeps the signature
+        #[arg(long)]
+        tail_only: bool,
+        /// Leave the search index out when it cannot be carried over exactly
+        /// (trigram and porter indexes); otherwise compaction refuses
+        #[arg(long)]
+        drop_search: bool,
+        /// minisign secret key to sign the result; also $WAX_MINISIGN_KEY
+        #[arg(long)]
+        sign_key: Option<PathBuf>,
     },
     /// Append a new segment (new tree) to an existing archive, then re-sign
     Append {
@@ -134,6 +158,13 @@ fn main() -> Result<()> {
             println!("  the sidecar signature, if any, belongs to the removed edition: restore the earlier one or re-sign");
             Ok(())
         }
+        Commands::Gc {
+            archive,
+            output,
+            tail_only,
+            drop_search,
+            sign_key,
+        } => cmd_gc(archive, output, tail_only, drop_search, sign_key),
         Commands::Inspect { archive, entries } => cmd_inspect(archive, entries),
         Commands::Verify {
             archive,
@@ -226,6 +257,88 @@ fn cmd_append(
     Ok(())
 }
 
+fn cmd_gc(
+    archive: PathBuf,
+    output: Option<PathBuf>,
+    tail_only: bool,
+    drop_search: bool,
+    sign_key: Option<PathBuf>,
+) -> Result<()> {
+    if tail_only {
+        if output.is_some() {
+            bail!("--tail-only works in place; it takes no --output");
+        }
+        let s = wax_core::compact::reclaim_tail(&archive)
+            .with_context(|| format!("reclaiming the tail of {}", archive.display()))?;
+        println!(
+            "{}: reclaimed {} bytes{}; now {} bytes. The signature, if any, still verifies.",
+            archive.display(),
+            s.reclaimed_bytes,
+            if s.repaired_header { ", restored the torn header from its mirror" } else { "" },
+            s.file_length
+        );
+        return Ok(());
+    }
+    let opts = wax_core::compact::CompactOptions {
+        drop_search,
+        ..Default::default()
+    };
+    let (target, tmp) = match &output {
+        Some(o) => (o.clone(), None),
+        None => {
+            let mut t = archive.clone().into_os_string();
+            t.push(".gc-tmp");
+            (archive.clone(), Some(PathBuf::from(t)))
+        }
+    };
+    let write_to = tmp.as_ref().unwrap_or(&target);
+    let s = wax_core::compact::compact(&archive, write_to, opts)
+        .with_context(|| format!("compacting {}", archive.display()))?;
+    if let Some(t) = &tmp {
+        // Same directory, so the rename is atomic: a crash leaves either
+        // the old pack or the new one, never half of either.
+        std::fs::File::open(t)?.sync_all()?;
+        std::fs::rename(t, &target)?;
+        if let Some(dir) = target.parent().filter(|d| !d.as_os_str().is_empty()) {
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.sync_all();
+            }
+        }
+    }
+    println!(
+        "compacted {} -> {}: {} -> {} bytes ({} segment(s) -> 1), {} entries, {} aliases, {} indexed, {} with passages",
+        archive.display(),
+        target.display(),
+        s.input_bytes,
+        s.output_bytes,
+        s.segments_before,
+        s.entries,
+        s.redirects,
+        s.search_documents,
+        s.passages
+    );
+    if s.search_dropped {
+        println!("  search index : left out (--drop-search)");
+    }
+    match sign::resolve_seckey(sign_key) {
+        Some(key) => {
+            let p = sign::sign(&target, &key)?;
+            println!("  signed       : {}", p.display());
+        }
+        None => {
+            let sidecar = sign::sidecar_path(&target);
+            if sidecar.is_file() {
+                println!(
+                    "  WARNING      : {} belongs to the uncompacted edition and no longer \
+                     verifies. Re-sign with --sign-key.",
+                    sidecar.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cmd_inspect(archive: PathBuf, list_entries: bool) -> Result<()> {
     let reader = WaxReader::open(&archive)
         .with_context(|| format!("opening {}", archive.display()))?;
@@ -243,6 +356,14 @@ fn cmd_inspect(archive: PathBuf, list_entries: bool) -> Result<()> {
     println!("index_length   : {}", h.index_length);
     println!("blob_section   : {}", h.blob_section_length);
     println!("search_index   : offset={} length={}", h.search_index_offset, h.search_index_length);
+    println!(
+        "header copy    : {}",
+        match reader.header_source() {
+            wax_core::HeaderSource::SlotA if reader.has_mirror().unwrap_or(false) => "slot A, mirror at end of file",
+            wax_core::HeaderSource::SlotA => "slot A (no mirror)",
+            wax_core::HeaderSource::Mirror => "MIRROR (slot A torn; run `gc --tail-only`)",
+        }
+    );
     println!("segments       : {}", reader.segment_count());
     println!("entries        : {}", reader.entry_count()?);
     println!("file_size      : {}", reader.file_size());
@@ -261,7 +382,10 @@ fn cmd_inspect(archive: PathBuf, list_entries: bool) -> Result<()> {
     if manifest.is_empty() {
         println!("manifest       : (empty)");
     } else {
-        println!("manifest:");
+        match reader.manifest_segment() {
+            0 => println!("manifest:"),
+            n => println!("manifest (replaced by segment {n}, SPEC 5.6.1):"),
+        }
         for (k, v) in manifest {
             println!("  {k} = {v}");
         }
@@ -357,6 +481,9 @@ fn cmd_verify(
 ) -> Result<()> {
     let pk = sign::PubKey::resolve(pubkey, pubkey_str);
     let report = verify_pack(&archive, pk.as_ref(), require_signature)?;
+    if let Some(n) = &report.header_note {
+        println!("header         : {n}");
+    }
 
     println!(
         "entries        : {} read OK, {} redirects",
@@ -414,6 +541,9 @@ fn describe_flags(flags: u16) -> String {
     }
     if flags & flag::IS_SIGNED != 0 {
         set.push("is_signed");
+    }
+    if flags & flag::HAS_HEADER_CHECK != 0 {
+        set.push("has_header_check");
     }
     if set.is_empty() {
         String::new()

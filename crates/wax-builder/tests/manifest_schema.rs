@@ -1024,14 +1024,89 @@ fn append_accepts_an_unchanged_manifest() {
 }
 
 #[test]
-fn append_still_rejects_a_genuinely_changed_manifest() {
+fn append_rejects_a_changed_manifest_that_keeps_its_version() {
+    // SPEC v0.13 §5.6.1: an append may replace the manifest, but a changed
+    // manifest is a newer edition, so its `version` has to move forward.
     let src = manifest_tree();
     let extra = tree(&[("articles/b.html", b"<p>b</p>")]);
     let dst = tempfile::tempdir().unwrap();
     let archive = out(&dst, "p.wax");
 
     build_pack(src.path(), &archive, &cfg_from(VALID_MANIFEST), &pinned()).unwrap();
+    let before = std::fs::read(&archive).unwrap();
     let renamed = manifest_with("name", r#"name = "Renamed Pack""#);
     let err = append_pack(&archive, extra.path(), &cfg_from(&renamed), &pinned()).unwrap_err();
-    assert!(format!("{err:#}").contains("immutable across appends"), "{err:#}");
+    assert!(format!("{err:#}").contains("not newer than the archive's 2026.09.1"), "{err:#}");
+    assert_eq!(std::fs::read(&archive).unwrap(), before, "a refused append leaves the pack untouched");
+
+    let older = manifest_with("version", r#"version = "2026.08.30""#);
+    let err = append_pack(&archive, extra.path(), &cfg_from(&older), &pinned()).unwrap_err();
+    assert!(format!("{err:#}").contains("not newer"), "{err:#}");
+}
+
+#[test]
+fn an_appended_edition_carries_its_new_version_and_rollback_restores_the_old() {
+    let src = manifest_tree();
+    let extra = tree(&[("articles/b.html", b"<p>b</p>")]);
+    let dst = tempfile::tempdir().unwrap();
+    let archive = out(&dst, "p.wax");
+
+    build_pack(src.path(), &archive, &cfg_from(VALID_MANIFEST), &pinned()).unwrap();
+    let old = WaxReader::open(&archive).unwrap().manifest().clone();
+    let before = std::fs::read(&archive).unwrap();
+
+    let newer = manifest_with("version", r#"version = "2026.10.3""#);
+    let report = append_pack(&archive, extra.path(), &cfg_from(&newer), &pinned()).unwrap();
+    assert_eq!(report.segments, 2);
+    let r = WaxReader::open(&archive).unwrap();
+    assert_eq!(r.manifest().get("version").map(String::as_str), Some("2026.10.3"));
+    assert_eq!(r.manifest_segment(), 1);
+    let mut expect = old.clone();
+    expect.insert("version".into(), "2026.10.3".into());
+    assert_eq!(r.manifest(), &expect, "the replacement is the whole new manifest");
+    drop(r);
+
+    // A further append with the same config changes nothing in the manifest
+    // and writes no second replacement.
+    let more = tree(&[("articles/c.html", b"<p>c</p>")]);
+    append_pack(&archive, more.path(), &cfg_from(&newer), &pinned()).unwrap();
+    let r = WaxReader::open(&archive).unwrap();
+    assert_eq!(r.manifest_segment(), 1);
+    assert_eq!(r.manifest().get("version").map(String::as_str), Some("2026.10.3"));
+    drop(r);
+
+    wax_core::rollback_last_update(&archive).unwrap();
+    wax_core::rollback_last_update(&archive).unwrap();
+    let r = WaxReader::open(&archive).unwrap();
+    assert_eq!(r.manifest(), &old, "undoing the update restores the old manifest");
+    assert_eq!(r.manifest_segment(), 0);
+    drop(r);
+    assert_eq!(std::fs::read(&archive).unwrap(), before);
+}
+
+#[test]
+fn an_appended_manifest_is_validated_like_a_built_one() {
+    let src = manifest_tree();
+    let extra = tree(&[("articles/b.html", b"<p>b</p>")]);
+    let dst = tempfile::tempdir().unwrap();
+    let archive = out(&dst, "p.wax");
+    build_pack(src.path(), &archive, &cfg_from(VALID_MANIFEST), &pinned()).unwrap();
+
+    let bad = manifest_with("version", r#"version = "2026.10.03""#);
+    let err = append_pack(&archive, extra.path(), &cfg_from(&bad), &pinned()).unwrap_err();
+    assert!(format!("{err:#}").contains("not CalVer"), "{err:#}");
+
+    // entry_point may name a page this append adds...
+    let moved = manifest_with("entry_point", r#"entry_point = "articles/b.html""#)
+        .replace(r#"version = "2026.09.1""#, r#"version = "2026.09.2""#);
+    append_pack(&archive, extra.path(), &cfg_from(&moved), &pinned()).unwrap();
+    assert_eq!(
+        WaxReader::open(&archive).unwrap().manifest().get("entry_point").map(String::as_str),
+        Some("articles/b.html")
+    );
+    // ...but not one that exists nowhere.
+    let missing = manifest_with("entry_point", r#"entry_point = "nowhere.html""#)
+        .replace(r#"version = "2026.09.1""#, r#"version = "2026.09.3""#);
+    let err = append_pack(&archive, extra.path(), &cfg_from(&missing), &pinned()).unwrap_err();
+    assert!(format!("{err:#}").contains("does not name an entry"), "{err:#}");
 }

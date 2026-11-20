@@ -247,30 +247,17 @@ pub enum SearchIndexOutcome {
 /// The tokenizer the index for a pack in `languages` is built with, or why
 /// none is built.
 ///
-/// `unicode61` is SPEC §5.7's default and runs on every box. A CJK pack
-/// would declare `trigram`, but **trigram cannot be queried under the
-/// `detail=none` SPEC §5.7 fixes**: SQLite refuses any term longer than three
-/// characters as a phrase query, and a two-character word (most Chinese words)
-/// can never match. Because every later edition must keep the base's
-/// tokenizer (`TokenizerMismatch`), building one now would lock the pack into
-/// it. So a CJK pack is built without an index until the format settles its
-/// CJK form — a recorded format gap, not a choice made here.
+/// Every pack, whatever its language, is indexed with `wax-bigram-16` (SPEC
+/// v0.13 §5.7.2): `unicode61` underneath, so every box reproduces it, with
+/// the text folded first (`ß` finds `ss`, full-width finds half-width) and
+/// Chinese, Japanese and Korean runs cut into two-character pieces. Until
+/// v0.13 a CJK pack was built without an index, because neither built-in
+/// tokenizer could answer CJK queries under `detail=none`; that gap is
+/// closed, so nothing is withheld any more. The `Err` arm stays for a
+/// future language the format cannot yet index.
 pub fn search_tokenizer_for(languages: Option<&str>) -> std::result::Result<&'static str, String> {
-    let cjk = languages
-        .map(|l| {
-            l.split(',').any(|tag| {
-                let primary = tag.trim().split('-').next().unwrap_or("").to_ascii_lowercase();
-                matches!(primary.as_str(), "zh" | "ja" | "ko")
-            })
-        })
-        .unwrap_or(false);
-    if cjk {
-        Err("CJK pack: the trigram tokenizer cannot answer queries under detail=none \
-             (SPEC §5.7); withheld until the format settles CJK search"
-            .to_string())
-    } else {
-        Ok("unicode61")
-    }
+    let _ = languages;
+    Ok(wax_core::tokenize::WAX_BIGRAM)
 }
 
 impl ConvertOptions {
@@ -359,6 +346,8 @@ pub struct ConvertStats {
     /// `X/` search-index dirents, not copied by design (Track B §4). Not a
     /// warning: nothing was lost that WAX could have used.
     pub search_index_entries: usize,
+    /// Articles given a passage table (SPEC v0.13 §5.10).
+    pub passage_entries: usize,
     /// `W/` well-known dirents, not copied by design (the main page reaches
     /// the manifest through `entry_point`).
     pub wellknown_entries: usize,
@@ -959,6 +948,13 @@ fn convert_inner(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Resul
             };
             stats.hrefs_rewritten += rs.rewritten;
             drop(text);
+            if is_article_mime(&bare) && bare != "text/css" {
+                // Passages (SPEC v0.13 §5.10): cut along headings of the bytes
+                // exactly as stored, so citations name the same spans on
+                // every build of this source.
+                pack.index_passages(&index_path, out.as_bytes())?;
+                stats.passage_entries += 1;
+            }
             if is_article_mime(&bare) && matches!(search, SearchIndexOutcome::Built { .. }) {
                 let body = crate::text::html_to_text(&out);
                 // An empty ZIM title means "the url is the title" (ZIM format),
@@ -1205,12 +1201,9 @@ mod search_tokenizer_tests {
     use super::search_tokenizer_for;
 
     #[test]
-    fn unicode61_unless_cjk() {
-        assert_eq!(search_tokenizer_for(None), Ok("unicode61"));
-        assert_eq!(search_tokenizer_for(Some("en,fr")), Ok("unicode61"));
-        assert_eq!(search_tokenizer_for(Some("ar")), Ok("unicode61"));
-        for l in ["zh", "ja", "ko", "en,zh-Hans", "ZH-TW"] {
-            assert!(search_tokenizer_for(Some(l)).is_err(), "{l}");
+    fn every_language_gets_wax_bigram_16() {
+        for l in [None, Some("en,fr"), Some("ar"), Some("zh"), Some("ja"), Some("ko"), Some("en,zh-Hans")] {
+            assert_eq!(search_tokenizer_for(l), Ok("wax-bigram-16"), "{l:?}");
         }
     }
 }

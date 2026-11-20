@@ -315,6 +315,12 @@ impl PackStream {
         Ok(self.writer.index_text(path, title, body)?)
     }
 
+    /// Record the passages of `path`, cut at its headings (SPEC v0.13
+    /// §5.10). `content` is the entry's bytes exactly as added.
+    pub fn index_passages(&mut self, path: &str, content: &[u8]) -> Result<usize> {
+        Ok(self.writer.index_passages(path, content)?)
+    }
+
     /// How many documents the search index holds so far.
     pub fn indexed_count(&self) -> u64 {
         self.writer.indexed_count()
@@ -475,6 +481,30 @@ pub fn append_pack(
 /// [`append_pack`], also deleting `deletions` from the archive with
 /// tombstones in the new segment (SPEC v0.12 §5.5.1). Each must name a path
 /// the archive currently serves, and must not also be in `input`.
+/// An appended edition that replaces the manifest must not go backwards:
+/// its CalVer `version` (contract §11) has to be newer than the pack's.
+fn check_version_advances(old: Option<&str>, new: Option<&str>) -> Result<()> {
+    fn key(v: &str) -> Option<(u32, u32, u32)> {
+        config::check_calver(v).ok()?;
+        let mut p = v.split('.').map(|x| x.parse::<u32>().ok());
+        Some((p.next()??, p.next()??, p.next()??))
+    }
+    let (Some(old), Some(new)) = (old, new) else {
+        return Ok(());
+    };
+    match (key(old), key(new)) {
+        (Some(o), Some(n)) if n > o => Ok(()),
+        (Some(_), Some(_)) => bail!(
+            "this config's manifest version {new} is not newer than the archive's {old}. \
+             An append that changes the manifest is a newer edition, so raise `version` \
+             (CalVer YYYY.MM.N, docs/cross-track-contract.md §11)"
+        ),
+        // The archive's own version predates the CalVer check; the new one
+        // was validated above, so let it through.
+        _ => Ok(()),
+    }
+}
+
 pub fn append_pack_with_deletions(
     archive: &Path,
     input: &Path,
@@ -485,17 +515,26 @@ pub fn append_pack_with_deletions(
     if !archive.is_file() {
         bail!("archive {} does not exist", archive.display());
     }
-    // `manifest` is segment-0-only and immutable across appends (SPEC §5.6): a
-    // manifest change is a new pack version, not an append.
-    if !cfg.manifest.is_empty() {
-        let existing = WaxReader::open(archive)?.manifest().clone();
+    // An append may carry a new manifest (SPEC v0.13 §5.6.1): a config whose
+    // [manifest] differs from the archive's replaces it in the new segment.
+    // It is validated exactly as a fresh build's is (§11), and its `version`
+    // must move forward, since an appended edition is a newer edition.
+    let existing_manifest = WaxReader::open(archive)?.manifest().clone();
+    let new_manifest = if cfg.manifest.is_empty() {
+        None
+    } else {
         let declared = cfg.manifest.to_rows();
-        if declared != existing {
-            bail!(
-                "this config's [manifest] differs from the archive's. The manifest lives \n                 only in segment 0 and is immutable across appends (SPEC §5.6) — a manifest \n                 change is a new pack version, so rebuild with `build` instead of `append`."
-            );
+        if declared == existing_manifest {
+            None
+        } else {
+            cfg.manifest.validate(None).context("invalid manifest")?;
+            check_version_advances(
+                existing_manifest.get("version").map(String::as_str),
+                declared.get("version").map(String::as_str),
+            )?;
+            Some(declared)
         }
-    }
+    };
 
     let (entries, stats) = assemble::collect_entries(input, cfg)?;
     let n = entries.len();
@@ -511,6 +550,24 @@ pub fn append_pack_with_deletions(
         for d in deletions {
             w.add_tombstone(d)?;
         }
+        if let Some(m) = &new_manifest {
+            // §11: icon and entry_point must name live entries of the
+            // updated pack, old or newly added.
+            for key in ["icon", "entry_point"] {
+                let value = m.get(key).map(String::as_str).unwrap_or_default();
+                let normalized = assemble::normalize_for_lookup(value);
+                if !w.resolves(&normalized)? {
+                    return Err(wax_core::WaxError::BadManifestUpdate {
+                        segment: 0,
+                        detail: format!(
+                            "{key} {value:?} does not name an entry in the updated pack \
+                             (docs/cross-track-contract.md §11)"
+                        ),
+                    });
+                }
+            }
+            w.set_manifest(m);
+        }
         w.finish()?;
         Ok(())
     })();
@@ -520,8 +577,8 @@ pub fn append_pack_with_deletions(
     let reader = WaxReader::open(archive)?;
     debug_assert_eq!(reader.header().archive_uuid, uuid);
 
-    // The manifest is immutable across appends, so the licensing outcome is
-    // whatever the archive already carries.
+    // The licensing outcome is whatever the pack's manifest now says: the
+    // old one, or the replacement this append wrote (SPEC v0.13 §5.6.1).
     let license = reader
         .manifest()
         .get("license")
@@ -566,6 +623,8 @@ fn maybe_sign(archive: &Path, opts: &WriteOptions) -> Result<Option<PathBuf>> {
 /// Result of `wax-builder verify`.
 #[derive(Debug)]
 pub struct VerifyReport {
+    /// Something about the header worth saying that is not a failure.
+    pub header_note: Option<String>,
     pub entries_checked: usize,
     pub redirects: usize,
     pub bad_entries: Vec<(String, String)>,
@@ -600,7 +659,18 @@ pub fn verify_pack(
         }
         match reader.read(&entry.path) {
             Ok(_) => checked += 1,
-            Err(e) => bad.push((entry.path, e.to_string())),
+            Err(e) => {
+                bad.push((entry.path, e.to_string()));
+                continue;
+            }
+        }
+        // SPEC v0.13 §5.10: a passage table that cannot be decoded against
+        // its entry is malformed.
+        if !entry.is_redirect() {
+            match reader.passages(&entry.path) {
+                Ok(_) | Err(wax_core::WaxError::PassagesUnavailable { .. }) => {}
+                Err(e) => bad.push((entry.path, e.to_string())),
+            }
         }
     }
     // SPEC v0.12 §4.2: the stored live count must match what a walk finds,
@@ -641,7 +711,18 @@ pub fn verify_pack(
         }
     };
 
+    // SPEC v0.13 §2.4: a torn slot A is recovered, not malformed, but it is
+    // worth repairing before anything else writes.
+    let header_note = match reader.header_source() {
+        wax_core::HeaderSource::Mirror => Some(
+            "slot A of the header is torn; opened from its mirror. Run `wax-builder gc --tail-only` to repair it."
+                .to_string(),
+        ),
+        wax_core::HeaderSource::SlotA => None,
+    };
+
     Ok(VerifyReport {
+        header_note,
         entries_checked: checked,
         redirects,
         bad_entries: bad,

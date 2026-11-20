@@ -18,7 +18,8 @@ pub mod lang;
 pub mod paths;
 pub mod png;
 pub mod rewrite;
-pub mod text;
+/// Moved to `wax-core` (v0.13) so passage search can use the same extraction.
+pub use wax_core::text;
 
 pub use convert::{
     convert, probe, search_tokenizer_for, ConvertOptions, ConvertReport, Derived, SearchIndexOutcome, ICON_PATH,

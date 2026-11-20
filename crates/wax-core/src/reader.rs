@@ -16,6 +16,7 @@
 use crate::header::WaxHeader;
 use crate::model::{Compression, Entry, Resolved, SearchHit, Suggestion};
 use crate::segment::Segment;
+use crate::writer::MANIFEST_UPDATE_REPLACE;
 use crate::{Result, WaxError, HEADER_LEN, MAX_SEGMENTS, MIN_SQLITE_LEN};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
@@ -96,15 +97,35 @@ impl std::fmt::Debug for WaxReader {
     }
 }
 
+/// Which copy of the header a reader opened the archive with (SPEC v0.13
+/// §2.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderSource {
+    /// Slot A, at offset 0: every normal open.
+    SlotA,
+    /// The mirror at the end of the file, because slot A was torn by a crash
+    /// during the header write. The archive is in the state that write was
+    /// committing; `wax-builder gc --tail-only` (or the next append) copies
+    /// the mirror back into slot A.
+    Mirror,
+}
+
 pub struct WaxReader {
     path: PathBuf,
     file: File,
     file_size: u64,
     header: WaxHeader,
+    /// The 128 bytes `header` was parsed from (slot A, or the mirror).
+    header_raw: [u8; HEADER_LEN],
+    /// Where the header came from (SPEC v0.13 §2.4).
+    header_source: HeaderSource,
     /// Segments in ascending `segment_index` order (base first).
     segments: Vec<Segment>,
-    /// Base-segment manifest (SPEC §5.6); small, held.
+    /// The effective manifest (SPEC §5.6, v0.13 §5.6.1); small, held.
     manifest: BTreeMap<String, String>,
+    /// The segment that supplied `manifest`: 0, or the newest segment that
+    /// declares a manifest update.
+    manifest_segment: usize,
     /// The tokenizer the earliest indexed segment declares (SPEC §5.7), or
     /// None when no segment carries a search index.
     search_tokenizer: Option<String>,
@@ -146,8 +167,8 @@ impl WaxReader {
             }
             Err(e) => return Err(e.into()),
         }
-        let header = WaxHeader::parse(&hbuf)?;
-        header.validate(file_size)?;
+        // --- which header: slot A, or its mirror (SPEC v0.13 §2.4) ---
+        let (header, header_raw, header_source) = Self::choose_header(&path, &file, hbuf, file_size)?;
 
         // --- segment chain (SPEC §5.1) ---
         let segments = Self::walk_chain(&path, &header, file_size)?;
@@ -183,13 +204,40 @@ impl WaxReader {
             search_segments.push(i);
         }
 
-        // --- manifest: base segment only (SPEC §5.6) ---
+        // --- manifest (SPEC §5.6, v0.13 §5.6.1) ---
+        // The base segment's, unless a later segment declares a manifest
+        // update: then the newest such segment's table replaces it whole. A
+        // `manifest` table in a segment that declares nothing is ignored, as
+        // every earlier version required.
         let mut manifest = BTreeMap::new();
         let mut dictionary = None;
-        if let Some(base) = segments.first() {
-            for (k, v) in base.manifest()? {
+        let mut manifest_segment = 0usize;
+        for (i, seg) in segments.iter().enumerate().skip(1) {
+            match seg.manifest_update()?.as_deref() {
+                None => {}
+                Some(MANIFEST_UPDATE_REPLACE) => {
+                    if !seg.has_manifest_table()? {
+                        return Err(WaxError::BadManifestUpdate {
+                            segment: i,
+                            detail: "declares a replacement but has no manifest table".into(),
+                        });
+                    }
+                    manifest_segment = i;
+                }
+                Some(other) => {
+                    return Err(WaxError::BadManifestUpdate {
+                        segment: i,
+                        detail: format!("unknown manifest_update {other:?}"),
+                    });
+                }
+            }
+        }
+        if let Some(seg) = segments.get(manifest_segment) {
+            for (k, v) in seg.manifest()? {
                 manifest.insert(k, v);
             }
+        }
+        if let Some(base) = segments.first() {
             // --- shared dictionary: base segment only (SPEC v0.10 §3.1) ---
             dictionary = base.dictionary()?;
         }
@@ -199,8 +247,11 @@ impl WaxReader {
             file,
             file_size,
             header,
+            header_raw,
+            header_source,
             segments,
             manifest,
+            manifest_segment,
             search_tokenizer,
             search_segments,
             tokenizer_conflict,
@@ -216,6 +267,77 @@ impl WaxReader {
                 misses: 0,
             }),
         })
+    }
+
+    /// SPEC v0.13 §2.4: pick slot A or the mirror at the end of the file.
+    ///
+    /// The mirror is the last 128 bytes when they are a header that claims
+    /// and passes its check (§2.3) and whose newest segment ends exactly
+    /// where the mirror begins. With no such mirror, slot A is the header,
+    /// as before v0.13. With one that differs from slot A, slot A still wins
+    /// when it is intact: it passes its own check, or (written before
+    /// v0.13, so without one) it is byte-for-byte the header the mirror's
+    /// newest segment records as the one it replaced (`prev_header`) —
+    /// which is exactly the state after a crash before the slot-A write, or
+    /// during a rollback. Anything else means slot A was torn, and the
+    /// mirror, written and synced before slot A was touched, is the header.
+    fn choose_header(
+        path: &Path,
+        file: &File,
+        a_raw: [u8; HEADER_LEN],
+        file_size: u64,
+    ) -> Result<(WaxHeader, [u8; HEADER_LEN], HeaderSource)> {
+        use crate::header::{check_of, Check};
+        let slot_a = || -> Result<(WaxHeader, [u8; HEADER_LEN], HeaderSource)> {
+            let h = WaxHeader::parse(&a_raw)?;
+            h.validate(file_size)?;
+            if check_of(&a_raw) == Check::Invalid {
+                return Err(WaxError::HeaderCheckMismatch);
+            }
+            Ok((h, a_raw, HeaderSource::SlotA))
+        };
+
+        let Some(mirror_at) = file_size.checked_sub(HEADER_LEN as u64).filter(|&m| m >= HEADER_LEN as u64) else {
+            return slot_a();
+        };
+        let mut t_raw = [0u8; HEADER_LEN];
+        if Self::read_exact_at(file, mirror_at, &mut t_raw).is_err() {
+            return slot_a();
+        }
+        if t_raw == a_raw {
+            return slot_a();
+        }
+        let mirror = (|| -> Option<WaxHeader> {
+            if check_of(&t_raw) != Check::Valid {
+                return None;
+            }
+            let t = WaxHeader::parse(&t_raw).ok()?;
+            if t.index_offset.checked_add(t.index_length)? != mirror_at {
+                return None;
+            }
+            t.validate(file_size).ok()?;
+            Some(t)
+        })();
+        let Some(t) = mirror else {
+            return slot_a();
+        };
+
+        // Slot A intact by its own check?
+        if WaxHeader::parse(&a_raw).is_ok_and(|h| h.validate(file_size).is_ok())
+            && check_of(&a_raw) == Check::Valid
+        {
+            return slot_a();
+        }
+        // Slot A intact as the header the mirror's state replaced?
+        let replaced = Segment::open_at(path, t.index_offset, t.index_length)
+            .ok()
+            .and_then(|seg| seg.meta.prev_header);
+        if replaced == Some(a_raw)
+            && WaxHeader::parse(&a_raw).is_ok_and(|h| h.validate(file_size).is_ok())
+        {
+            return slot_a();
+        }
+        Ok((t, t_raw, HeaderSource::Mirror))
     }
 
     /// Positional read of exactly `buf.len()` bytes at `offset`; leaves no
@@ -353,6 +475,33 @@ impl WaxReader {
 
     // --- public surface -------------------------------------------------
 
+    /// Which header copy this open used (SPEC v0.13 §2.4).
+    pub fn header_source(&self) -> HeaderSource {
+        self.header_source
+    }
+
+    /// The exact 128 header bytes this open used.
+    pub fn header_bytes(&self) -> [u8; HEADER_LEN] {
+        self.header_raw
+    }
+
+    /// End of the newest index segment: everything after it is either the
+    /// header mirror (§2.4) or the orphaned tail of a crashed append (§7.2).
+    pub fn logical_end(&self) -> u64 {
+        self.header.index_offset + self.header.index_length
+    }
+
+    /// Whether the file ends with a valid mirror of the header it was
+    /// opened with, and nothing else past its logical end (SPEC v0.13 §2.4).
+    pub fn has_mirror(&self) -> Result<bool> {
+        if self.file_size != self.logical_end() + HEADER_LEN as u64 {
+            return Ok(false);
+        }
+        let mut t = [0u8; HEADER_LEN];
+        Self::read_exact_at(&self.file, self.logical_end(), &mut t)?;
+        Ok(t == self.header_raw)
+    }
+
     pub fn header(&self) -> &WaxHeader {
         &self.header
     }
@@ -367,6 +516,12 @@ impl WaxReader {
 
     pub fn manifest(&self) -> &BTreeMap<String, String> {
         &self.manifest
+    }
+
+    /// The segment the manifest was read from (SPEC v0.13 §5.6.1): `0` for the
+    /// base, or the newest appended segment that replaced it.
+    pub fn manifest_segment(&self) -> usize {
+        self.manifest_segment
     }
 
     /// True when this pack carries an embedded search index (SPEC §5.7).
@@ -484,6 +639,147 @@ impl WaxReader {
             .take(limit)
             .map(|(_, path, title)| Suggestion { path, title })
             .collect())
+    }
+
+    /// The passages of `path` (SPEC v0.13 §5.10), after following a
+    /// redirect. Their ids are `(path, ordinal)`; headings and anchors are
+    /// read from the entry's own bytes.
+    ///
+    /// `PassagesUnavailable` when the segment that owns the entry carries no
+    /// passage row for it (every pack built before v0.13, and any entry its
+    /// builder did not cut); `UnknownPassageRule` when it declares a rule
+    /// this build does not know.
+    pub fn passages(&self, path: &str) -> Result<Vec<crate::passage::Passage>> {
+        let (entry, starts) = self.passage_starts(path)?;
+        let content = self.read(&entry.path)?;
+        Ok(crate::passage::describe(&content, &starts))
+    }
+
+    /// The raw `passages.starts` value the owning segment stores for
+    /// `path`, if any (compaction carries it over byte for byte).
+    pub(crate) fn passage_blob(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        let Some((si, _)) = self.lookup_seg(path)? else {
+            return Ok(None);
+        };
+        let seg = &self.segments[si];
+        match seg.passage_rule()? {
+            Some(rule) if crate::passage::SUPPORTED_RULES.contains(&rule.as_str()) => seg.passage_starts(path),
+            Some(rule) => Err(WaxError::UnknownPassageRule { rule }),
+            None => Ok(None),
+        }
+    }
+
+    /// Indices of the segments that carry a search index, ascending.
+    pub(crate) fn search_segment_indices(&self) -> &[usize] {
+        &self.search_segments
+    }
+
+    pub(crate) fn segment(&self, i: usize) -> &Segment {
+        &self.segments[i]
+    }
+
+    /// Whether search row `path` of segment `si` is still live (SPEC v0.12
+    /// §5.7 ownership).
+    pub(crate) fn search_row_owned(&self, path: &str, si: usize) -> Result<bool> {
+        self.owned_by(path, si)
+    }
+
+    /// The raw stored bytes `[offset, offset + length)` as a stream
+    /// (compaction copies spans without holding them).
+    pub(crate) fn span_reader(&self, offset: u64, length: u64) -> SpanReader<'_> {
+        SpanReader {
+            file: &self.file,
+            offset,
+            remaining: length,
+        }
+    }
+
+    /// The owning entry of `path` and its decoded passage starts.
+    fn passage_starts(&self, path: &str) -> Result<(Entry, Vec<u64>)> {
+        let target = self.resolve(path)?.entry.path;
+        let (si, entry) = self
+            .lookup_seg(&target)?
+            .ok_or_else(|| WaxError::EntryNotFound(target.clone()))?;
+        let seg = &self.segments[si];
+        let unavailable = || WaxError::PassagesUnavailable { path: target.clone() };
+        let rule = seg.passage_rule()?.ok_or_else(unavailable)?;
+        if !crate::passage::SUPPORTED_RULES.contains(&rule.as_str()) {
+            return Err(WaxError::UnknownPassageRule { rule });
+        }
+        let blob = seg.passage_starts(&target)?.ok_or_else(unavailable)?;
+        let starts = crate::passage::decode_starts(&target, &blob, entry.uncompressed_length)?;
+        Ok((entry, starts))
+    }
+
+    /// The passages of `path` that match `query` (an FTS5 expression, built
+    /// the same way as for [`search`](Self::search)), best first, at most
+    /// `limit`.
+    ///
+    /// Scored when asked, not stored: the entry is read (it is usually the
+    /// page about to be shown anyway), each passage's visible text is put
+    /// through the pack's own tokenizer in a throwaway in-memory index, and
+    /// that index answers the query. So the pack pays only for the cut
+    /// points, never for a second, passage-sized index.
+    pub fn best_passages(
+        &self,
+        path: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::passage::Passage>> {
+        self.check_searchable()?;
+        let tok = self.search_tokenizer.clone().unwrap_or_default();
+        let passages = self.passages(path)?;
+        let content = self.read(&self.resolve(path)?.entry.path)?;
+        let mem = rusqlite::Connection::open_in_memory()?;
+        mem.execute_batch(&format!(
+            "CREATE VIRTUAL TABLE p USING fts5(body, detail=none, tokenize={});",
+            crate::tokenize::sqlite_tokenize_arg(&tok)
+        ))?;
+        {
+            let mut ins = mem.prepare("INSERT INTO p(rowid, body) VALUES (?1, ?2)")?;
+            for p in &passages {
+                let span = &content[p.start as usize..p.end as usize];
+                let text = crate::text::html_to_text(&String::from_utf8_lossy(span));
+                let text = if tok == crate::tokenize::WAX_BIGRAM {
+                    crate::tokenize::prepare_document(&text)
+                } else {
+                    text
+                };
+                ins.execute(rusqlite::params![p.ordinal as i64, text])?;
+            }
+        }
+        let mut st = mem.prepare("SELECT rowid FROM p WHERE p MATCH ?1 ORDER BY rank, rowid LIMIT ?2")?;
+        let ids = st
+            .query_map(rusqlite::params![query, limit as i64], |r| r.get::<_, i64>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(ids
+            .into_iter()
+            .filter_map(|i| passages.get(i as usize).cloned())
+            .collect())
+    }
+
+    /// Passage-level search (SPEC v0.13 §5.10): the entry hits of
+    /// [`search`](Self::search), in the same order, each with the passage
+    /// inside it that best matches. An entry without passages is returned
+    /// whole (`passage: None`); an entry whose passages none match on their
+    /// own (the words are spread across several) gets its first passage.
+    pub fn search_passages(&self, query: &str, limit: usize) -> Result<Vec<crate::model::PassageHit>> {
+        let hits = self.search(query, limit)?;
+        let mut out = Vec::with_capacity(hits.len());
+        for h in hits {
+            let passage = match self.best_passages(&h.path, query, 1) {
+                Ok(mut v) if !v.is_empty() => Some(v.remove(0)),
+                Ok(_) => self.passages(&h.path)?.into_iter().next(),
+                Err(WaxError::PassagesUnavailable { .. }) => None,
+                Err(e) => return Err(e),
+            };
+            out.push(crate::model::PassageHit {
+                path: h.path,
+                title: h.title,
+                passage,
+            });
+        }
+        Ok(out)
     }
 
     /// Whether this pack has an index this build can query.
@@ -935,5 +1231,25 @@ impl Entries<'_> {
             }
         }
         out.map(Ok)
+    }
+}
+
+/// A bounded positional reader over one span of the archive file.
+pub(crate) struct SpanReader<'a> {
+    file: &'a File,
+    offset: u64,
+    remaining: u64,
+}
+
+impl Read for SpanReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.remaining == 0 || buf.is_empty() {
+            return Ok(0);
+        }
+        let want = (buf.len() as u64).min(self.remaining).min(1 << 16) as usize;
+        WaxReader::read_exact_at(self.file, self.offset, &mut buf[..want])?;
+        self.offset += want as u64;
+        self.remaining -= want as u64;
+        Ok(want)
     }
 }
