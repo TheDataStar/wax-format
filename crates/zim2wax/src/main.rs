@@ -138,6 +138,7 @@ fn cmd_convert(
         sign_key: wax_builder::sign::resolve_seckey(sign_key),
         carry_dictionary_from,
         search_index,
+        zstd_level: None,
     };
     opts.validate()?;
 

@@ -507,6 +507,9 @@ fn a_successful_conversion_publishes_through_a_partial_then_renames() {
         std::path::PathBuf::from(p)
     };
     assert!(!partial.exists(), "the partial must not survive a success");
+    // Contract §11: the report names the published archive, not the partial.
+    let name = fx.wax.file_name().unwrap().to_string_lossy().to_string();
+    assert_eq!(report_json(&fx.wax)["archive_filename"], name);
 }
 
 #[test]

@@ -283,6 +283,12 @@ impl PackStream {
         self.writer.dictionary()
     }
 
+    /// zstd level for the entries that follow (ADR-0003: build at 19 off-box).
+    /// Set it before the first entry; the default is wax-core's (3).
+    pub fn set_zstd_level(&mut self, level: i32) -> Result<()> {
+        Ok(self.writer.set_zstd_level(level)?)
+    }
+
     /// Stream one content entry from `src`.
     pub fn add_entry(
         &mut self,
