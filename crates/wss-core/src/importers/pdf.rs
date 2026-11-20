@@ -113,7 +113,7 @@ pub fn stage_pdf(
         Err(why) => {
             // Still carried as a download; it just cannot be searched.
             if staged.stage_file(item, path, "application/pdf", None, bytes)? {
-                staged.notes.add(NoteKind::NoSearchableText, item, why);
+                staged.note(NoteKind::NoSearchableText, item, why);
             }
             return Ok(None);
         }
@@ -124,7 +124,7 @@ pub fn stage_pdf(
         return Ok(None);
     }
     if !text.has_text() {
-        staged.notes.add(
+        staged.note(
             NoteKind::NoSearchableText,
             item,
             "no text layer (a scanned PDF?); WSS does not run OCR, so search will not find it",

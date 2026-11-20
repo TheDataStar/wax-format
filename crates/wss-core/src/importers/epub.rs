@@ -91,7 +91,7 @@ pub fn import(file: &Path, recipe: &Recipe) -> Result<Staged> {
         zip.by_name(&name)?.read_to_end(&mut bytes)?;
         let mime = book.media.get(&name).cloned().unwrap_or_else(|| guess_mime(&name));
         if obfuscated.contains(&name) {
-            staged.notes.add(
+            staged.note(
                 NoteKind::ObfuscatedFont,
                 &name,
                 "this font is obfuscated by the book; it is kept as it is and browsers will use another font",

@@ -61,7 +61,7 @@ pub fn import(dir: &Path, recipe: &Recipe) -> Result<Staged> {
             }
             "application/epub+zip" => {
                 if staged.stage_file(&rel, &rel, &mime, None, &bytes)? {
-                    staged.notes.add(
+                    staged.note(
                         NoteKind::NotExpanded,
                         &rel,
                         "an EPUB inside a folder is kept as a download; convert it on its own to read it in the pack",

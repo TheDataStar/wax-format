@@ -59,13 +59,29 @@ impl Staged {
         })
     }
 
-    /// Record a skipped item: the plain note, the §11 code when one exists,
-    /// and the skipped count.
+    /// Record a skipped item: the plain note, the §11 code, and the skipped
+    /// count.
     pub fn skip(&mut self, kind: NoteKind, item: impl Into<String>, detail: impl Into<String>) {
-        if let Some(code) = contract_code(kind) {
-            self.warnings.add(code, 1);
-        }
-        self.skipped += 1;
+        self.skip_n(kind, item, detail, 1);
+    }
+
+    /// [`skip`](Self::skip) for `n` items summarised in one note (a crawl
+    /// that stopped at its page limit with `n` URLs still queued).
+    pub fn skip_n(&mut self, kind: NoteKind, item: impl Into<String>, detail: impl Into<String>, n: u64) {
+        self.skipped += n;
+        self.note_n(kind, item, detail, n);
+    }
+
+    /// Record something about an item that *was* carried (no text for
+    /// search, kept unopened, references left pointing elsewhere): the plain
+    /// note and its §11 code.
+    pub fn note(&mut self, kind: NoteKind, item: impl Into<String>, detail: impl Into<String>) {
+        self.note_n(kind, item, detail, 1);
+    }
+
+    /// [`note`](Self::note) standing for `n` occurrences in the build report.
+    pub fn note_n(&mut self, kind: NoteKind, item: impl Into<String>, detail: impl Into<String>, n: u64) {
+        self.warnings.add(contract_code(kind), n);
         self.notes.add(kind, item, detail);
     }
 
@@ -133,14 +149,36 @@ impl Staged {
     }
 }
 
-/// The §11 code for a note kind, where the Contract has one.
-pub fn contract_code(kind: NoteKind) -> Option<&'static str> {
+/// The Contract §11 warning code for each note kind. Every kind has one:
+/// the first three were already on the closed list; the other four were
+/// added to it with this importer set (contract §11, 2026-11-20).
+pub fn contract_code(kind: NoteKind) -> &'static str {
     match kind {
-        NoteKind::UnsupportedType => Some(zim2wax::convert::warn::UNSUPPORTED_MIMETYPE),
-        NoteKind::InvalidPath => Some(zim2wax::convert::warn::INVALID_PATH),
-        NoteKind::ReservedPrefix => Some(zim2wax::convert::warn::RESERVED_PREFIX_COLLISION),
-        _ => None,
+        NoteKind::UnsupportedType => zim2wax::convert::warn::UNSUPPORTED_MIMETYPE,
+        NoteKind::InvalidPath => zim2wax::convert::warn::INVALID_PATH,
+        NoteKind::ReservedPrefix => zim2wax::convert::warn::RESERVED_PREFIX_COLLISION,
+        NoteKind::UncapturedPage => code::UNCAPTURED_PAGE,
+        NoteKind::ExternalReference => code::EXTERNAL_REFERENCE,
+        NoteKind::NoSearchableText => code::NO_SEARCHABLE_TEXT,
+        NoteKind::NotExpanded | NoteKind::ObfuscatedFont => code::KEPT_UNOPENED,
     }
+}
+
+/// The codes this importer set added to the Contract §11 list.
+pub mod code {
+    /// A page or file a crawl found but did not capture: the fetch failed,
+    /// robots.txt asked not to, a limit was reached, or it redirected off
+    /// the site. Counted per URL; each is also a skipped item.
+    pub const UNCAPTURED_PAGE: &str = "uncaptured_page";
+    /// References to another site were left as they are and will not open
+    /// offline. Counted per reference.
+    pub const EXTERNAL_REFERENCE: &str = "external_reference";
+    /// An item was carried, but no text could be read from it for search (a
+    /// scanned PDF).
+    pub const NO_SEARCHABLE_TEXT: &str = "no_searchable_text";
+    /// An item was carried as a file but could not be opened up: an EPUB
+    /// inside a folder, a font a book obfuscates.
+    pub const KEPT_UNOPENED: &str = "kept_unopened";
 }
 
 /// Paths the pack reserves for what builders generate (Contract §11

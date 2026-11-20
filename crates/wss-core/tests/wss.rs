@@ -256,6 +256,7 @@ fn a_drm_protected_epub_is_refused_but_font_obfuscation_is_carried() {
     fs::write(&obf, epub("Fonts", Some("CC0-1.0"), &[("One", "x")], &[("META-INF/encryption.xml", enc("http://www.idpf.org/2008/embedding")), ("OEBPS/font.ttf", vec![0; 64])])).unwrap();
     let o = convert(obf.to_str().unwrap(), &d.path().join("obf.wax"), &recipe()).unwrap();
     assert_eq!(o.notes.count(NoteKind::ObfuscatedFont), 1);
+    assert_eq!(warning(&build_report(&d.path().join("obf.wax")), "kept_unopened"), 1);
 }
 
 // ===========================================================================
@@ -294,6 +295,10 @@ fn a_pdf_without_text_is_carried_and_reported() {
     let o = convert(file.to_str().unwrap(), &out, &recipe()).unwrap();
     assert_eq!(o.notes.count(NoteKind::NoSearchableText), 1);
     assert!(WaxReader::open(&out).unwrap().contains("scan.pdf").unwrap());
+    let v = build_report(&out);
+    assert_eq!(warning(&v, "no_searchable_text"), 1);
+    assert_eq!(v["skipped_count"], 0, "carried, so not skipped");
+    assert_only_contract_codes(&v);
 }
 
 // ===========================================================================
@@ -342,7 +347,12 @@ fn a_website_is_captured_politely_and_works_offline() {
     assert_eq!(o.notes.count(NoteKind::ExternalReference), 1);
     let report: serde_json::Value = serde_json::from_str(&fs::read_to_string(&o.import_report).unwrap()).unwrap();
     assert_eq!(report["url_map"][format!("{base}/docs/birds.html")], "docs/birds.html");
-    assert_only_contract_codes(&build_report(&out));
+    let v = build_report(&out);
+    assert_only_contract_codes(&v);
+    // robots.txt-blocked page, and the out-of-prefix page is simply not followed
+    assert_eq!(warning(&v, "uncaptured_page"), o.notes.count(NoteKind::UncapturedPage));
+    assert_eq!(v["skipped_count"].as_u64().unwrap(), o.notes.count(NoteKind::UncapturedPage));
+    assert_eq!(warning(&v, "external_reference"), 1, "one reference to elsewhere.example");
 }
 
 #[test]
@@ -359,6 +369,9 @@ fn a_crawl_stops_at_its_page_limit_and_says_so() {
     let o = convert(&format!("{base}/a.html"), &d.path().join("l.wax"), &r).unwrap();
     assert_eq!(o.entries, 3, "two pages plus the generated icon");
     assert!(o.notes.notes.iter().any(|n| n.detail.contains("page limit")));
+    let v = build_report(&d.path().join("l.wax"));
+    assert_eq!(warning(&v, "uncaptured_page"), 1, "c.html was never fetched");
+    assert_eq!(v["skipped_count"], 1);
 }
 
 // ===========================================================================

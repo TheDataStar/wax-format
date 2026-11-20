@@ -47,8 +47,8 @@ a GUI would receive.
 
 ## Files written beside a pack
 
-* `<pack>.build-report.json` — the Contract §11 report. Only the eight closed
-  warning codes ever appear in it (tested).
+* `<pack>.build-report.json` — the Contract §11 report. Only closed-list
+  codes ever appear in it (tested), including the four this PR adds.
 * `<pack>.wss-report.json` — WSS's own plain-language account: every item not
   carried and why, and for websites the URL → pack path map. Never read by a
   box.
@@ -84,13 +84,17 @@ a GUI would receive.
 1. **An appended update cannot record its edition's version.** The manifest
    is fixed across appends (SPEC §5.6) and no `segment_meta` key carries an
    edition. `wss refresh` from a newer ZIM appends the changes and tells the
-   person the version shown on boxes stays the old one. Needs a SPEC decision
-   (for example an optional `segment_meta.edition_version`); not invented here.
-2. **Warning codes for the new importers** (WSS spec open question 3:
-   `uncaptured_page`, `external_request`, …) are not in Contract §11. WSS keeps
-   those facts in its own report and out of the build report until adopted.
-3. **Where a website's URL map lives in a pack** is undefined; it is in the
-   import report for now.
+   person the version shown on boxes stays the old one. Being fixed in the
+   format PR (#6); `wss` will use it once this branch is rebased on it.
+2. **Warning codes for the new importers: proposed in this PR** as a
+   contract §11 amendment: `uncaptured_page`, `external_reference`,
+   `no_searchable_text`, `kept_unopened`. Every note kind now maps to a closed
+   code, so the build report counts everything the import report names. The
+   spec's `external_request`, `transcode_failed` and `unsupported_source_item`
+   wait for the importers that detect them.
+3. **Where a website's URL map lives: decided in the same amendment.** Beside
+   the archive in the builder's own report, never in the pack or the build
+   report; intake and boxes never read it.
 4. **Two zim2wax bugs fixed in this PR** (pre-existing): the build report's
    `archive_filename` named `<pack>.partial`, and a signed conversion left its
    signature at `<pack>.partial.minisig`, beside a file that no longer exists.

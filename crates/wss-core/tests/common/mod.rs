@@ -27,7 +27,7 @@ pub fn recipe() -> Recipe {
 }
 
 /// The Contract §11 closed warning vocabulary.
-pub const CONTRACT_CODES: [&str; 8] = [
+pub const CONTRACT_CODES: [&str; 12] = [
     "unsupported_mimetype",
     "redirect_cycle",
     "redirect_dangling",
@@ -36,7 +36,15 @@ pub const CONTRACT_CODES: [&str; 8] = [
     "license_operator_supplied",
     "attribution_operator_supplied",
     "icon_generated",
+    "uncaptured_page",
+    "external_reference",
+    "no_searchable_text",
+    "kept_unopened",
 ];
+
+pub fn warning(v: &serde_json::Value, code: &str) -> u64 {
+    v["warnings"].as_array().unwrap().iter().find(|w| w["code"] == code).map(|w| w["count"].as_u64().unwrap()).unwrap_or(0)
+}
 
 pub fn build_report(pack: &Path) -> serde_json::Value {
     serde_json::from_str(&std::fs::read_to_string(wax_builder::BuildReport::path_for(pack)).unwrap()).unwrap()

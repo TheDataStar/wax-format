@@ -1,16 +1,14 @@
 //! The import report: everything an importer could not carry, and why, in
 //! plain words (WSS spec: "nothing is dropped silently").
 //!
-//! This is **not** the Contract §11 build report. That report's warning codes
-//! are a closed list the catalog's intake routes on, and WSS only ever writes
-//! codes that are on it. The notes here are WSS's own, finer-grained account
-//! for the person running the build; they are written beside the pack as
-//! `<pack>.wss-report.json` and never read by a box. Where a note has a §11
-//! equivalent, the importer raises that code too. Where it has none
-//! (a crawl page that failed, a PDF without a text layer), the build report
-//! stays silent until the Contract adopts a code (WSS spec, open question 3:
-//! `uncaptured_page`, `external_request`, `transcode_failed`,
-//! `unsupported_source_item`).
+//! This is **not** the Contract §11 build report, whose warning codes are a
+//! closed list the catalog's intake routes on. Every note kind here maps to
+//! one of those codes ([`crate::importers::contract_code`]), so the build
+//! report counts everything; this file adds the item names and reasons in
+//! plain words for the person running the build, plus a captured website's
+//! URL → pack path map. It is written beside the pack as
+//! `<pack>.wss-report.json` and never read by a box or intake (contract §11,
+//! 2026-11-20).
 
 use serde::Serialize;
 use std::collections::BTreeMap;

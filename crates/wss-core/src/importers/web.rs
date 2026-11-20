@@ -216,16 +216,17 @@ pub fn import(start: &str, recipe: &Recipe) -> Result<Staged> {
 
     while let Some((url, depth, _)) = queue.pop_front() {
         if fetched >= c.max_pages {
-            let left = queue.len() + 1;
-            staged.notes.add(
+            let left = queue.len() as u64 + 1;
+            staged.skip_n(
                 NoteKind::UncapturedPage,
                 url.as_str(),
                 format!("the page limit ({}) was reached; {left} queued URLs were not fetched", c.max_pages),
+                left,
             );
             break;
         }
         if !robots.allows(url.path()) {
-            staged.notes.add(NoteKind::UncapturedPage, url.as_str(), "robots.txt asks crawlers not to fetch it");
+            staged.skip(NoteKind::UncapturedPage, url.as_str(), "robots.txt asks crawlers not to fetch it");
             continue;
         }
         if let Some(t) = last {
@@ -239,7 +240,7 @@ pub fn import(start: &str, recipe: &Recipe) -> Result<Staged> {
         let resp = match http.get(&url) {
             Ok(r) => r,
             Err(why) => {
-                staged.notes.add(NoteKind::UncapturedPage, url.as_str(), why);
+                staged.skip(NoteKind::UncapturedPage, url.as_str(), why);
                 continue;
             }
         };
@@ -250,11 +251,11 @@ pub fn import(start: &str, recipe: &Recipe) -> Result<Staged> {
         let mut bytes = Vec::new();
         resp.into_reader().take(MAX_RESPONSE_BYTES + 1).read_to_end(&mut bytes).ok();
         if bytes.len() as u64 > MAX_RESPONSE_BYTES {
-            staged.notes.add(NoteKind::UncapturedPage, url.as_str(), "larger than the 256 MiB a single capture may hold");
+            staged.skip(NoteKind::UncapturedPage, url.as_str(), "larger than the 256 MiB a single capture may hold");
             continue;
         }
         if !same_site(&final_url, &start) {
-            staged.notes.add(NoteKind::UncapturedPage, url.as_str(), format!("redirects off the site, to {final_url}"));
+            staged.skip(NoteKind::UncapturedPage, url.as_str(), format!("redirects off the site, to {final_url}"));
             continue;
         }
         let path = pack_path(&final_url);
@@ -328,10 +329,11 @@ pub fn import(start: &str, recipe: &Recipe) -> Result<Staged> {
         bail!("nothing was captured from {start}; see the notes for why");
     }
     for (origin, n) in &external {
-        staged.notes.add(
+        staged.note_n(
             NoteKind::ExternalReference,
             origin.as_str(),
             format!("{n} references to another site were left as they are; WSS does not contact other sites"),
+            *n,
         );
     }
 
