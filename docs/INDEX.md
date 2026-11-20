@@ -33,6 +33,8 @@ Read `cross-track-contract.md` before any other document.
 | `track-f-refinement.md` | Admin, identity, roles, install pipeline, fleet. |
 | `track-g-refinement.md` | Orchestration, reverse proxy, platform services. |
 | `track-h-refinement.md` | The application catalog and its third-party services. |
+| `privilege-boundary.md` | Who may change the box: sessions, the checks between a browser and `deltos-shelld`, the closed action list. Contract §13 decision 2. |
+| `deltd-api-v1.md` | The `deltd` API v1 and how pack content is served. Companion to `privilege-boundary.md`. |
 | `design-language.md` | Visual and interaction system for the shell. |
 | `implementability-sweep.md` | The known-defect register from the audit — a record of what was found, **not a to-do list**. Several of its Critical findings are already fixed in the Contract; check there before citing one as open. |
 | `baseline.md` | Measured figures every later session compares against, and the prerequisites. Transcribed into the repo so nothing depends on a document outside it. |
