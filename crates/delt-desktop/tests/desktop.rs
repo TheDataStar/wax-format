@@ -157,6 +157,10 @@ async fn the_box_api_answers_the_window() {
     assert!(snip.contains("fuels rockets"), "{snip}");
     assert!(!snip.contains("Cavendish"), "the matching passage, not the first: {snip}");
 
+    // a passage that only repeats the title is passed over
+    let rk = items.iter().find(|i| i["path"] == "Rockets.html").unwrap();
+    assert_eq!(rk["snippet"], "Early rockets Gunpowder rockets flew in China. Home", "{rk}");
+
     // paging uses the API's own cursor
     let (_, first) = d.search("rockets", 1, None).await;
     let next = first["next"].as_str().unwrap().to_string();

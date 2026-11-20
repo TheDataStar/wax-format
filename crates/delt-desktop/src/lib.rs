@@ -385,13 +385,26 @@ impl Desktop {
 fn snippet_for(r: &wax_core::WaxReader, path: &str, q: &str) -> Option<String> {
     let tok = r.search_tokenizer()?.to_string();
     let expr = deltlib::search::match_expr(q, &tok, false).ok()?;
-    let p = r.best_passages(path, &expr, 1).ok()?.into_iter().next()?;
-    let content = r.read(&r.resolve(path).ok()?.entry.path).ok()?;
-    let span = content.get(p.start as usize..p.end as usize)?;
-    let text = wax_core::text::html_to_text(&String::from_utf8_lossy(span));
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let resolved = r.resolve(path).ok()?.entry;
+    let title = resolved.title.clone().unwrap_or_default();
+    let content = r.read(&resolved.path).ok()?;
+    let text_of = |p: &wax_core::Passage| {
+        let span = content.get(p.start as usize..p.end as usize)?;
+        let t = wax_core::text::html_to_text(&String::from_utf8_lossy(span));
+        Some(t.split_whitespace().collect::<Vec<_>>().join(" "))
+    };
+    // the best match, unless all it says is the page's own title (the
+    // passage before the first heading often is): then the next best
+    let best = r.best_passages(path, &expr, SNIPPET_CANDIDATES).ok()?;
+    let text = best
+        .iter()
+        .filter_map(text_of)
+        .find(|t| !t.is_empty() && *t != title)?;
     Some(clip(&text, SNIPPET_CHARS))
 }
+
+/// Passages considered for one snippet.
+const SNIPPET_CANDIDATES: usize = 3;
 
 /// Characters of passage text a result shows.
 pub const SNIPPET_CHARS: usize = 220;

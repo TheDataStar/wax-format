@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The Delt window. Pack pages run in sandboxed frames from deltpack: and get no capabilities at all.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
