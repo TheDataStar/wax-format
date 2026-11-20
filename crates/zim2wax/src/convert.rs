@@ -158,8 +158,14 @@ const DICT_MIN_SAMPLES: usize = 32;
 /// Same policy as wax-builder's extension list, keyed on mimetype instead.
 ///
 /// The dictionary is spent only where Directive 04 measured it paying — many
-/// small, similar text documents. Media is already entropy-coded, so framing it
-/// against a dictionary buys nothing.
+/// small, similar text documents. Media that is already entropy-coded (JPEG,
+/// PNG, WebP, GIF, AVIF, WOFF/WOFF2) is stored verbatim: the 2026-11-20 run
+/// (ADR-0003) measured zstd/brotli/xz saving 0.00–0.03% on it. Binary formats
+/// that are *not* entropy-coded — TrueType/OpenType fonts — are framed as
+/// plain zstd: 108 TTF/OTF fonts measured 54% (zstd-3) to 60% (zstd-19)
+/// smaller. They get no dictionary, which is trained on text. Other
+/// uncompressed binaries (BMP, TIFF, EOT, ICO) are plausible but unmeasured,
+/// so they stay verbatim until a run shows the gain.
 fn compression_for(bare: &str, use_dict: bool) -> Compression {
     let text = if use_dict {
         Compression::ZstdDict
@@ -169,6 +175,18 @@ fn compression_for(bare: &str, use_dict: bool) -> Compression {
     if bare == "image/svg+xml" {
         // Markup despite the image/ prefix, so it benefits like any other text.
         return text;
+    }
+    if matches!(
+        bare,
+        "font/ttf"
+            | "font/otf"
+            | "font/sfnt"
+            | "font/collection"
+            | "application/x-font-ttf"
+            | "application/x-font-opentype"
+            | "application/x-font-truetype"
+    ) {
+        return Compression::Zstd;
     }
     if bare.starts_with("image/")
         || bare.starts_with("font/")
@@ -1031,6 +1049,24 @@ mod tests {
         assert!(calver_from_zim_date("2026-08-00").is_err());
         assert!(calver_from_zim_date("2026-08").is_err());
         assert!(calver_from_zim_date("20260820").is_err());
+    }
+
+    #[test]
+    fn compression_policy_media() {
+        // Entropy-coded media: verbatim (ADR-0003: codecs save <0.1%).
+        for m in ["image/webp", "image/png", "image/jpeg", "image/gif", "image/avif", "font/woff", "font/woff2", "application/font-woff2", "application/vnd.ms-fontobject"] {
+            assert_eq!(compression_for(m, true), Compression::None, "{m}");
+        }
+        // Not entropy-coded: plain zstd, never the text dictionary.
+        for m in ["font/ttf", "font/otf", "application/x-font-ttf", "application/x-font-opentype"] {
+            assert_eq!(compression_for(m, true), Compression::Zstd, "{m}");
+            assert_eq!(compression_for(m, false), Compression::Zstd, "{m}");
+        }
+        // Text and SVG: the dictionary when the pack has one.
+        for m in ["text/html", "text/css", "application/javascript", "image/svg+xml"] {
+            assert_eq!(compression_for(m, true), Compression::ZstdDict, "{m}");
+            assert_eq!(compression_for(m, false), Compression::Zstd, "{m}");
+        }
     }
 
     #[test]

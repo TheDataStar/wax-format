@@ -109,7 +109,7 @@ The previous palette's blanket AA claim was false: six pairings failed 4.5:1, wo
 
 **Migration 2 of 2 is not started: the role enum → data-driven permissions** (contract §4). It rides with the Track F identity build rather than standing alone, since the identity service is largely unbuilt.
 
-**Directive 04 — measurement.** The three compression options — per-article, grouped, and per-article with a shared dictionary — measured on the real archives for size, read speed **on SD and on SSD**, and one-month delta size. Needs the rigs and the §5.7 output-size baseline that does not exist yet.
+**Directive 04 — measurement: done.** Framing settled by **ADR-0001** (per-entry + shared dictionary, SPEC v0.10). The remaining knobs were measured 2026-11-20 in **ADR-0003**: build at zstd level 19 (16% smaller text, no decode cost), keep the 110 KiB dictionary, no brotli/xz/grouping, entropy-coded media stays verbatim, TTF/OTF fonts now compressed, and a new SPEC §3 rule bounds every frame's window to 8 MiB. Still open: the same numbers on ARM, SD vs SSD reads, and larger archives; and letting `wax-core` take a level (it hard-codes 3).
 
 **Then the P1 build line:** the embedded search index (contract §13 decision 1, specified in track-a §20.1) and **A5 `wax-serve`** with the Kiosk hostname-routing model (track-a §20.3).
 

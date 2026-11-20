@@ -1,0 +1,18 @@
+[package]
+name = "wax-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Measurement harnesses for WAX format decisions. Not shipped; nothing here is part of the format."
+license = "MIT"
+
+[[bin]]
+name = "compressbench"
+path = "src/compressbench.rs"
+
+[dependencies]
+wax-core = { path = "../wax-core" }
+zstd = "0.13"
+brotli = "7"
+xz2 = { version = "0.1", features = ["static"] }
+flate2 = "1"
