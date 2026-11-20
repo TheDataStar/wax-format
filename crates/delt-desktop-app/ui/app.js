@@ -175,12 +175,8 @@ async function removePack(p) {
 }
 
 function describe(plan) {
-  // an appended update cannot change the manifest's version (SPEC §5.6),
-  // so it is described by how many updates it adds, not by a version
   const from = plan.installed_version || "the installed edition";
-  const to = plan.kind.kind === "append"
-    ? `${from} with ${plan.kind.new_updates} more update${plan.kind.new_updates > 1 ? "s" : ""}`
-    : plan.candidate_version || "a newer edition";
+  const to = plan.candidate_version || "a newer edition";
   const how = plan.kind.kind === "append"
     ? `Delt adds the ${bytes(plan.kind.bytes)} that changed to your copy. You can undo it afterwards.`
     : `This edition was rebuilt, so Delt replaces the whole file (${bytes(plan.kind.bytes)}). This cannot be undone.`;
@@ -195,7 +191,7 @@ async function applyPlan(plan) {
   if (!ok) return;
   toast("Updating…");
   const r = await attempt(() => call("apply_update", { path: plan.candidate }),
-    () => `${plan.name} is up to date.`);
+    (r) => `${plan.name} is now ${r.version || "up to date"}.`);
   if (r) { $("#updates-found").replaceChildren(); renderLibrary(); }
 }
 
@@ -210,7 +206,7 @@ async function undoUpdate(p) {
   const ok = await confirmBox(`Undo the last update to ${p.name}?`,
     "The pack goes back exactly to the edition it was before that update.", "Undo update");
   if (!ok) return;
-  if (await attempt(() => call("undo_update", { uuid: p.archive_uuid }), () => `${p.name} is back to its earlier edition.`)) renderLibrary();
+  if (await attempt(() => call("undo_update", { uuid: p.archive_uuid }), (r) => `${p.name} is back to ${r.version || "its earlier edition"}.`)) renderLibrary();
 }
 
 $("#find-updates").addEventListener("click", async () => {

@@ -74,6 +74,7 @@ fn history(dir: &Path) -> PathBuf {
 fn appended_edition(installed: &Path, out: &Path) -> PathBuf {
     std::fs::copy(installed, out).unwrap();
     let mut sw = WaxWriter::new(SCIENCE).created_at(1_700_100_000).open_append(out).unwrap();
+    sw.set_manifest(&manifest("Science", Some("2026.10.1")));
     page(&mut sw, "Carbon.html", "Carbon", &[("Chemistry", "Carbon forms more compounds than any element.")]);
     sw.add_tombstone("Helium.html").unwrap();
     sw.finish().unwrap();
@@ -220,6 +221,9 @@ async fn an_appended_edition_is_applied_in_place_and_undone() {
     assert_eq!(new_updates, 1);
     assert!(bytes > 0 && bytes < std::fs::metadata(&newer).unwrap().len());
     assert!(!plan.signature_sidecar);
+    // the appended edition says its own version (SPEC v0.13 §5.6.1)
+    assert_eq!(plan.installed_version.as_deref(), Some("2026.09.1"));
+    assert_eq!(plan.candidate_version.as_deref(), Some("2026.10.1"));
     // the folder scan finds the same plan
     let found = d.find_updates(src.path()).unwrap();
     assert_eq!(found.len(), 1);
@@ -227,6 +231,8 @@ async fn an_appended_edition_is_applied_in_place_and_undone() {
 
     let done = d.apply_update(&plan).unwrap();
     assert!(done.can_undo);
+    assert_eq!(done.version.as_deref(), Some("2026.10.1"));
+    assert_eq!(d.packs()[0].version.as_deref(), Some("2026.10.1"));
     assert_eq!(std::fs::read(&installed).unwrap(), std::fs::read(&newer).unwrap(), "byte for byte the new edition");
     // the running library already serves it: new page in, removed page gone
     assert_eq!(get(&d, SCIENCE_ID, "/Carbon.html").await.status, 200);
@@ -240,6 +246,7 @@ async fn an_appended_edition_is_applied_in_place_and_undone() {
 
     let undone = d.undo_update(SCIENCE_ID).unwrap();
     assert!(!undone.can_undo);
+    assert_eq!(undone.version.as_deref(), Some("2026.09.1"), "undo brings the old manifest back");
     assert_eq!(std::fs::read(&installed).unwrap(), before, "back byte for byte");
     assert_eq!(get(&d, SCIENCE_ID, "/Helium.html").await.status, 200);
     assert!(matches!(d.undo_update(SCIENCE_ID), Err(DesktopError::Update(UpdateError::NothingToUndo(_)))));

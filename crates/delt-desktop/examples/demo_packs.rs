@@ -81,9 +81,9 @@ fn main() {
     history(&out);
     let upd = out.join("updates/science.wax");
     std::fs::copy(&s, &upd).unwrap();
-    // an append cannot change the manifest (SPEC §5.6: base segment only),
-    // so this edition still says 2026.09.1; see NOTES.md
+    // the appended edition carries its own manifest (SPEC v0.13 §5.6.1)
     let mut sw = WaxWriter::new(SCIENCE).open_append(&upd).unwrap();
+    sw.set_manifest(&manifest("Science", "The elements, one page each.", "2026.10.1"));
     page(&mut sw, "Carbon.html", "Carbon", &[("Chemistry", "Carbon forms more compounds than any other element.")], &[]);
     sw.add_tombstone("Helium.html").unwrap();
     sw.finish().unwrap();

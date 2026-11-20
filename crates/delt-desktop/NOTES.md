@@ -73,12 +73,11 @@ your own computer. Two crates:
 
 ## Findings for other threads
 
-* **Format (v0.13 thread): an appended update cannot change the manifest.**
-  SPEC §5.6 reads the manifest from the base segment only, so an edition
-  shipped as an append still says the old `version`, `description` and so
-  on. The desktop (and the box) cannot show which edition is installed; the
-  window describes such an update as "2026.09.1 with 1 more update" instead.
-  A per-segment manifest overlay (newest wins, like entries) would fix it.
+* **Resolved in v0.13 (SPEC §5.6.1, PR #6): an appended update can now
+  replace the manifest**, so an appended edition shows its own `version`.
+  Found here first (before, SPEC §5.6 read the manifest from the base
+  segment only); the desktop shows the new version on update and the old
+  one again after undo, and the tests check both.
 * **Signatures are carried, not checked.** Which publisher keys a desktop
   trusts is undecided (the box's equivalent is architecture Q2, contract
   §13.2). The window says so in plain words when a pack has a sidecar.
