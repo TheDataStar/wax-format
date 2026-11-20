@@ -226,6 +226,51 @@ pub struct ConvertOptions {
     /// (SPEC v0.10 §5.9). `None` trains a fresh one, which is correct only for
     /// a first edition — retraining on a later one reframes every entry.
     pub carry_dictionary_from: Option<PathBuf>,
+    /// Build the embedded search index (SPEC §5.7): every HTML article's
+    /// title and visible text. On by default in the CLI; see
+    /// [`search_tokenizer_for`] for the packs it is not built for.
+    pub search_index: bool,
+}
+
+/// What the conversion did about the embedded search index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchIndexOutcome {
+    /// Built with this tokenizer, over this many articles.
+    Built { tokenizer: String, documents: u64 },
+    /// Not asked for (`--no-search-index`).
+    NotRequested,
+    /// Not built, for the stated reason. The pack is still served; search
+    /// reports it as unavailable (SPEC §5.7).
+    Withheld { reason: String },
+}
+
+/// The tokenizer the index for a pack in `languages` is built with, or why
+/// none is built.
+///
+/// `unicode61` is SPEC §5.7's default and runs on every box. A CJK pack
+/// would declare `trigram`, but **trigram cannot be queried under the
+/// `detail=none` SPEC §5.7 fixes**: SQLite refuses any term longer than three
+/// characters as a phrase query, and a two-character word (most Chinese words)
+/// can never match. Because every later edition must keep the base's
+/// tokenizer (`TokenizerMismatch`), building one now would lock the pack into
+/// it. So a CJK pack is built without an index until the format settles its
+/// CJK form — a recorded format gap, not a choice made here.
+pub fn search_tokenizer_for(languages: Option<&str>) -> std::result::Result<&'static str, String> {
+    let cjk = languages
+        .map(|l| {
+            l.split(',').any(|tag| {
+                let primary = tag.trim().split('-').next().unwrap_or("").to_ascii_lowercase();
+                matches!(primary.as_str(), "zh" | "ja" | "ko")
+            })
+        })
+        .unwrap_or(false);
+    if cjk {
+        Err("CJK pack: the trigram tokenizer cannot answer queries under detail=none \
+             (SPEC §5.7); withheld until the format settles CJK search"
+            .to_string())
+    } else {
+        Ok("unicode61")
+    }
 }
 
 impl ConvertOptions {
@@ -326,6 +371,7 @@ pub struct ConvertStats {
 
 #[derive(Debug)]
 pub struct ConvertReport {
+    pub search: SearchIndexOutcome,
     pub write: WriteReport,
     pub derived: Derived,
     pub stats: ConvertStats,
@@ -708,6 +754,22 @@ fn convert_inner(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Resul
     )
     .with_context(|| format!("creating {}", output.display()))?;
 
+    // Search index (SPEC §5.7): the tokenizer is declared before any document.
+    let mut search = if !opts.search_index {
+        SearchIndexOutcome::NotRequested
+    } else {
+        match search_tokenizer_for(derived.languages.as_deref()) {
+            Ok(tok) => {
+                pack.set_search_tokenizer(tok)?;
+                SearchIndexOutcome::Built {
+                    tokenizer: tok.to_string(),
+                    documents: 0,
+                }
+            }
+            Err(reason) => SearchIndexOutcome::Withheld { reason },
+        }
+    };
+
     // The icon goes in first so a source entry at the same path is the one
     // that loses the collision.
     pack.add_entry(
@@ -877,12 +939,13 @@ fn convert_inner(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Resul
         let bytes: &[u8] = guard.blob(blob_idx)?;
 
         let title = entry_title(&e, &bare);
+        let index_path = path.clone();
         let mut meta = EntryMeta::new(path).compression(compression_for(&bare, use_dict));
         if let Some(m) = mime_str(&e.mime_type) {
             meta = meta.mime(m);
         }
-        if let Some(t) = title {
-            meta = meta.title(t);
+        if let Some(t) = &title {
+            meta = meta.title(t.clone());
         }
         stats.bytes_in += bytes.len() as u64;
 
@@ -896,6 +959,13 @@ fn convert_inner(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Resul
             };
             stats.hrefs_rewritten += rs.rewritten;
             drop(text);
+            if is_article_mime(&bare) && matches!(search, SearchIndexOutcome::Built { .. }) {
+                let body = crate::text::html_to_text(&out);
+                // An empty ZIM title means "the url is the title" (ZIM format),
+                // and search results need one to show.
+                let shown = title.clone().unwrap_or_else(|| e.url.to_string());
+                pack.index_text(&index_path, Some(&shown), &body)?;
+            }
             pack.add_entry(meta, &mut io::Cursor::new(out.into_bytes()))?;
         } else {
             // zero-copy from the decompressed cluster
@@ -934,11 +1004,15 @@ fn convert_inner(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Resul
     *pack.warnings_mut() = warnings.clone();
     pack.set_skipped(skipped);
 
+    if let SearchIndexOutcome::Built { documents, .. } = &mut search {
+        *documents = pack.indexed_count();
+    }
     let write = pack
         .finish()
         .with_context(|| format!("building {}", output.display()))?;
 
     Ok(ConvertReport {
+        search,
         write,
         derived,
         stats,
@@ -1093,6 +1167,7 @@ mod tests {
             archive_uuid: None,
             sign_key: None,
             carry_dictionary_from: None,
+            search_index: true,
         };
         assert!(o.validate().is_ok());
 
@@ -1122,5 +1197,20 @@ mod tests {
         o.min_ram_bytes = 0;
         let e = o.validate().unwrap_err().to_string();
         assert!(e.contains("--min-ram-bytes"), "{e}");
+    }
+}
+
+#[cfg(test)]
+mod search_tokenizer_tests {
+    use super::search_tokenizer_for;
+
+    #[test]
+    fn unicode61_unless_cjk() {
+        assert_eq!(search_tokenizer_for(None), Ok("unicode61"));
+        assert_eq!(search_tokenizer_for(Some("en,fr")), Ok("unicode61"));
+        assert_eq!(search_tokenizer_for(Some("ar")), Ok("unicode61"));
+        for l in ["zh", "ja", "ko", "en,zh-Hans", "ZH-TW"] {
+            assert!(search_tokenizer_for(Some(l)).is_err(), "{l}");
+        }
     }
 }

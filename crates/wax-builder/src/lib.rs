@@ -302,6 +302,24 @@ impl PackStream {
         Ok(self.writer.add_redirect(path, to, title)?)
     }
 
+    /// Declare the tokenizer of this pack's embedded search index (SPEC
+    /// §5.7). Must come before the first [`index_text`](Self::index_text);
+    /// without it the writer's default (`unicode61`) is declared.
+    pub fn set_search_tokenizer(&mut self, name: &str) -> Result<()> {
+        Ok(self.writer.set_search_tokenizer(name)?)
+    }
+
+    /// Add one document's rendered text to the embedded search index (SPEC
+    /// §5.7). `path` must also be added as content or a redirect.
+    pub fn index_text(&mut self, path: &str, title: Option<&str>, body: &str) -> Result<()> {
+        Ok(self.writer.index_text(path, title, body)?)
+    }
+
+    /// How many documents the search index holds so far.
+    pub fn indexed_count(&self) -> u64 {
+        self.writer.indexed_count()
+    }
+
     /// Point lookup: has this path been added?
     pub fn has_path(&self, path: &str) -> Result<bool> {
         Ok(self.writer.has_path(path)?)

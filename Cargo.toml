@@ -4,6 +4,7 @@ members = [
     "crates/wax-builder",
     "crates/zim2wax",
     "crates/wax-bench",
+    "crates/deltlib",
 ]
 exclude = ["fuzz"]
 resolver = "2"

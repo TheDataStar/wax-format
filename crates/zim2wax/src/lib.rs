@@ -10,6 +10,7 @@
 //! * [`rewrite`] — in-document href/src/srcset and CSS `url()` rewriting.
 //! * [`lang`] — ISO 639-3 → BCP-47.
 //! * [`png`] — the placeholder icon.
+//! * [`text`] — HTML → plain text for the embedded search index.
 //! * [`convert`] — the pipeline, on top of `wax_builder::build_from_entries`.
 
 pub mod convert;
@@ -17,5 +18,8 @@ pub mod lang;
 pub mod paths;
 pub mod png;
 pub mod rewrite;
+pub mod text;
 
-pub use convert::{convert, probe, ConvertOptions, ConvertReport, Derived, ICON_PATH};
+pub use convert::{
+    convert, probe, search_tokenizer_for, ConvertOptions, ConvertReport, Derived, SearchIndexOutcome, ICON_PATH,
+};
