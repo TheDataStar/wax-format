@@ -3,6 +3,8 @@
 //!
 //! * the WebOS hostname → the API ([`crate::api`]);
 //! * a pack hostname in `deltos-packs.lan` → the pack zone ([`crate::packzone`]);
+//! * a phone's internet check, when switched on ([`AppState::answer_connectivity_checks`]),
+//!   answered from `deltos_net::connectivity`'s closed list;
 //! * **anything else is refused before routing** (privilege boundary rule 16),
 //!   which is what stops DNS rebinding.
 //!
@@ -26,11 +28,25 @@ pub struct AppState {
     pub lib: Arc<Library>,
     pub ident: Arc<dyn Identity>,
     pub zone: ZoneConfig,
+    /// Answer phones' internet checks (docs/box-network-plan.md §6). On
+    /// exactly when the box's DNS sends those hosts here, which is when
+    /// hotspot devices get no internet through the box.
+    pub answer_connectivity_checks: bool,
 }
 
 impl AppState {
     pub fn new(lib: Arc<Library>, ident: Arc<dyn Identity>, webos_host: &str) -> Self {
-        AppState { lib, ident, zone: ZoneConfig { webos_host: webos_host.to_ascii_lowercase() } }
+        AppState {
+            lib,
+            ident,
+            zone: ZoneConfig { webos_host: webos_host.to_ascii_lowercase() },
+            answer_connectivity_checks: false,
+        }
+    }
+
+    pub fn with_connectivity_checks(mut self, on: bool) -> Self {
+        self.answer_connectivity_checks = on;
+        self
     }
 }
 
@@ -65,7 +81,29 @@ async fn dispatch(State(st): State<AppState>, req: Request) -> Response<Body> {
         )
         .await;
     }
+    if st.answer_connectivity_checks && deltos_net::connectivity::is_check_host(&host) {
+        return connectivity_answer(&host, &parts.method, &path);
+    }
     refused()
+}
+
+/// A phone's internet check: only the listed path on the listed host, only
+/// GET/HEAD, a fixed body, no cookie, never cached.
+fn connectivity_answer(host: &str, method: &axum::http::Method, path: &str) -> Response<Body> {
+    use axum::http::{HeaderValue, Method};
+    let Some(c) = deltos_net::connectivity::lookup(host, path) else { return refused() };
+    if method != Method::GET && method != Method::HEAD {
+        return refused();
+    }
+    let mut r = Response::builder().status(StatusCode::from_u16(c.status).unwrap_or(StatusCode::NO_CONTENT));
+    let h = r.headers_mut().unwrap();
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    if !c.content_type.is_empty() {
+        h.insert(header::CONTENT_TYPE, HeaderValue::from_static(c.content_type));
+    }
+    let body = if *method == Method::HEAD { Body::empty() } else { Body::from(c.body) };
+    r.body(body).unwrap()
 }
 
 /// The answer to a hostname `deltd` does not serve: says nothing more.

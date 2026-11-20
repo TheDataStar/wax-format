@@ -11,6 +11,7 @@ path = "src/bin/deltd.rs"
 
 [dependencies]
 wax-core = { path = "../wax-core" }
+deltos-net = { path = "../deltos-net" }
 rusqlite = { version = "0.30", features = ["bundled"] }
 sha2 = "0.10"
 caseless = "0.2"

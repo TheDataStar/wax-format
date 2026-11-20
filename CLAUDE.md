@@ -29,6 +29,7 @@ _Last updated: 2026-09-15, Directive 01._
 | `wax-builder` | `build` / `append` / `inspect` / `verify` / `ls` / `read`; manifest, aliases, compression policy, UUIDv4 identity, minisign hook (A7). | 95 tests |
 | `zim2wax` | Track B v0, text + image; **builds the embedded search index by default** (titles + visible text, `unicode61`; withheld for CJK, see `crates/deltlib/NOTES.md`). §20 canonical paths, href rewriting, redirect flattening, manifest derivation, §11 licensing + build report. | 61 tests |
 | `deltlib` / `deltd` | **The pack server (A5) and cross-pack search, first build (2026-11-20).** One `deltd` serves every pack by hostname (contract §8): issued, live pack hostnames only; `410` for removed pages; ETag per encoding; ranges; zstd passthrough; dictionary entries decoded on the box. API v1 Library and Search groups: one query across all packs, fused by position (RRF), accent-insensitive, new editions searchable on refresh. `identityd` is a trait with a dev-only fixed table. Notes and findings: `crates/deltlib/NOTES.md`. | 28 tests |
+| `deltos-net` | **E10, the box's own network (2026-11-20).** Name and address registry; generated `dnsmasq` (wildcard `deltos.lan`/`deltos-packs.lan`, hotspot DHCP, names and reservations live without restart, no query log) and `nftables` (uplink sharing); the network actions behind shelld's checks (secure session, `network.configure`, re-confirm ticket). `docs/box-network-plan.md`. | 11 tests, 1 against real dnsmasq (root; `DELTOS_REQUIRE_NET_E2E=1`) |
 | `fuzz/` | 3 `cargo-fuzz` targets: `header-parse`, `index-loader`, `segment-merge`. | seed corpora committed |
 | WAX format | **v0.12** (merged 2026-11-15, PR #1: tombstones, search on appended segments, declared title fold, verifiable append deltas). `SPEC.md` is normative and byte-exact; §13 is the version history. | `crates/wax-core/tests/v0_12.rs` |
 
@@ -112,7 +113,7 @@ The previous palette's blanket AA claim was false: six pairings failed 4.5:1, wo
 
 **Directive 04 — measurement: done.** Framing settled by **ADR-0001** (per-entry + shared dictionary, SPEC v0.10). The remaining knobs were measured 2026-11-20 in **ADR-0003**: build at zstd level 19 (16% smaller text, no decode cost), keep the 110 KiB dictionary, no brotli/xz/grouping, entropy-coded media stays verbatim, TTF/OTF fonts now compressed, and a new SPEC §3 rule bounds every frame's window to 8 MiB. Still open: the same numbers on ARM, SD vs SSD reads, and larger archives; and letting `wax-core` take a level (it hard-codes 3).
 
-**P1 build line, started 2026-11-20:** the embedded search index is built by `zim2wax`, and `deltd` (A5, which replaces per-pack `wax-serve`) serves packs and search with hostname routing at every profile (track-a §20.3). Next for `deltd`: the real `identityd` link, HTTPS, `entry_viewed`, personal data, then admin through `deltos-shelld`. The box's DNS/DHCP plan is `docs/box-network-plan.md`.
+**P1 build line, started 2026-11-20:** the embedded search index is built by `zim2wax`, and `deltd` (A5, which replaces per-pack `wax-serve`) serves packs and search with hostname routing at every profile (track-a §20.3). Next for `deltd`: the real `identityd` link, HTTPS, `entry_viewed`, personal data, then admin through `deltos-shelld`. The box's DNS/DHCP is `docs/box-network-plan.md`, built in `crates/deltos-net`.
 
 ## Session-start ritual
 

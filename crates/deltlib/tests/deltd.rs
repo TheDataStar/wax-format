@@ -528,3 +528,36 @@ async fn openapi_lists_every_route_the_api_answers() {
         assert_ne!(st, StatusCode::NOT_FOUND, "{p} is documented but not answered");
     }
 }
+
+// --- phones' internet checks (box-network-plan §6) ---------------------------
+
+#[tokio::test]
+async fn connectivity_checks_only_when_on_and_only_the_listed_paths() {
+    let b = boot(|_| {});
+    let r = b.get("connectivitycheck.gstatic.com", "/generate_204", &[]).await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND, "off by default");
+
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Arc::new(Library::new(dir.path(), Catalog::in_memory().unwrap(), 1));
+    let app = router(AppState::new(lib, Arc::new(StaticIdentity::new()), WEBOS).with_connectivity_checks(true));
+    let get = |host: &'static str, path: &'static str, m: &'static str| {
+        let app = app.clone();
+        async move { app.oneshot(Request::builder().method(m).uri(path).header("host", host).body(Body::empty()).unwrap()).await.unwrap() }
+    };
+    let r = get("connectivitycheck.gstatic.com", "/generate_204", "GET").await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    assert!(r.headers().get("set-cookie").is_none());
+    let r = get("captive.apple.com", "/hotspot-detect.html", "GET").await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert!(String::from_utf8(body(r).await).unwrap().contains("<TITLE>Success</TITLE>"));
+    let r = get("www.msftconnecttest.com", "/connecttest.txt", "GET").await;
+    assert_eq!(body(r).await, b"Microsoft Connect Test");
+    for (h, p, m) in [
+        ("connectivitycheck.gstatic.com", "/other", "GET"),
+        ("connectivitycheck.gstatic.com", "/generate_204", "POST"),
+        ("captive.apple.com", "/", "GET"),
+        ("example.com", "/generate_204", "GET"),
+    ] {
+        assert_eq!(get(h, p, m).await.status(), StatusCode::NOT_FOUND, "{h}{p} {m}");
+    }
+}

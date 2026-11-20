@@ -39,6 +39,11 @@ struct Args {
     /// removed packs.
     #[arg(long, default_value_t = 5)]
     rescan_seconds: u64,
+    /// Answer phones' "is there internet?" checks (docs/box-network-plan.md
+    /// section 6). Set it exactly when the box's DNS sends those hosts here,
+    /// i.e. on a hotspot without internet sharing.
+    #[arg(long)]
+    answer_connectivity_checks: bool,
 }
 
 #[tokio::main]
@@ -72,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let app = router(AppState::new(lib, ident, &a.webos_host));
+    let app = router(AppState::new(lib, ident, &a.webos_host).with_connectivity_checks(a.answer_connectivity_checks));
     let listener = tokio::net::TcpListener::bind(a.listen).await?;
     eprintln!("deltd: listening on {} for {}", a.listen, a.webos_host);
     axum::serve(listener, app).await?;
