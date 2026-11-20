@@ -412,6 +412,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "delt-desktop"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "deltlib",
+ "getrandom 0.3.4",
+ "percent-encoding",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "wax-core",
+]
+
+[[package]]
 name = "deltlib"
 version = "0.1.0"
 dependencies = [

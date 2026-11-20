@@ -1,0 +1,166 @@
+/* Delt desktop. Colours come only from the tokens (delt-desktop theme.rs),
+   injected into #tokens at start. Sizes: design-language §5 — five type
+   sizes (32/24/16/14/12), the 4px spacing scale, radius 0 tiles / 4 controls
+   / 8 floating panels, 2px accent-ink focus ring, 44px targets.
+   Faces: §5.1 names three bundled faces but not which; until it does, the
+   computer's own faces stand in. */
+
+:root {
+  --display: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+  --body: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Noto Sans Mono", monospace;
+  color-scheme: light dark;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 16px/1.5 var(--body);
+  display: flex;
+  flex-direction: column;
+}
+h1 { font: 300 32px/1.2 var(--display); margin: 0; }
+h2 { font: 400 24px/1.25 var(--display); margin: 0 0 8px; }
+.meta { font-size: 14px; color: var(--ink-2); margin: 8px 0; }
+.mono { font-family: var(--mono); font-size: 14px; }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.skip { position: absolute; left: -999px; }
+.skip:focus { left: 16px; top: 16px; z-index: 10; background: var(--raised); padding: 8px 12px; }
+
+:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+
+button, input, textarea, select {
+  font: inherit;
+  color: inherit;
+  accent-color: var(--accent-ink);
+}
+button {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 16px;
+  border-radius: 4px;
+  border: 1px solid var(--line-strong);
+  background: var(--raised);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+}
+button:hover { border-color: var(--ink-2); }
+button.primary { background: var(--accent-ink); border-color: var(--accent-ink); color: var(--on-accent); }
+button.danger { color: var(--error); border-color: var(--error); }
+button.link { border: 0; background: none; color: var(--accent-ink); text-decoration: underline; padding: 0 4px; min-height: 0; min-width: 0; height: 44px; }
+input[type="search"], textarea {
+  border: 1px solid var(--line-strong);
+  background: var(--raised);
+  border-radius: 4px;
+  padding: 8px 12px;
+  width: 100%;
+}
+textarea { resize: vertical; }
+label { display: block; font-size: 14px; color: var(--ink-2); margin: 12px 0 4px; }
+label.check, fieldset label { display: flex; gap: 8px; align-items: center; color: var(--ink); font-size: 16px; min-height: 44px; margin: 0; }
+fieldset { border: 0; padding: 0; margin: 0 0 16px; }
+legend { font-weight: 600; margin-bottom: 4px; }
+a { color: var(--accent-ink); }
+
+/* the three-segment rule: grey / charcoal / accent */
+.rule { display: flex; height: 4px; }
+.rule i { flex: 1; }
+.rule i:nth-child(1) { background: var(--rule-a); }
+.rule i:nth-child(2) { background: var(--charcoal); }
+.rule i:nth-child(3) { background: var(--accent); }
+
+.bar { background: var(--surface); border-bottom: 1px solid var(--line); }
+.bar-row { display: flex; gap: 16px; align-items: center; padding: 8px 16px; }
+.brand { font: 300 24px/1 var(--display); letter-spacing: 0.02em; }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.tabs button { border-color: transparent; background: none; }
+.tabs button[aria-current="page"] { border-color: var(--line-strong); background: var(--raised); box-shadow: inset 0 -3px 0 var(--accent); }
+.search { position: relative; margin-left: auto; width: min(420px, 40vw); }
+.suggest {
+  position: absolute; z-index: 5; left: 0; right: 0; top: 48px; margin: 0; padding: 4px;
+  list-style: none; background: var(--raised); border: 1px solid var(--line-strong); border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+}
+.suggest li { padding: 8px 12px; min-height: 44px; display: flex; flex-direction: column; justify-content: center; cursor: pointer; border-radius: 4px; }
+.suggest li[aria-selected="true"], .suggest li:hover { background: var(--surface); }
+.suggest .pk { font-size: 12px; color: var(--ink-2); }
+
+main { flex: 1; overflow: auto; }
+main:focus { outline: none; }
+.view { padding: 24px 32px 48px; max-width: 1200px; margin: 0 auto; }
+.view-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 0 24px 24px; overflow: hidden; }
+.panel > .rule { margin: 0 -24px 16px; }
+
+/* library: a mosaic of square-cornered tiles; the first pack is larger */
+.mosaic { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-top: 16px; }
+.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 0; padding: 16px; display: flex; flex-direction: column; gap: 8px; min-height: 200px; }
+.tile.big { grid-column: span 2; }
+.tile.new { box-shadow: inset 4px 0 0 var(--accent); }
+.tile h2 { font-size: 24px; margin: 0; }
+.tile .desc { font-size: 14px; color: var(--ink-2); flex: 1; margin: 0; }
+.tile .facts { font: 12px/1.5 var(--mono); color: var(--ink-2); display: flex; gap: 12px; flex-wrap: wrap; }
+.tile .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.empty { background: var(--surface); border: 1px dashed var(--line-strong); padding: 32px; text-align: center; color: var(--ink-2); }
+
+.state { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.state.ok { color: var(--success); }
+.state.warn { color: var(--warn); }
+.state.err { color: var(--error); }
+
+.update { margin-top: 16px; }
+.update .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 12px 0; border-top: 1px solid var(--line); }
+.update .row:first-of-type { border-top: 0; }
+.update .what { flex: 1; min-width: 240px; }
+
+/* reader */
+.view.reader { max-width: none; padding: 0; height: 100%; display: flex; flex-direction: column; }
+.reader-bar { display: flex; gap: 8px; align-items: center; padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.crumbs { font-size: 14px; color: var(--ink-2); }
+.crumbs b { color: var(--ink); font-weight: 500; }
+.spacer { flex: 1; }
+.reader-body { flex: 1; display: flex; min-height: 0; }
+/* pack pages are built for a white page and keep their own look in every
+   theme, so the frame is white behind them, not a token */
+#page { flex: 1; border: 0; background: #fff; min-width: 0; }
+.side { width: 340px; border-radius: 0; border-width: 0 0 0 1px; overflow: auto; }
+#bookmark-toggle[aria-pressed="true"] { box-shadow: inset 0 -3px 0 var(--accent); }
+
+.results, .rows, .notes { list-style: none; padding: 0; margin: 16px 0; }
+.results li, .rows li { padding: 12px 0; border-top: 1px solid var(--line); }
+.results a, .rows a { font-size: 16px; font-weight: 600; text-decoration: none; }
+.results a:hover, .rows a:hover { text-decoration: underline; }
+.results .pk, .rows .pk { font-size: 12px; color: var(--ink-2); font-family: var(--mono); }
+.results p { margin: 4px 0 0; font-size: 14px; color: var(--ink-2); }
+.rows li { display: flex; gap: 12px; align-items: center; }
+.rows li > div { flex: 1; }
+
+.notes li { background: var(--raised); border: 1px solid var(--line); border-radius: 4px; padding: 12px; margin: 8px 0; }
+.notes blockquote { margin: 0 0 8px; padding-left: 12px; border-left: 3px solid var(--accent); color: var(--ink-2); font-size: 14px; }
+.notes .body { white-space: pre-wrap; margin: 0 0 8px; }
+.notes .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.notes .when { font: 12px var(--mono); color: var(--ink-2); flex: 1; }
+
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 20;
+  background: var(--raised); border: 1px solid var(--line-strong); border-radius: 8px;
+  padding: 12px 16px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.18); max-width: min(560px, 90vw);
+}
+.toast.err { border-color: var(--error); }
+
+dialog { border: 1px solid var(--line-strong); border-radius: 8px; padding: 0; background: var(--surface); color: var(--ink); max-width: 520px; width: 90vw; }
+dialog form { padding: 0 24px 24px; }
+dialog .rule { margin: 0 -24px 16px; }
+dialog .actions { justify-content: flex-end; margin-top: 24px; }
+dialog::backdrop { background: rgb(0 0 0 / 0.35); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .toast { transition: opacity 0.2s; }
+}

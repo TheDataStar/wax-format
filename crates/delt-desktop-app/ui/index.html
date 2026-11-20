@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delt</title>
+<style id="tokens"></style>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="bar">
+  <div class="rule" aria-hidden="true"><i></i><i></i><i></i></div>
+  <div class="bar-row">
+    <span class="brand">Delt</span>
+    <nav class="tabs" aria-label="Sections">
+      <button data-view="library" aria-current="page">Library</button>
+      <button data-view="reader" id="tab-reader" hidden>Reading</button>
+      <button data-view="bookmarks">Bookmarks</button>
+      <button data-view="notes">Notes</button>
+      <button data-view="history">History</button>
+      <button data-view="settings">Settings</button>
+    </nav>
+    <form class="search" role="search" id="search-form" autocomplete="off">
+      <label for="q" class="vh">Search every pack</label>
+      <input id="q" type="search" placeholder="Search every pack" aria-autocomplete="list" aria-controls="suggest" aria-expanded="false">
+      <ul id="suggest" role="listbox" class="suggest" hidden></ul>
+    </form>
+  </div>
+</header>
+
+<main id="main" tabindex="-1">
+
+  <section id="view-library" class="view">
+    <div class="view-head">
+      <h1>Library</h1>
+      <div class="actions">
+        <button id="add-pack" class="primary">Add a pack…</button>
+        <button id="find-updates">Find updates in a folder…</button>
+      </div>
+    </div>
+    <p class="meta">Packs are read from <span class="mono" id="lib-dir"></span> <button class="link" id="change-dir">Change folder…</button></p>
+    <div id="packs" class="mosaic"></div>
+    <div id="updates-found"></div>
+  </section>
+
+  <section id="view-reader" class="view reader" hidden>
+    <div class="reader-bar">
+      <button id="back" aria-label="Back">‹ Back</button>
+      <button id="forward" aria-label="Forward">Forward ›</button>
+      <button id="home">Pack home</button>
+      <span class="crumbs" id="crumbs"></span>
+      <span class="spacer"></span>
+      <button id="bookmark-toggle" aria-pressed="false">Bookmark</button>
+      <button id="notes-toggle" aria-expanded="false" aria-controls="page-notes">Notes</button>
+    </div>
+    <div class="reader-body">
+      <iframe id="page" title="Pack page" sandbox="allow-scripts allow-forms allow-same-origin"></iframe>
+      <aside id="page-notes" class="panel side" hidden aria-label="Notes on this page">
+        <div class="rule" aria-hidden="true"><i></i><i></i><i></i></div>
+        <h2>Notes on this page</h2>
+        <p class="meta">Private: kept on this computer only.</p>
+        <form id="note-form">
+          <label for="note-quote">Passage (optional, paste it here)</label>
+          <textarea id="note-quote" rows="2"></textarea>
+          <label for="note-body">Your note</label>
+          <textarea id="note-body" rows="4"></textarea>
+          <button class="primary" type="submit">Save note</button>
+        </form>
+        <ol id="page-note-list" class="notes"></ol>
+      </aside>
+    </div>
+  </section>
+
+  <section id="view-search" class="view" hidden>
+    <div class="view-head"><h1>Results for <span id="search-q"></span></h1></div>
+    <p class="meta" id="search-skipped"></p>
+    <ol id="results" class="results"></ol>
+    <button id="more-results" hidden>More results</button>
+  </section>
+
+  <section id="view-bookmarks" class="view" hidden>
+    <div class="view-head"><h1>Bookmarks</h1></div>
+    <ol id="bookmark-list" class="rows"></ol>
+  </section>
+
+  <section id="view-notes" class="view" hidden>
+    <div class="view-head">
+      <h1>Notes</h1>
+      <div class="actions"><button id="export-notes">Save as Markdown…</button></div>
+    </div>
+    <p class="meta">Your notes stay on this computer. Nothing is sent anywhere.</p>
+    <ol id="all-notes" class="notes"></ol>
+  </section>
+
+  <section id="view-history" class="view" hidden>
+    <div class="view-head">
+      <h1>History</h1>
+      <div class="actions"><button id="clear-history">Clear history</button></div>
+    </div>
+    <ol id="history-list" class="rows"></ol>
+  </section>
+
+  <section id="view-settings" class="view" hidden>
+    <div class="view-head"><h1>Settings</h1></div>
+    <div class="panel">
+      <div class="rule" aria-hidden="true"><i></i><i></i><i></i></div>
+      <fieldset>
+        <legend>Theme</legend>
+        <label><input type="radio" name="theme" value="system"> Match this computer</label>
+        <label><input type="radio" name="theme" value="light"> Light</label>
+        <label><input type="radio" name="theme" value="dark"> Dark</label>
+      </fieldset>
+      <label class="check"><input type="checkbox" id="colorblind"> Colour-blind friendly state colours</label>
+      <p class="meta">Status always shows a word as well as a colour; this mode also changes “working” from green to blue.</p>
+      <p class="meta">Pack pages keep their own look: the theme changes Delt, not the pages inside packs.</p>
+    </div>
+  </section>
+</main>
+
+<div id="toast" role="status" aria-live="polite" class="toast" hidden></div>
+
+<dialog id="confirm">
+  <form method="dialog">
+    <div class="rule" aria-hidden="true"><i></i><i></i><i></i></div>
+    <h2 id="confirm-title"></h2>
+    <div id="confirm-text"></div>
+    <div class="actions">
+      <button value="cancel">Cancel</button>
+      <button value="ok" id="confirm-ok" class="primary"></button>
+    </div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

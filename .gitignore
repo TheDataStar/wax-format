@@ -15,3 +15,6 @@
 # wax-builder emits a build report beside every archive it writes;
 # the committed legacy fixtures do not need theirs tracked.
 *.wax.build-report.json
+
+# Tauri generates these when the desktop window is built
+/crates/delt-desktop-app/gen
