@@ -1,0 +1,41 @@
+[package]
+name = "wss-core"
+version = "0.1.0"
+edition = "2021"
+description = "Wax Service Shell engine: converts ZIM, HTML folders, EPUB, PDF and websites into .wax packs and manages them (inspect, diff, update, gc, sign)"
+license = "MIT"
+
+[lib]
+name = "wss_core"
+
+[[bin]]
+name = "wss"
+path = "src/main.rs"
+
+[dependencies]
+wax-core = { path = "../wax-core" }
+wax-builder = { path = "../wax-builder" }
+zim2wax = { path = "../zim2wax" }
+anyhow = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+rusqlite = { version = "0.30", features = ["bundled"] }
+tempfile = "3.8"
+mime_guess = "2.0"
+sha2 = "0.10"
+walkdir = "2.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+pdf-extract = "0.7"
+ureq = "2"
+url = "2"
+language-tags = "0.3"
+roxmltree = "0.20"
+lopdf = { version = "0.34", default-features = false, features = ["nom_parser"] }
+
+[dev-dependencies]
+tempfile = "3.8"
+serde_json = "1"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }

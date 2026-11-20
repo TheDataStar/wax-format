@@ -80,3 +80,48 @@ fn writer_frames_respect_the_8_mib_window_bound() {
     let ultra = enc.finish().unwrap();
     assert!(declared_window(&ultra) > BOUND, "negative control: window log 25 must exceed the bound");
 }
+
+/// ADR-0003: off-box builds use level 19, the highest level that stays inside
+/// the bound. Checked on disk, for both codecs, and the writer refuses the
+/// "ultra" levels that would break it.
+#[test]
+fn level_19_frames_respect_the_bound_and_ultra_levels_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("l19.wax");
+    let mut big = Vec::with_capacity(12 << 20);
+    let mut x: u32 = 7;
+    while big.len() < 12 << 20 {
+        x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        big.extend_from_slice(format!("<p>row {} value {}</p>\n", x >> 8, x % 977).as_bytes());
+    }
+    let mut sw = WaxWriter::new(UUID)
+        .created_at(1_700_000_000)
+        .zstd_level(19)
+        .create(&out, &BTreeMap::from([("name".to_string(), "w".to_string())]))
+        .unwrap();
+    assert_eq!(sw.zstd_level(), 19);
+    let samples: Vec<Vec<u8>> = (0..64).map(|i| format!("<p>sample {i} of the text</p>").repeat(20).into_bytes()).collect();
+    sw.train_dictionary(samples.iter().map(|s| s.as_slice())).unwrap();
+    sw.add_entry(EntryMeta::new("big.html").mime("text/html").compression(Compression::Zstd), &mut &big[..])
+        .unwrap();
+    sw.add_entry(EntryMeta::new("dict.html").mime("text/html").compression(Compression::ZstdDict), &mut &big[..4 << 20])
+        .unwrap();
+    sw.finish().unwrap();
+
+    let r = WaxReader::open(&out).unwrap();
+    let mut f = std::fs::File::open(&out).unwrap();
+    for e in r.entries() {
+        let e = e.unwrap();
+        let mut head = vec![0u8; 18.min(e.length as usize)];
+        f.seek(SeekFrom::Start(e.offset)).unwrap();
+        f.read_exact(&mut head).unwrap();
+        assert!(declared_window(&head) <= BOUND, "{}: level 19 window over 8 MiB", e.path);
+    }
+    assert_eq!(r.read("big.html").unwrap(), big);
+    assert_eq!(r.read("dict.html").unwrap(), &big[..4 << 20]);
+
+    for bad in [0, 20, 22, -1] {
+        let res = WaxWriter::new(UUID).zstd_level(bad).create(dir.path().join(format!("bad{bad}.wax")), &BTreeMap::new());
+        assert!(res.is_err(), "level {bad} must be refused");
+    }
+}

@@ -230,6 +230,10 @@ pub struct ConvertOptions {
     /// title and visible text. On by default in the CLI; see
     /// [`search_tokenizer_for`] for the packs it is not built for.
     pub search_index: bool,
+    /// zstd level for compressed entries. `None` keeps wax-core's default
+    /// (3). ADR-0003 recommends 19 for off-box builds; the Wax Service Shell
+    /// passes it.
+    pub zstd_level: Option<i32>,
 }
 
 /// What the conversion did about the embedded search index.
@@ -443,16 +447,35 @@ pub fn convert(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Result<
                 .with_context(|| format!("publishing {}", output.display()))?;
             let final_report = report_sibling(output);
             if partial_report.exists() {
-                std::fs::rename(&partial_report, &final_report)
+                // The report was written while the archive was still the
+                // `.partial`; name the published file in it (Contract §11:
+                // `archive_filename` is the archive's file name).
+                let text = std::fs::read_to_string(&partial_report)?;
+                let mut v: serde_json::Value = serde_json::from_str(&text)
+                    .with_context(|| format!("reading {}", partial_report.display()))?;
+                if let Some(name) = output.file_name() {
+                    v["archive_filename"] = serde_json::Value::String(name.to_string_lossy().into_owned());
+                }
+                std::fs::write(&final_report, serde_json::to_string_pretty(&v)? + "\n")
                     .with_context(|| format!("publishing {}", final_report.display()))?;
+                std::fs::remove_file(&partial_report)?;
             }
             report.write.archive = output.to_path_buf();
             report.write.report_path = final_report;
+            // The signature was made on the partial file (the digest does not
+            // cover the file name), so its sidecar moves with the archive;
+            // left behind, it would sit beside a file that no longer exists.
+            if let Some(sig) = report.write.sidecar.take() {
+                let dest = wax_builder::sign::sidecar_path(output);
+                std::fs::rename(&sig, &dest).with_context(|| format!("publishing {}", dest.display()))?;
+                report.write.sidecar = Some(dest);
+            }
             Ok(report)
         }
         Err(e) => {
             let _ = std::fs::remove_file(&partial);
             let _ = std::fs::remove_file(&partial_report);
+            let _ = std::fs::remove_file(wax_builder::sign::sidecar_path(&partial));
             Err(e)
         }
     }
@@ -742,6 +765,9 @@ fn convert_inner(zim_path: &Path, output: &Path, opts: &ConvertOptions) -> Resul
         },
     )
     .with_context(|| format!("creating {}", output.display()))?;
+    if let Some(level) = opts.zstd_level {
+        pack.set_zstd_level(level)?;
+    }
 
     // Search index (SPEC §5.7): the tokenizer is declared before any document.
     let mut search = if !opts.search_index {
@@ -1164,6 +1190,7 @@ mod tests {
             sign_key: None,
             carry_dictionary_from: None,
             search_index: true,
+            zstd_level: None,
         };
         assert!(o.validate().is_ok());
 

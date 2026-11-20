@@ -69,6 +69,17 @@ const DICT_BYTES: usize = 110 * 1024;
 /// dictionary, so refuse rather than ship one that helps nothing.
 const MIN_DICT_SAMPLES: usize = 8;
 
+/// zstd level a writer uses unless told otherwise. Kept at 3 so that existing
+/// builds stay byte-identical; ADR-0003 measured level 19 as 16% smaller text
+/// with no decode cost and recommends it for off-box builds
+/// ([`WaxWriter::zstd_level`]).
+pub const DEFAULT_ZSTD_LEVEL: i32 = 3;
+
+/// Highest level a writer accepts. zstd's levels 20–22 ("ultra") raise the
+/// window past 8 MiB, which SPEC §3's decoder memory bound forbids; levels up
+/// to 19 comply (ADR-0003, `tests/window_bound.rs`).
+pub const MAX_ZSTD_LEVEL: i32 = 19;
+
 /// Pointer-jumping iterations before a redirect chain is declared cyclic.
 /// Each iteration halves the remaining chain length, so this bounds legitimate
 /// depth at 2^64; anything still unresolved is a cycle.
@@ -79,6 +90,7 @@ pub struct WaxWriter {
     archive_uuid: [u8; 16],
     created_at: u64,
     flags: u16,
+    zstd_level: i32,
 }
 
 impl WaxWriter {
@@ -87,7 +99,21 @@ impl WaxWriter {
             archive_uuid,
             created_at: now(),
             flags: 0,
+            zstd_level: DEFAULT_ZSTD_LEVEL,
         }
+    }
+
+    /// zstd level for `zstd` and `zstd-dict` entries (SPEC §3). The level is
+    /// not recorded in the archive and readers need nothing new; it only
+    /// changes how hard the writer works. Must be 1..=[`MAX_ZSTD_LEVEL`],
+    /// checked when the writer is created or opened.
+    pub fn zstd_level(mut self, level: i32) -> Self {
+        self.zstd_level = level;
+        self
+    }
+
+    fn checked_level(&self) -> Result<i32> {
+        check_zstd_level(self.zstd_level)
     }
 
     /// Pin the header's `created_at` (and each segment's
@@ -116,6 +142,7 @@ impl WaxWriter {
         output: impl AsRef<Path>,
         manifest: &BTreeMap<String, String>,
     ) -> Result<StreamingWriter> {
+        let zstd_level = self.checked_level()?;
         let mut file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -151,6 +178,7 @@ impl WaxWriter {
             prev_header: None,
             tombstones: 0,
             manifest_update: None,
+            zstd_level,
         })
     }
 
@@ -163,6 +191,7 @@ impl WaxWriter {
     /// on the archive until the new segment is flattened, so append costs
     /// nothing proportional to the entries already there.
     pub fn open_append(&self, archive: impl AsRef<Path>) -> Result<StreamingWriter> {
+        let zstd_level = self.checked_level()?;
         let existing = crate::reader::WaxReader::open_with(
             archive.as_ref(),
             crate::reader::ReadOptions {
@@ -254,6 +283,7 @@ impl WaxWriter {
             prev_header: Some(hbuf),
             tombstones: 0,
             manifest_update: None,
+            zstd_level,
         })
     }
 
@@ -381,6 +411,8 @@ pub struct StreamingWriter {
     tombstones: u64,
     /// A replacement manifest (SPEC v0.13 §5.6.1), written at `finish`.
     manifest_update: Option<BTreeMap<String, String>>,
+    /// zstd level for compressed entries (SPEC §3; ADR-0003).
+    zstd_level: i32,
 }
 
 impl StreamingWriter {
@@ -439,6 +471,19 @@ impl StreamingWriter {
     /// The dictionary this pack will store, if any.
     pub fn dictionary(&self) -> Option<&[u8]> {
         self.dictionary.as_deref()
+    }
+
+    /// The zstd level compressed entries are written at.
+    pub fn zstd_level(&self) -> i32 {
+        self.zstd_level
+    }
+
+    /// Change the zstd level for entries added from now on (1..=19). Entries
+    /// already written keep theirs; a level is never recorded, so mixing is
+    /// valid, but a reproducible build sets it once, before the first entry.
+    pub fn set_zstd_level(&mut self, level: i32) -> Result<()> {
+        self.zstd_level = check_zstd_level(level)?;
+        Ok(())
     }
 
     /// Declare the tokenizer this pack's search index is built with
@@ -630,7 +675,7 @@ impl StreamingWriter {
                 uncompressed += n as u64;
             },
             Compression::Zstd => {
-                let mut enc = zstd::stream::write::Encoder::new(&mut sink, 3)?;
+                let mut enc = zstd::stream::write::Encoder::new(&mut sink, self.zstd_level)?;
                 loop {
                     let n = src.read(&mut buf)?;
                     if n == 0 {
@@ -647,7 +692,7 @@ impl StreamingWriter {
                     .dictionary
                     .as_deref()
                     .ok_or_else(|| WaxError::DictionaryMissing { path: path.clone() })?;
-                let mut enc = zstd::stream::write::Encoder::with_dictionary(&mut sink, 3, dict)?;
+                let mut enc = zstd::stream::write::Encoder::with_dictionary(&mut sink, self.zstd_level, dict)?;
                 loop {
                     let n = src.read(&mut buf)?;
                     if n == 0 {
@@ -1490,6 +1535,20 @@ fn now() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Normalize an authored path to the stored form, or reject it.
+/// Accept a zstd level only within 1..=[`MAX_ZSTD_LEVEL`] (SPEC §3 window bound).
+pub fn check_zstd_level(level: i32) -> Result<i32> {
+    if (1..=MAX_ZSTD_LEVEL).contains(&level) {
+        Ok(level)
+    } else {
+        Err(WaxError::Schema {
+            detail: format!(
+                "zstd level {level} is outside 1..={MAX_ZSTD_LEVEL}; levels above {MAX_ZSTD_LEVEL} \
+                 exceed SPEC §3's 8 MiB decoder window bound"
+            ),
+        })
+    }
+}
+
 pub fn normalize_path(input: &str) -> Result<String> {
     let replaced = input.replace('\\', "/");
     let trimmed = replaced.trim_start_matches('/');

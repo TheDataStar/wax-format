@@ -306,6 +306,7 @@ pub fn opts() -> zim2wax::ConvertOptions {
         sign_key: None,
         carry_dictionary_from: None,
         search_index: true,
+        zstd_level: None,
     }
 }
 

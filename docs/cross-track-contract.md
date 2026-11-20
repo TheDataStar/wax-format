@@ -389,7 +389,13 @@ Introducing license_review_required as "a build-report outcome" created a cross-
 | license_operator_supplied | The source stated no license and the operator supplied one. Always accompanies license_review_required. |
 | attribution_operator_supplied | The source carried neither Creator nor Publisher and the operator supplied the credit line. |
 | icon_generated | The source carried no illustration and a placeholder was generated. |
+| uncaptured_page | *(2026-11-20)* A page or file a website capture found but did not capture: the fetch failed, robots.txt asked crawlers not to, a page or depth limit was reached, or it redirected off the site. Counted per URL; each is also counted in skipped_count. |
+| external_reference | *(2026-11-20)* References to another site were left as they are, so they will not open offline. Counted per reference. |
+| no_searchable_text | *(2026-11-20)* An item was carried, but no text could be read from it for the search index (a scanned PDF with no text layer). |
+| kept_unopened | *(2026-11-20)* An item was carried as a file but could not be opened up into the pack's pages: an EPUB inside a folder source, a font an EPUB obfuscates. |
 
+- **[New decision, 2026-11-20] Four codes added for the Wax Service Shell importers** (folder, EPUB, PDF, website). Each names something those importers already detect and that intake should be able to route on: a capture with holes (uncaptured_page), a pack that reaches outside itself (external_reference), content search cannot find (no_searchable_text), files kept but not opened (kept_unopened). The WSS product spec's own proposals external_request (a web app calling a server at run time), transcode_failed (video) and unsupported_source_item are **not** added, because nothing yet detects them; each is added with the importer that does. A builder still never ships a code that is not on this list.
+- **[New decision, 2026-11-20] A builder's own diagnostics stay outside this report.** A builder may write a further file beside the archive for the person who ran it (the Wax Service Shell writes `<archive-filename>.wss-report.json`: every item it did not carry, in plain words, and for a captured website the original URL → pack path map). Intake and boxes never read it, nothing routes on it, and it carries no code that is not also counted here. The URL map in particular is the publisher's record for refreshing a capture, so it is not stored in the pack.
 - **What it is not:** Not a trust artifact. It sits outside the signature, so intake treats it as the builder's own claim about its run — useful for routing and diagnostics, never as evidence about a pack's contents. Anything intake must trust is verified against the signed archive itself.
 
 ## 12. Every New Decision in One Place
@@ -420,6 +426,8 @@ Every value in this document that had no defensible source anywhere — chosen r
 | 11 | BCP-47 validated against the IANA registry, not just well-formedness | "english" is well-formed and wrong; a typo should fail at build, not at search. |
 | 11 | Absent license is a fourth outcome, not the blank one | No real ZIM states a license; the rule as written forbade converting Wikipedia. |
 | 11 | attribution stays required; --attribution supplies it | §20 derived an empty string, which §11 rejects. CC-BY needs the credit line. |
+| 11 | **Warning codes uncaptured_page, external_reference, no_searchable_text, kept_unopened** (2026-11-20) | The Wax Service Shell's new importers detect these and the closed list had no code for them. |
+| 11 | **Builder diagnostics (and a website's URL map) live beside the archive, never in it or in the build report** (2026-11-20) | The URL map had no defined home; intake must route only on this report's closed codes. |
 | 11 | N may be a counter or a source date's day | Day-of-month is the only reading under which a version derivation stays a reformat. |
 | 11 | Warning codes are a closed, listed vocabulary | Intake branches on them; an invented code is a silently misrouted pack. |
 | 2 | **Device-name tiers retired entirely; capability follows measured resources** | A tier name summarised numbers sitting beside it and could only disagree with them. Supersedes the three `generic`/tier-gating decisions this register previously carried. |
