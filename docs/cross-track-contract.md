@@ -166,6 +166,7 @@ These are unchanged, and they are about sign-in shape alone:
 | Passwordless | `student`, `guest` | `password_hash` is nullable. Chosen for shared devices, young learners and hardware with no comfortable keyboard. |
 
 - **[Decided by Commander, 2026-11-20] A password that unlocks a secure-only permission (§4.2) is accepted only over HTTPS.** A password typed over plain HTTP can be read by anyone on the Wi-Fi and then used from their own device over HTTPS, so the HTTPS rule protects the box only if those passwords never travel in the clear. Over plain HTTP such a person is sent to a device with the box's certificate. Students and guests are unaffected.
+- **[Decided 2026-11-20] Off the shared kiosk, a passwordless identity signs in with a teacher-issued sign-in card.** Tap-your-name was designed for a shared screen a teacher can see; on a personal phone anyone could pick a classmate and read their private notes. The name list is shown only on the kiosk. Elsewhere a passwordless person scans a QR code, or types its short code, issued by a teacher (`profile.manage` for that class) or an admin; the browser then becomes a **remembered device** that can start that person's sessions without the card. A teacher can see and remove a student's remembered devices, and a new card replaces the old one. A card signs in only passwordless identities, and only to a plain session, so it never unlocks a secure-only permission (§4.2). The archetypes above are unchanged: the card is how a passwordless sign-in is proven off the kiosk, not a password. Mechanism: `docs/privilege-boundary.md` §10.
 - **Guest emits nothing.** `identityd` rejects any `progress_events` insert whose profile resolves to guest, so "nothing about a Guest session is remembered" holds regardless of which component emits. This is a property of the guest identity, not of a permission.
 - **These archetype names coincide with the four built-in role bundles (§4.2), and that coincidence is not the model.** A box that composes a `librarian` role assigns it to an identity whose sign-in shape is still one of the two above. Adding a role never adds an archetype.
 
@@ -439,6 +440,7 @@ Every value in this document that had no defensible source anywhere — chosen r
 | 4.2 | **`backup.manage` and `system.update` named; changing the box needs HTTPS and an HTTPS session** | The actions had no permission, so only `admin` could ever run them; the HTTPS decision needed a mechanism a replayed cookie cannot pass. |
 | 4.4 | **Re-confirmation needs a password** | A passwordless identity can be granted an irreversible action's permission; it must still never run one unconfirmed. |
 | 5.1 | **Secure-only passwords are accepted only over HTTPS** (Commander, 2026-11-20) | A password read off the Wi-Fi defeats every HTTPS-only rule. |
+| 5.1 | **Passwordless sign-in off the kiosk uses a teacher-issued sign-in card and a remembered device** (2026-11-20) | On personal phones tap-your-name let classmates open each other's private notes. |
 | 5.2 | **`profile_id` comes from a live session, never the pack origin** (Commander, 2026-11-20) | On personal phones a pack address proves nothing about who is reading. |
 | 8 | **`profile_slot` retired for a random per-(browser, person) `pack_partition`** (goal approved by Commander, 2026-11-20) | 32 slots capped a box at 32 people; a numbered per-browser slot could leak data after a partial browser reset. |
 | 8 | **`pack_generation` in pack hostnames** | Clearing before index reuse cannot reach visitors' phones. |
@@ -478,8 +480,7 @@ Not answered, and not to be filled in by whoever implements first:
 - **The exact icon set** implementing the design language's icon rule. `design-language.md` specifies the visual rule, not the asset source, and nothing in the locked token set depends on the answer. **Owned by `design-language.md`.**
 - **From the privilege-boundary and deltd API review (2026-11-20).** Each is a value or design the two documents need and do not invent:
   - **The WebOS hostname** (§8). Needed before C1 is built.
-  - **How students sign in on their own phones.** Tap-your-name was designed for a shared screen; on a personal phone anyone can pick a classmate and read their private notes. Put to Commander 2026-11-20; recommended: a teacher-issued sign-in card. Until decided, the tap-your-name list is shown only on the kiosk.
-  - **How long a session lasts**, idle and absolute, on a shared screen and on a personal device.
+  - **How long a session lasts**, idle and absolute, on a shared screen and on a personal device, with how long a remembered device lasts and the sign-in card's code length and validity (§5.1).
   - **Paths** under `/var/lib/deltos/` (§10) for `deltd`'s personal data (notes, lists, history) and for the privilege boundary's action log.
   - **Whether the shipped `teacher` bundle holds `lists.assign`**, the Classroom app's permission.
   - **How box-converted and teacher-uploaded packs are trusted**, which is the architecture doc's open Q2. Until decided, such a pack is staged and not installed.

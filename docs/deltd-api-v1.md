@@ -118,9 +118,14 @@ These are `identityd`'s: `deltd` forwards them to `identityd` over its local soc
 | `POST /session` | Sign in. Makes a new session id every time; sets `delt_session`, or `__Host-delt_session` over HTTPS | None; rate-limited per device |
 | `DELETE /session` | Sign out of this browser; shuts this person's pack hostnames on it (§4.4) | Signed in |
 | `DELETE /me/sessions` | Sign out everywhere | Signed in, not Guest |
-| `GET /sign-in/profiles` | The tap-your-name list for passwordless sign-in | None, **kiosk only** until the student sign-in decision is made (§10) |
+| `GET /sign-in/profiles` | The tap-your-name list for passwordless sign-in | None, **kiosk only** |
+| `POST /session` with `sign_in_code` | Sign in a passwordless person with their sign-in card; makes a remembered device (`delt_device`) and a plain session | None; rate-limited per device |
+| `POST /session` with no body, on a remembered device | Start a new plain session for the remembered person | None |
+| `DELETE /me/device` | Forget this device | Signed in |
+| `POST /classes/{id}/members/{profile_id}/sign-in-card` | Issue a new sign-in card; the old one stops working | `profile.manage`, for that class · **Secure** |
+| `GET /classes/{id}/members/{profile_id}/devices` and `DELETE …/devices/{device_id}` | See and remove a student's remembered devices | `profile.manage`, for that class · **Secure** |
 
-**How a passwordless person signs in on their own phone** is pending Commander's decision (privilege boundary §10). Until then, `GET /sign-in/profiles` is answered only on the kiosk, because listing every student's name to any device on the Wi-Fi is itself a privacy leak. **Teacher and admin passwords are HTTPS only** (decided 2026-11-20): `POST /session` with a password for a person who holds any secure-only permission is refused over plain HTTP with `secure_connection_required`.
+**Passwordless people sign in off the kiosk with a teacher-issued sign-in card** (decided 2026-11-20, privilege boundary §10). `GET /sign-in/profiles` is answered only on the kiosk, because listing every student's name to any device on the Wi-Fi is itself a privacy leak. A sign-in code never makes a secure session, and never signs in anyone with a password. **Teacher and admin passwords are HTTPS only** (decided 2026-11-20): `POST /session` with a password for a person who holds any secure-only permission is refused over plain HTTP with `secure_connection_required`.
 
 ### 6.2 Library
 
@@ -279,8 +284,8 @@ Not answered here, and not to be filled in by whoever implements first. Items th
 | 2 | **Where personal data lives** | Notes and lists need a path, a schema version (contract §10) and a place in backups | A `deltd` directory under `/var/lib/deltos/`, added to contract §10 and declared in `deltd`'s backup set (§15) | Contract §10 |
 | 3 | **Who gets `lists.assign` by default** | Teachers need it on a fresh box | The shipped `teacher` bundle | Contract §4 |
 | 4 | ~~Teacher and admin passwords over plain HTTP~~ | **Decided 2026-11-20: HTTPS only** (§6.1) | — | Closed |
-| 5 | **How students sign in on their own phones** | Decides what replaces tap-your-name off the kiosk (§6.1) | A teacher-issued sign-in card | Commander, pending |
-| 6 | **How long a session lasts** | Shared screens and personal devices need different limits | Choose with teachers | Contract, Track F |
+| 5 | ~~How students sign in on their own phones~~ | **Decided 2026-11-20: teacher-issued sign-in card** (§6.1) | — | Closed |
+| 6 | **How long a session lasts** | Shared screens and personal devices need different limits; also sets how long a remembered device lasts and the sign-in card's code length and validity | Choose with teachers | Contract, Track F |
 | 7 | **Restricting a pack to some people** | v1 lets every signed-in person see every pack (§5) | Decide whether v1 needs it at all | Commander |
 | 8 | **How long an export file is kept** | Storage on a 32 GB box | Measure, then choose | Track C |
 | 9 | **Rate-limit numbers** (§9) | Fairness at 40 phones on 2 GB | Measure on the minimum spec | Track D, Track F |
@@ -318,7 +323,7 @@ What the review changed from the 2026-11-16 draft, and why. Findings that belong
 |---|---|---|---|
 | 1 | No endpoint was marked as needing HTTPS, although Commander decided changing the box and class progress need it. | Critical | §3 rule 5; Secure on every admin endpoint and on class progress. |
 | 2 | The pack zone served any device on the Wi-Fi, so there was in fact an anonymous way in, and `guest_accessible` could not be enforced. | High | Pack hostnames carry an issued partition, served only while its person is signed in (§4.4, §5). |
-| 3 | There were no sign-in or sign-out endpoints at all. | High | §6.1. |
+| 3 | There were no sign-in or sign-out endpoints at all, and tap-your-name would have listed every student to any device. | High | §6.1, with sign-in cards for personal phones. |
 | 4 | The API and the WebOS were on different proposed hostnames, which forces cross-origin requests. | High | One origin for both (§2). |
 | 5 | Forgery protection was a fixed header, while the privilege boundary used a per-session token. | Medium | One mechanism (§3 rule 6). |
 | 6 | The same ETag was used for the plain and zstd-encoded bytes, which breaks HTTP caching. | Medium | One ETag per encoding, with `Vary` (§4.2). |

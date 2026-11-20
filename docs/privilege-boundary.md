@@ -76,7 +76,7 @@ A **session** is the box's memory that "this browser is signed in as this person
 
 - A session id is at least 128 bits from the operating system's secure random source. `identityd` stores only a hash of it, so a copy of its database does not hand over live sessions.
 - **A new id at every sign-in**, never reusing one the browser already presented. This stops a "session fixation" attack, where someone plants a session id in a victim's browser and waits for them to sign in on it.
-- **Ended on:** sign-out; switching person on a shared screen (§7 rule 11); a password change or reset (every session of that person); removal of the profile; and an admin's "sign out everywhere".
+- **Ended on:** sign-out (which keeps a remembered device, §10, unless the person chooses "forget this device"); switching person on a shared screen (§7 rule 11); a password change or reset (every session of that person); removal of the profile; and an admin's "sign out everywhere".
 - **Permission changes take effect on the next request.** Permissions are looked up live on each check, not copied into the session, so taking `content.install` away from someone works immediately.
 - **How long a session lasts** before it ends itself, idle and absolute, on a shared screen and on a personal device, is **open** (§14). It is a number to choose with teachers, not to guess here. Whatever the numbers, a secure session's limits are never longer than a plain session's.
 
@@ -185,9 +185,15 @@ Contract §16 says visitors' own phones reach the box over **plain HTTP**, and o
 
 **Decided by Commander, 2026-11-20: teacher and admin passwords are only ever typed over HTTPS.** A password typed over plain HTTP can be read by anyone on the Wi-Fi, who can then sign in over HTTPS from their own device as that teacher; HTTPS protects the person whose device trusts the certificate, not against a stranger who chooses to connect. So a password belonging to anyone who holds a secure-only permission is accepted only over HTTPS. Over plain HTTP the WebOS does not show them a password box; it tells them to use their certified device. Students and guests are unaffected. (Rejected: plain-HTTP sign-in with reduced powers, which still exposes the password.)
 
-**One follow-on question the review found, put to Commander on 2026-11-20 and pending:**
+**Decided 2026-11-20 (Commander delegated it to the recommendation): students sign in on their own phones with a teacher-issued sign-in card.** Tap-your-name sign-in (Track F §21) was designed for a shared screen a teacher can see. On personal phones anyone could tap a classmate's name and read their private notes. So:
 
-- **Students on their own phones.** Tap-your-name sign-in (Track F §21) was designed for a shared screen a teacher can see. On personal phones, anyone can tap a classmate's name and read their private notes. **Recommended:** a teacher-issued sign-in card (a QR code or short code) that the student uses once per phone, after which the phone stays signed in; tap-your-name stays on the shared kiosk. Until decided, this is listed as open (§14), and the decision changes only how a passwordless person signs in, not what they may do.
+- **Tap-your-name stays on the shared kiosk only.** The list of names is never sent to any other device (deltd API §6.1).
+- **Off the kiosk, a passwordless person signs in with a sign-in card:** a QR code with the same secret as a short typed code, which a teacher (with `profile.manage` for that class) or an admin prints or shows. The student scans or types it once on a phone. Still no password to remember.
+- **The phone then remembers the person.** Using a card makes a **remembered device**: a long-lived, host-only, `HttpOnly` cookie (`delt_device`) holding a random device credential (at least 128 bits, stored hashed by `identityd`). It is not a session. It lets that browser start a new plain session for that person without the card again.
+- **The teacher stays in control.** The teacher can see each student's remembered devices and remove any one. Issuing a new card replaces the old one, and the old card stops working at once. A lost phone is fixed by removing that device.
+- **Issuing a card, and removing a remembered device, are secure only.** They hand out or take back a way into someone's account. They need no new permission, because teachers already hold `profile.manage` for their class, and their sessions are secure anyway (their passwords are HTTPS only).
+- **What a card cannot do:** a card signs in only a passwordless identity, and only to a plain session. It never unlocks a secure-only permission (contract §4.2), so it cannot change the box.
+- **What it does not stop:** a card used over plain HTTP can be read off the Wi-Fi once, as any plain-HTTP traffic can. A student who shows their card to a classmate has shared their account. Both risks are why the teacher can see and remove devices. The code length and how long an unused card stays valid are set together with the session lengths (§14), and card use is rate-limited like sign-in (deltd API §9).
 
 ## 11. What each check stops, and what it does not
 
@@ -200,6 +206,7 @@ Contract §16 says visitors' own phones reach the box over **plain HTTP**, and o
 | An outside website tries to reach the box through the visitor's phone (DNS rebinding) | Unknown hostnames are refused (rule 16), and the origin check fails anyway. |
 | A student on a shared classroom screen tries the teacher's Install button | Their session does not hold `content.install` (rule 4); switching person signs the teacher out (rule 11). |
 | Someone on the Wi-Fi copies a session cookie sent over plain HTTP | A plain session can never change the box or see class progress, even when replayed over HTTPS (§4.1). |
+| A student taps a classmate's name on their own phone to read their notes | The name list is kiosk-only; off the kiosk a passwordless person signs in with a teacher-issued card (§10). |
 | Someone on the Wi-Fi reads a teacher's password typed over plain HTTP | Those passwords are never accepted over plain HTTP (§10, decided 2026-11-20). |
 | A third-party service on `deltos.lan` (a wiki, a blog) has a bug | The WebOS cookie has no `Domain` and is never sent to it; the secure cookie's `__Host-` prefix stops it being overwritten (§4.1). |
 | A bug in the box API skips its own permission check | `deltos-shelld` asks `identityd` itself (rule 4) and only knows the fixed list (rule 5). |
@@ -249,6 +256,7 @@ Smallest useful piece first:
 - A teacher of class A asking for class B's progress, refused (scope).
 - A student session on the kiosk that cannot run any listed action.
 - A passwordless profile given `content.install` by an admin, which still cannot `remove_pack`.
+- The tap-your-name list requested from any device but the kiosk, refused. A sign-in card used for a passworded person, or to get a secure session, refused. A replaced card, and a removed remembered device, each refused at once.
 - Two people signing in one after the other on the same phone browser: the second never sees the first's pack data; then the same after clearing only the WebOS site's cookies. Run on the current Android and iOS default browsers.
 - A port scan of the box and of loopback that finds nothing from `deltos-shelld`; a connection to its socket from any other user, refused.
 - Every listed action appears in the log with the right person, and no secret appears in the log.
@@ -257,9 +265,8 @@ Smallest useful piece first:
 
 Not answered here, and not to be filled in by whoever implements first. Each is also in contract §13.2.
 
-- **How students sign in on their own phones** (§10). Pending Commander's decision; recommended: a teacher-issued sign-in card.
 - **The WebOS hostname** (Change 4). Needs a name in contract §8 before C1 is built.
-- **How long a session lasts,** idle and absolute, shared screen and personal device (§4.2).
+- **How long a session lasts,** idle and absolute, shared screen and personal device (§4.2), together with how long a remembered device lasts and the sign-in card's code length and validity (§10).
 - **Where the action log lives** under `/var/lib/deltos/` (rule 12). Needs a path in contract §10.
 - **How box-converted and teacher-uploaded packs are trusted** (§8), the same question as the architecture doc's Q2.
 - **How other services on `deltos.lan` sign people in** now that the WebOS cookie is not shared with them (§4.1). Track G's forward-auth (G2) needs its own per-service sign-in that hands over from `identityd`, never a parent-domain cookie. Track G owns the design.
@@ -272,7 +279,7 @@ What the review changed from the draft, and why.
 |---|---|---|---|
 | 1 | A plain-HTTP session cookie, copied off the Wi-Fi, could be replayed over HTTPS: the draft checked only the request's connection, not how the session was made. This defeated the HTTPS decision. | Critical | Two kinds of session, never mixed (§4.1); the check compares both. |
 | 2 | A teacher password typed over plain HTTP gives an eavesdropper full control, whatever the HTTPS rule says. | Critical | Put to Commander; decided 2026-11-20: HTTPS only (§10). |
-| 3 | Passwordless sign-in on personal phones lets classmates read each other's private notes. | High | Put to Commander (§10); open until decided. |
+| 3 | Passwordless sign-in on personal phones lets classmates read each other's private notes. | High | Teacher-issued sign-in cards and remembered devices (§10), decided 2026-11-20. |
 | 4 | `browser_slot` could leak one person's pack data to the next after a partial browser reset, and pack-index reuse required clearing phones the box cannot reach. | High | Random pack partitions and hostname generations (Changes 1 and 6). |
 | 5 | The cookie scope was "the `deltos.lan` zone", which would send the WebOS session to every third-party service there. | High | Host-only cookie, `__Host-` on HTTPS (§4.1); Track G's sign-in listed as open. |
 | 6 | The socket was "readable and writable only by its own user", which would also lock out the box API it must serve. | Medium | Group `deltos-shellc`, mode `0660`, plus the peer check (rules 1, 2). |
