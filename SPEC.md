@@ -198,6 +198,25 @@ Only after all of these does the reader open the SQLite segment.
   and listing such an archive still succeeds; only the affected reads fail.
 * Redirect entries (`redirect_to` non-NULL) own no blob bytes; their `offset`
   and `length` MUST be `0` and are ignored (§5.3).
+* **Decoder memory bound** *(added 2026-11-20, no version change)*. Every
+  `"zstd"` and `"zstd-dict"` frame MUST declare a `Window_Size` (RFC 8878
+  §3.1.1.1.2) of at most **8 MiB** (2^23 bytes), or be a single-segment frame
+  whose content is at most 8 MiB. 8 MiB is the limit RFC 8878 recommends every
+  decoder support and the limit browsers enforce for `Content-Encoding: zstd`;
+  it keeps the decoder's working memory per open read bounded on the 2 GB
+  minimum box. Every level up to 19 already satisfies it; levels 20–22
+  ("ultra") do not on entries over 8 MiB, so a writer using them MUST cap the
+  window log at 23. A reader MAY refuse a frame that exceeds the bound, as a
+  per-read `Decompress` error. Every archive written by `wax-core` to date
+  conforms (it encodes at level 3, window log ≤ 21).
+* **Compression level is writer's choice and is not recorded.** Any level
+  decodes with the same decoder at essentially the same speed. Measured
+  (ADR-0003): `"zstd-dict"` at level 19 is 16% smaller than at level 3 on
+  Wikipedia text, decodes no slower, and encodes ~65× slower, so a writer
+  building a pack off-box SHOULD use level 19; a writer appending on the box
+  itself MAY use a lower level. Mixing levels inside one archive, or across
+  editions, is allowed and does not disturb the delta model, which depends on
+  the dictionary (§5.9), never on the level.
 * Blob spans of non-redirect entries within a segment MUST lie inside that
   segment's blob region (§4.2). They MAY be referenced by more than one path
   only via `redirect_to`; the format does not otherwise deduplicate.
@@ -1198,7 +1217,7 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
     the gap where ZIM has none of these at all; the open-time `volume_id` scan
     was a full-table walk on every open. Still open from that review and **not**
     in v0.12: grouped (cluster) compression for small entries, a default zstd
-    level, title elision when the title equals the HTML `<title>`, and the
+    level (both since settled, see note 29), title elision when the title equals the HTML `<title>`, and the
     multi-volume (A8) design.
 26. **What the old reader does with a tombstone is a deliberate trade.** A
     v0.11 reader lists a deleted path but cannot read it (§5.5.1). A new column
@@ -1215,6 +1234,16 @@ Refinement doc. These are surfaced deliberately for the design-doc feedback loop
     box-side delta land at the wrong offset while its digest still matched;
     and writing a 65th segment, which made the pack unopenable. Both have
     regression tests in `crates/wax-core/tests/v0_12.rs`.
+29. **Compression measured again, 2026-11-20 (ADR-0003).** On the real
+    `wikipedia_en_climate_change_mini` pack: level 19 SHOULD be the build level
+    (§3); the 110 KiB dictionary stays (a larger one wins in-sample but loses on
+    held-out text, which is what a carried-forward dictionary meets); brotli and
+    xz per entry are 2–3× larger and roughly 10× (brotli) to 35× (xz) slower to decode than `zstd-dict`;
+    grouping *small* entries buys nothing over the dictionary, and grouping all
+    buys 6.6% at 8× the read cost and ADR-0001's 16–59× delta cost, so
+    ADR-0001's rejection stands. Entropy-coded media (WebP, PNG, JPEG, WOFF2)
+    stays `"none"`: every codec saved under 0.1%. No new codec value, no
+    version change; the 8 MiB window bound in §3 is the only new rule.
 
 ---
 
