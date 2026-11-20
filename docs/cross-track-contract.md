@@ -119,11 +119,15 @@ What the four built-ins hold on a fresh box. **These are seed values, not a sche
 | `progress.view.self` | ✓ | ✓ | ✓ | |
 | `admin.console` (F1) | ✓ | | | |
 | `fleet.manage` (F6 pairing) · `vault.access` (F13) | ✓ | | | |
+| `backup.manage` (F10: start and restore backups) | ✓ | | | |
+| `system.update` (apply or roll back a system update) | ✓ | | | |
 | Content browsing | ✓ | ✓ | ✓ | ✓ (manifest-permitted packs only) |
 
 - **`admin` holds every permission in the catalogue**, including permissions contributed by apps installed later. That is a property of the bundle, not a list to maintain.
 - **This table replaces the fixed operations matrix Track F previously held.** The operations are unchanged; what changed is that they are now permissions in a catalogue rather than columns against a closed enum, so adding a ninth capability no longer requires a new row in a central table that two other tracks gate on.
 - **The teacher surface stays in-shell.** `profile.manage` and `progress.view` are class-scoped and reached through the shell, never through F1's console — which is why `admin.console` is a separate permission rather than something implied by holding the others.
+- **[New decision, 2026-11-20] `backup.manage` and `system.update` are named.** Both actions existed with no permission naming them, so under §4.3 nobody but `admin` could ever hold them, and an admin could not delegate backups without handing over the whole box. Admin only by default. Their actions are in `docs/privilege-boundary.md` §8.
+- **Changing the box needs a secure connection (decided 2026-11-20).** Every permission that changes the box — `content.install`, `network.configure`, `service.restart`, `fleet.manage`, `backup.manage`, `system.update` — plus `progress.view` across a class and `admin.console` is usable only over HTTPS **with a session made over HTTPS**. Everything else, sign-in and learning included, works over plain HTTP (§16). The mechanism is `docs/privilege-boundary.md` §4.
 - **`none` is not a role.** It remains the sentinel meaning no profile matched. It is never stored and never appears among a profile's roles.
 
 ### 4.3 Default-deny, now general
@@ -137,6 +141,8 @@ This is the same posture the previous permission table implied, made explicit an
 **A passwordless identity can hold any role bundle.** A passwordless student profile simply carries the `student` bundle; nothing about being passwordless constrains what a bundle may contain. §5.1's rules about which archetypes carry a password are unchanged and are about authentication only.
 
 This independence is what makes the model work at the floor. The minimum spec runs passwordless profiles for good reasons — shared devices, young learners, no keyboard — and under the old literal that shape also fixed what those profiles could do.
+
+- **[New decision, 2026-11-20] Re-confirmation needs a password.** Granting stays independent of sign-in shape. But the privilege boundary's irreversible actions (`docs/privilege-boundary.md` §6, §8) require the person to re-enter their password, so an identity without one can hold such a permission and still never run those actions. The admin console says so when it assigns one to a passwordless profile. This is a property of the action, not a restriction on bundles.
 
 ### 4.5 What this replaces, and why
 
@@ -159,6 +165,7 @@ These are unchanged, and they are about sign-in shape alone:
 | Passworded | `admin`, `teacher` | `password_hash` is **never** null, enforced as a table-level CHECK. |
 | Passwordless | `student`, `guest` | `password_hash` is nullable. Chosen for shared devices, young learners and hardware with no comfortable keyboard. |
 
+- **[Decided by Commander, 2026-11-20] A password that unlocks a secure-only permission (§4.2) is accepted only over HTTPS.** A password typed over plain HTTP can be read by anyone on the Wi-Fi and then used from their own device over HTTPS, so the HTTPS rule protects the box only if those passwords never travel in the clear. Over plain HTTP such a person is sent to a device with the box's certificate. Students and guests are unaffected.
 - **Guest emits nothing.** `identityd` rejects any `progress_events` insert whose profile resolves to guest, so "nothing about a Guest session is remembered" holds regardless of which component emits. This is a property of the guest identity, not of a permission.
 - **These archetype names coincide with the four built-in role bundles (§4.2), and that coincidence is not the model.** A box that composes a `librarian` role assigns it to an identity whose sign-in shape is still one of the two above. Adding a role never adds an archetype.
 
@@ -180,7 +187,7 @@ Three components share this: Track C's shell emits, Track H's Kolibri bridge wri
 | **Field** | **Type** | **Normative value** |
 |---|---|---|
 | event_id | TEXT | Source-supplied, opaque. UNIQUE(event_source, event_id); writes are insert-or-ignore, so a repeated sync is idempotent. |
-| profile_id | TEXT | Derived by the receiver from the sending origin — never trusted from a caller-supplied field. |
+| profile_id | TEXT | Taken from a **live signed-in session**: the session of the API request that delivers the event, or, for an `entry_viewed` recorded by the pack server, the live session the serving hostname's `pack_partition` (§8) was issued under. Never from a field in the event, and never from a pack origin alone. |
 | event_source | TEXT | Closed: wax_pack · kolibri. Extending it is a change to this document. |
 | pack_id | TEXT | wax_pack: the archive_uuid. kolibri: kolibri:<channel_id>:<content_node_id>, both lowercase hex. |
 | event_type | TEXT | Closed: pack_opened · pack_closed · entry_viewed · unit_completed · quiz_scored. Unknown values are stored verbatim and ignored by rollups, never rejected. |
@@ -189,6 +196,7 @@ Three components share this: Track C's shell emits, Track H's Kolibri bridge wri
 | payload | TEXT | UTF-8 JSON object, 4 KiB serialized maximum. Oversized rows are rejected at write. |
 
 - **[New decision]** The event_type enum, the millisecond-UTC timestamp, the monotonic seq companion, the 4 KiB payload cap, the kolibri pack_id encoding, and the event_id uniqueness constraint are all new. None existed anywhere. The uniqueness constraint is the consequential one: without it, the Kolibri sync is a poll loop with no idempotency key and duplicates every row it has already written on any re-run.
+- **[Amended decision, 2026-11-20, approved by Commander] Progress is credited through the signed-in session, not the pack address.** This row previously derived `profile_id` from the sending origin. That was the active kiosk profile on a shared screen; once readers use their own phones, any device can open any pack address, so an address proves nothing. A pack never sends progress to the box directly (it holds no sign-in): `pack_opened`/`pack_closed` come from the WebOS, `unit_completed`/`quiz_scored` are relayed by the WebOS from the pack frame, and `entry_viewed` is recorded by the pack server. `pack_id` is filled in by the receiver from the pack hostname, never taken from the event. The three paths are `docs/deltd-api-v1.md` §8.2. Kolibri events keep Track H's bridge and §5.1's adapter mapping.
 - **Guest emits nothing** — owned by §5.1 and not restated here. It is a property of the guest identity, which is why it lives with the archetypes rather than with this schema.
 
 ## 6. Feature Resource Floors
@@ -234,16 +242,22 @@ The sweep's most consequential security finding sits here, and it is a cross-tra
 
 | **Surface** | **Origin** |
 |---|---|
-| Shell UI | http://127.0.0.1:40999 — reserved, outside the pack port range |
-| Pack content, pre-proxy | http://127.0.0.1:PORT, PORT = 41000 + (pack_index × 32) + profile_slot |
-| Pack content, post-proxy | https://pack-<pack_index>-slot-<profile_slot>.deltos-packs.lan |
-| Admin, service surfaces | https://<service>.deltos.lan (admin, git, flows, cloud, wiki, mail, code, blog) |
+| WebOS and box API | `<webos-host>.deltos.lan`, **one origin for both**, used by the kiosk and by every other browser. **The name is open (§13.2).** |
+| Pack content | `pack-<pack_index>-g<pack_generation>-<pack_partition>.deltos-packs.lan` |
+| Admin, service surfaces | `<service>.deltos.lan` (admin, git, flows, cloud, wiki, mail, code, blog) |
 
-- **Variable ranges:** `pack_index` is an integer 0–511, allocated by the on-device catalog at install time. `profile_slot` is an integer 0–31, assigned at profile creation and stable for that profile's life. The resulting port range is 41000–57383, and no other DeltOS service may bind inside it.
-- **[Amended decision] A `pack_index` may be reused, but only after its stored browser data is cleared.** This document previously said an index was *never* reused. That was a security-motivated rule with an unacceptable consequence: 512 installs over a box's whole life exhausted the space permanently, and a long-lived classroom box would eventually refuse to install anything. The rule is therefore bounded rather than absolute — an address returns to the pool only once everything the previous occupant stored against that origin (cookies, `localStorage`, IndexedDB, cache storage, service-worker registrations) has been cleared. Until the clear completes the address stays allocated. Reuse without the clear would hand a new pack the previous pack's origin-scoped state, which is the outcome the original rule existed to prevent; clearing first preserves the guarantee without the exhaustion. Owned here; Track C's catalog performs the clear.
+The scheme is `http` for visitors and `https` where the box's certificate is installed (§16), on every row. A surface is never reached through a loopback port.
+
+- **Variable ranges:** `pack_index` is an integer 0–511, allocated by the on-device catalog at install time. `pack_generation` is an integer from 1 upward, written without leading zeros, kept per `pack_index` by the catalog and raised each time that index is given to a new install. `pack_partition` is 16 lowercase hex characters (64 random bits) that `identityd` issues per (browser, person) the first time that person signs in on that browser; it carries nothing about the person.
+- **[Amended decision, 2026-11-20, approved by Commander] The per-profile slot is retired; people are not capped per box.** `profile_slot` (0–31, assigned at profile creation) capped a box at 32 people in total, so a school with two classes of 25 could not be enrolled. The slot only ever existed to keep two people's in-pack browser storage apart **in the same browser**; people on different devices never collide. It is replaced by `pack_partition`, per browser and per person. A random value rather than a number 0–31 was chosen in review because a numbered slot reused on one browser can hand the next person the previous person's stored data (for example after only the WebOS site's cookies were cleared), while a fresh random partition never collides and needs no clear to be safe.
+- **[New decision, 2026-11-20] The pack server serves only issued hostnames.** A pack hostname is served only while its `pack_generation` is current, its `pack_partition` belongs to a person with a live session on the browser it was issued for, and that person may see that pack. So a device that never signed in reads no pack, `guest_accessible` is enforced rather than merely a launcher filter, and signing out shuts that person's pack hostnames on that browser. Mechanism: `docs/deltd-api-v1.md` §4.4.
+- **[Amended decision, 2026-11-20] Loopback addresses are retired.** The Shell UI row (`http://127.0.0.1:40999`) and the pre-proxy pack row (`http://127.0.0.1:PORT`, `PORT = 41000 + pack_index × 32 + profile_slot`) are removed. The pack server routes by hostname at every profile (Track A §20.3), and the kiosk uses the WebOS address like every other browser, so there is one way in (`docs/privilege-boundary.md` §2). Ports 40999–57383 are released.
+- **[New decision, 2026-11-20] The WebOS session cookie is host-only.** It is set on the WebOS hostname with no `Domain` attribute (and with the `__Host-` prefix over HTTPS), so it is never sent to the service surfaces under `deltos.lan`. No session cookie is scoped to the `deltos.lan` parent. Service surfaces sign people in through their own hand-off from `identityd` (open, §13.2).
+- **[Amended again, 2026-11-20] A reused `pack_index` gets a higher `pack_generation`, so no clear is needed for safety.** The rule below required an index's stored browser data to be cleared before reuse. That can be done on the kiosk but not on a visitor's phone that never returns, so it could not be met once DeltOS is used mainly from visitors' browsers. A new generation gives the new pack a hostname no browser has stored anything against. The catalog still clears the kiosk's storage for a removed pack, as hygiene. The paragraph below is kept as history.
+- **[Superseded 2026-11-20] A `pack_index` may be reused, but only after its stored browser data is cleared.** This document previously said an index was *never* reused. That was a security-motivated rule with an unacceptable consequence: 512 installs over a box's whole life exhausted the space permanently, and a long-lived classroom box would eventually refuse to install anything. The rule is therefore bounded rather than absolute — an address returns to the pool only once everything the previous occupant stored against that origin (cookies, `localStorage`, IndexedDB, cache storage, service-worker registrations) has been cleared. Until the clear completes the address stays allocated. Reuse without the clear would hand a new pack the previous pack's origin-scoped state, which is the outcome the original rule existed to prevent; clearing first preserves the guarantee without the exhaustion. Owned here; Track C's catalog performs the clear.
 - **deltos.lan is normative:** Track E gives the DNS suffix as "e.g. deltos.lan" and Track E §17 then treats it as settled. It is settled: deltos.lan and deltos-packs.lan, both served by the local resolver, both covered by the internal CA.
 - **[New decision]** Two wildcard certificates, not one. *.deltos.lan and *.deltos-packs.lan are issued separately, so the certificate fronting admin surfaces is not also the certificate fronting untrusted pack content. Track C cites a single shared wildcard certificate that Track G never actually defines, and Track G's only stated issuance model — per-hostname on demand — contradicts it. Track G owns closing that gap; this document fixes the shape it must close to.
-- **Profile-slot exhaustion:** A device supports 32 concurrent profiles. Creation beyond that fails with a stated error rather than sharing or recycling a live profile's slot; slots are never shared between live profiles.
+- **~~Profile-slot exhaustion~~ — withdrawn 2026-11-20.** The 32-profile limit and its "free a slot first" refusal (Track F §3) are gone with `profile_slot`. Neither the number of people on a box nor the number of people on one browser is capped by this section.
 
 ## 9. The Box Capability Record
 
@@ -390,7 +404,7 @@ Every value in this document that had no defensible source anywhere — chosen r
 | 5.2 | UNIQUE(event_source, event_id), insert-or-ignore | The Kolibri sync duplicated every row on any re-run. |
 | 6 | Provisional RAM/disk floors for four features | The budget was circular; someone had to state numbers. |
 | 8 | Pack origins move to deltos-packs.lan | Admin session cookie was readable by untrusted pack content. |
-| 8 | Port formula, pack_index 0–511, profile_slot 0–31 | The derivation was named with no formula and no ranges. |
+| 8 | Port formula, pack_index 0–511, profile_slot 0–31 *(port formula and `profile_slot` retired 2026-11-20, below)* | The derivation was named with no formula and no ranges. |
 | 8 | Two wildcard certificates, not one | Track C cited a certificate Track G never defined. |
 | 9 | The capability record and its path | Nothing defined where a box's own description lives. |
 | 10 | Schema version on all state under /var/lib/deltos | Rollback hands old code newly-migrated data. |
@@ -422,6 +436,15 @@ Every value in this document that had no defensible source anywhere — chosen r
 | 5.1 | **Authentication and authorization separated explicitly** | A sign-in shape was doing duty as a permission set, which is what produced the closed literal. |
 | 15 | **Apps declare permissions required and defined, never roles** | A new app introducing an authority had no way to do so without a central edit. |
 | 3, 13.2 | **`community_hub` / `field_ops` floor is resources, not architecture** | The `mini_pc` label bundled 16 GB with x86; only the numbers were ever the requirement. |
+| 4.2 | **`backup.manage` and `system.update` named; changing the box needs HTTPS and an HTTPS session** | The actions had no permission, so only `admin` could ever run them; the HTTPS decision needed a mechanism a replayed cookie cannot pass. |
+| 4.4 | **Re-confirmation needs a password** | A passwordless identity can be granted an irreversible action's permission; it must still never run one unconfirmed. |
+| 5.1 | **Secure-only passwords are accepted only over HTTPS** (Commander, 2026-11-20) | A password read off the Wi-Fi defeats every HTTPS-only rule. |
+| 5.2 | **`profile_id` comes from a live session, never the pack origin** (Commander, 2026-11-20) | On personal phones a pack address proves nothing about who is reading. |
+| 8 | **`profile_slot` retired for a random per-(browser, person) `pack_partition`** (goal approved by Commander, 2026-11-20) | 32 slots capped a box at 32 people; a numbered per-browser slot could leak data after a partial browser reset. |
+| 8 | **`pack_generation` in pack hostnames** | Clearing before index reuse cannot reach visitors' phones. |
+| 8 | **Only issued, live pack hostnames are served** | The pack zone otherwise served any device, so there was an anonymous way in and `guest_accessible` was unenforceable. |
+| 8 | **Loopback shell and pack ports retired; one WebOS origin for the WebOS and the API** | Remote browsers cannot reach loopback; two ways in is how one ends up less guarded. |
+| 8 | **The WebOS session cookie is host-only** | Scoped to `deltos.lan` it would reach every third-party service surface. |
 | 11 | **Legacy tier floors: `pi_zero_2w`/`pi_4` → 2 GB/32 GB, `pi_5` → 4 GB/64 GB** | A legacy pack must never resolve below the floor it was built against; only `pi_5` ever sat above the minimum. Read-time only — no tier becomes buildable again. |
 
 ## 13. The Blocking Decisions — Enumerated, With Their Answers
@@ -433,9 +456,9 @@ Each entry carries the settled direction. **Where an entry still needs its own d
 | # | Decision | Answer | State |
 |---|---|---|---|
 | 1 | **Search-index ownership** | **Track A owns the index bytes**, as an *additive minor version* of the format. A pack declares the tokenizer it was indexed with; a reader **refuses a tokenizer it does not recognise** rather than guessing. | Settled |
-| 2 | **Shell privilege boundary** | A **loopback WebSocket**, a **per-boot token**, a **strict origin check**, and a **closed list** of allowed privileged operations. | **Direction only — needs its own design session before C1 is built.** |
+| 2 | **Shell privilege boundary** | **Designed in `docs/privilege-boundary.md`.** No browser reaches `deltos-shelld`: it listens on a local Unix socket limited by file permissions and peer identity to the box API. Every action carries the person's session; permission and scope are checked by the box API and again by `deltos-shelld` against `identityd`; actions are a closed list with fixed argument shapes, logged on the box. State-changing requests need the WebOS origin, a per-session anti-forgery token and a `SameSite=Strict` host-only cookie; changing the box needs HTTPS and a session made over HTTPS. *(Replaces the 2026-09 direction: loopback WebSocket, per-boot token, strict origin check, closed list — loopback cannot serve visitors' devices.)* | **Designed** (2026-11-20). Its open items are in §13.2. |
 | 3 | **Per-service resource floors** | Settled by the app contract (§15): **each app declares its own measured floor**, so the consolidated budget is the sum of declared floors rather than a number waiting on every track at once. | Settled |
-| 4 | **Service sessions vs profile switching** | The kiosk browser keeps a **separate storage partition per `profile_slot`**, so switching profile switches cookies. Phones are single-user and unaffected. | Settled |
+| 4 | **Service sessions vs profile switching** | The kiosk browser keeps a **separate storage partition per person**, so switching person switches cookies, and switching signs the previous person out first. Pack storage is kept apart on every browser by `pack_partition` (§8). *(Amended 2026-11-20: was per `profile_slot`, which is retired.)* | Settled |
 | 5 | **Passage unit for search & citation** | Chunks are cut **deterministically at build time along heading structure**. A chunk id is **the pack path plus the chunk's position**. Chunks live **in the pack**, so the format owns them. | Settled |
 | 6 | **Cross-source ranking** | **Reciprocal Rank Fusion.** | Settled |
 | 7 | **Rollback trigger** | A boot counts as healthy when **the required services report healthy within a set window**; repeated failures roll back. | Settled in shape. **The window and the failure count are numbers the implementer measures on real hardware** — they are not guessed here. |
@@ -453,6 +476,14 @@ Not answered, and not to be filled in by whoever implements first:
 
 - ~~Whether `community_hub` and `field_ops` require `x86_64`~~ — **answered: no.** The floor is the resources, not the architecture. A 16 GB ARM64 box meeting the RAM and storage numbers **qualifies for both profiles**. The old `mini_pc` label bundled 16 GB with x86 in one name, and only the numbers were ever the requirement. **x86 remains the preferred spec (§2.1), never a gate** — treating it as one would reintroduce exactly the device-shaped gate §2 removes.
 - **The exact icon set** implementing the design language's icon rule. `design-language.md` specifies the visual rule, not the asset source, and nothing in the locked token set depends on the answer. **Owned by `design-language.md`.**
+- **From the privilege-boundary and deltd API review (2026-11-20).** Each is a value or design the two documents need and do not invent:
+  - **The WebOS hostname** (§8). Needed before C1 is built.
+  - **How students sign in on their own phones.** Tap-your-name was designed for a shared screen; on a personal phone anyone can pick a classmate and read their private notes. Put to Commander 2026-11-20; recommended: a teacher-issued sign-in card. Until decided, the tap-your-name list is shown only on the kiosk.
+  - **How long a session lasts**, idle and absolute, on a shared screen and on a personal device.
+  - **Paths** under `/var/lib/deltos/` (§10) for `deltd`'s personal data (notes, lists, history) and for the privilege boundary's action log.
+  - **Whether the shipped `teacher` bundle holds `lists.assign`**, the Classroom app's permission.
+  - **How box-converted and teacher-uploaded packs are trusted**, which is the architecture doc's open Q2. Until decided, such a pack is staged and not installed.
+  - **How service surfaces under `deltos.lan` sign people in** now that no session cookie is scoped to the parent zone (§8). Track G owns the design.
 - **Per-service measured floors for the ten existing Track H services.** The *mechanism* is settled (decision 3) — each service declares its own. The *numbers* still have to be measured, service by service, by Track H.
 
 ## 14. Amendment Rule
@@ -501,4 +532,5 @@ Each of these holds across every track. They are stated here so no track documen
 - **Backups cover everything people create.** F10 backup/restore covers hosted sites, security-lab work and code-studio projects alongside the existing content and progress data. Any new surface where a person creates something durable declares it under §15's durability group, which is how F10 learns about it without per-service knowledge.
 - **One licence check, for everything DeltOS distributes.** Games, depot software and security tools pass through the **same build-time licence validator** that packs already use (§11's licensing rules). There is not a second validator with second rules.
 - **LAN transport: plain HTTP for visitors, HTTPS only where the CA can be installed.** Visitors' own phones reach the box over plain HTTP, with every pack and every hosted site isolated **by hostname** (§8). HTTPS applies only to managed devices, where the box's certificate authority can be installed.
+  - **[Decided by Commander, 2026-11-20] Changing the box, and seeing a class's progress, need HTTPS;** sign-in and learning stay on plain HTTP, except that a password unlocking a secure-only permission is typed only over HTTPS (§4.2, §5.1). Teachers and admins install the box's certificate on their own device once, during setup. The kiosk browser ships with it already trusted.
   - **[New decision] The cost is recorded, not glossed.** Browser features that require a **secure context** are unavailable to plain-HTTP visitors. That excludes service workers and therefore offline caching of the shell, the Web Crypto API's `subtle` interface, geolocation, camera and microphone capture, and the clipboard API, among others. Any feature specified against an unmanaged visitor's phone must work without them — a track discovering it needs one has found a design problem, not a deployment problem, and raises it here.
