@@ -440,28 +440,48 @@ fn a_refresh_appends_only_what_changed_and_rolls_back_exactly() {
 }
 
 #[test]
-fn a_refresh_that_changes_the_manifest_needs_a_new_base_edition() {
+fn a_refresh_records_a_new_manifest_only_with_a_newer_version() {
     let d = tempfile::tempdir().unwrap();
     let src = d.path().join("site");
     site(&src);
     let pack = d.path().join("p.wax");
     convert(src.to_str().unwrap(), &pack, &recipe()).unwrap();
     let before = sha256_file(&pack);
+
+    // A manifest change without a newer version is refused, pack untouched.
     let mut r = recipe();
     r.pack.category = Some("reference".into());
     let e = refresh(&pack, src.to_str().unwrap(), &r).unwrap_err().to_string();
-    assert!(e.contains("new base edition") && e.contains("category"), "{e}");
+    assert!(e.contains("not newer") && e.contains("category"), "{e}");
     assert_eq!(sha256_file(&pack), before, "a refused update leaves the pack untouched");
 
-    // A new version alone is allowed, but the person is told it cannot be
-    // recorded in an append (a SPEC gap, reported rather than worked around).
+    // With a newer version, the appended edition records the new manifest
+    // (SPEC v0.13 §5.6.1), content changes and all.
     write(&src, "index.html", "<html lang=\"en\"><head><title>Garden Science</title></head><body><p>new</p></body></html>");
-    let mut r = recipe();
     r.pack.version = Some("2026.12.1".into());
     let u = refresh(&pack, src.to_str().unwrap(), &r).unwrap().update;
     assert!(u.appended);
-    assert!(u.cautions.iter().any(|c| c.contains("cannot record a new version")), "{:?}", u.cautions);
-    assert_eq!(WaxReader::open(&pack).unwrap().manifest()["version"], "2026.11.1");
+    assert!(u.diff.manifest_changes.contains_key("version"), "{:?}", u.diff.manifest_changes);
+    let m = WaxReader::open(&pack).unwrap().manifest().clone();
+    assert_eq!(m["version"], "2026.12.1");
+    assert_eq!(m["category"], "reference");
+    assert!(manage::verify(&pack, None, false).unwrap().ok);
+
+    // A manifest-only change (no content change) is still an edition.
+    let mut r2 = r.clone();
+    r2.pack.version = Some("2026.12.2".into());
+    r2.pack.attribution = Some("Another School".into());
+    let u = refresh(&pack, src.to_str().unwrap(), &r2).unwrap().update;
+    assert!(u.appended, "{:?}", u.diff);
+    assert_eq!(WaxReader::open(&pack).unwrap().manifest()["version"], "2026.12.2");
+
+    // Rolling back restores the edition before it, manifest included.
+    manage::rollback(&pack).unwrap();
+    assert_eq!(WaxReader::open(&pack).unwrap().manifest()["version"], "2026.12.1");
+    manage::rollback(&pack).unwrap();
+    let m = WaxReader::open(&pack).unwrap().manifest().clone();
+    assert_eq!(m["version"], "2026.11.1");
+    assert_eq!(m["category"], "education");
 }
 
 #[test]

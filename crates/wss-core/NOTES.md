@@ -23,7 +23,7 @@ listed in a report, never dropped quietly.
 | EPUB | Book files kept at their paths; generated contents page as the start page; Contents/Previous/Next bar per chapter; chapters searchable. Metadata (title, creator, rights, language, PNG cover) used. DRM refused; obfuscated fonts carried and reported. |
 | PDF | Original kept byte for byte; a generated text page with one heading per PDF page, so search lands on the right page and phones without a PDF viewer can read it. Scans (no text layer) carried and reported; no OCR. |
 | Website | Same-site crawl from a start URL, under a path prefix, obeying robots.txt and `Crawl-delay`, with a named User-Agent (`wss/…`), page and depth limits, request spacing. Captured links rewritten to pack paths; other sites never contacted; redirects become aliases; query pages get their own files. |
-| Editions | `refresh` re-converts with the pack's identity and carried dictionary, diffs by content hash, appends new/changed entries, tombstones for removed ones, and search rows/passages for changed pages. `rollback` undoes it byte for byte. `gc` compacts into a new base edition. |
+| Editions | `refresh` re-converts with the pack's identity and carried dictionary, diffs by content hash, appends new/changed entries, tombstones for removed ones, and search rows/passages for changed pages, and the new manifest (with a newer version) when it changed. `rollback` undoes it byte for byte. `gc` compacts into a new base edition. |
 | Management | `inspect`, `diff`, `update` (append a candidate built elsewhere), `sign`, `verify`. |
 | Recipe | Every choice that shapes a pack, as TOML (`wss.toml`). `--save-recipe` writes it; `--recipe` rebuilds the same bytes (tested). |
 
@@ -81,11 +81,13 @@ a GUI would receive.
 
 ## Defects and gaps found (reported, not worked around)
 
-1. **An appended update cannot record its edition's version.** The manifest
-   is fixed across appends (SPEC §5.6) and no `segment_meta` key carries an
-   edition. `wss refresh` from a newer ZIM appends the changes and tells the
-   person the version shown on boxes stays the old one. Being fixed in the
-   format PR (#6); `wss` will use it once this branch is rebased on it.
+1. **An appended update records its edition's version: closed.** SPEC v0.13
+   §5.6.1 (PR #6) lets an appended segment replace the manifest. When the
+   re-converted source's manifest differs, `wss refresh` / `wss update` write
+   it into the update, and refuse unless its CalVer version is newer than the
+   pack's (a changed manifest is a newer edition). The new icon and entry
+   point must resolve in the merged pack. `rollback` restores the previous
+   manifest with the previous segment.
 2. **Warning codes for the new importers: proposed in this PR** as a
    contract §11 amendment: `uncaptured_page`, `external_reference`,
    `no_searchable_text`, `kept_unopened`. Every note kind now maps to a closed

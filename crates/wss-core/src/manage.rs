@@ -184,9 +184,11 @@ pub struct UpdateReport {
 /// §7.4). The pack's dictionary is carried forward (SPEC §5.9), so entries are
 /// framed exactly as a fresh build with that dictionary would frame them.
 ///
-/// Refused when the update cannot be an append: a different pack identity, a
-/// manifest change other than `version`, or a different search tokenizer.
-/// Those need a new base edition, which boxes download in full.
+/// When the candidate's manifest differs (a new `version`, most often), the
+/// segment carries the candidate's whole manifest (SPEC v0.13 §5.6.1), whose
+/// `version` must be newer. Refused when the update cannot be an append: a
+/// different pack identity or a different search tokenizer. Those need a new
+/// base edition, which boxes download in full.
 pub fn update(pack: &Path, candidate: &Path, zstd_level: i32, created_at: Option<u64>, sign_key: Option<&Path>) -> Result<UpdateReport> {
     let cur = WaxReader::open(pack).with_context(|| format!("opening {}", pack.display()))?;
     let cand = WaxReader::open(candidate).with_context(|| format!("opening {}", candidate.display()))?;
@@ -200,24 +202,16 @@ pub fn update(pack: &Path, candidate: &Path, zstd_level: i32, created_at: Option
     }
     let d = diff(pack, candidate)?;
     let mut cautions = Vec::new();
-    let blocking: Vec<&String> = d.manifest_changes.keys().filter(|k| k.as_str() != "version").collect();
-    if !blocking.is_empty() {
-        bail!(
-            "the manifest changed ({}). The manifest is fixed across appends (SPEC §5.6), so this \
-             needs a new base edition, which boxes download in full: build it with `wss convert`.",
-            blocking.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
-        );
-    }
-    if let Some((old, new)) = d.manifest_changes.get("version") {
-        cautions.push(format!(
-            "the source's edition changed ({} → {}), but an appended update cannot record a new \
-             version: the manifest is fixed across appends (SPEC §5.6) and no segment key holds an \
-             edition. Boxes keep showing {}. This is reported as a format gap rather than worked around.",
-            old.as_deref().unwrap_or("none"),
-            new.as_deref().unwrap_or("none"),
-            old.as_deref().unwrap_or("none")
-        ));
-    }
+    // An appended edition may carry a whole new manifest (SPEC v0.13
+    // §5.6.1). Like `wax-builder append`, a changed manifest must move its
+    // CalVer `version` forward: an edition that changes what the pack says
+    // about itself is a newer edition.
+    let new_manifest = if d.manifest_changes.is_empty() {
+        None
+    } else {
+        check_version_advances(cur.manifest().get("version"), cand.manifest().get("version"), &d)?;
+        Some(cand.manifest().clone())
+    };
     if cur.search_tokenizer().is_some() && cand.search_tokenizer().is_some() && cur.search_tokenizer() != cand.search_tokenizer() {
         bail!(
             "the candidate's search index uses {:?} but the pack's uses {:?}; an appended index must use \
@@ -234,7 +228,7 @@ pub fn update(pack: &Path, candidate: &Path, zstd_level: i32, created_at: Option
                 .into(),
         );
     }
-    if d.is_empty() {
+    if d.is_empty() && new_manifest.is_none() {
         return Ok(UpdateReport {
             diff: d,
             appended: false,
@@ -287,6 +281,17 @@ pub fn update(pack: &Path, candidate: &Path, zstd_level: i32, created_at: Option
     for path in &d.removed {
         sw.add_tombstone(path)?;
     }
+    if let Some(m) = &new_manifest {
+        // Contract §11: icon and entry_point must name live entries of the
+        // updated pack.
+        for key in ["icon", "entry_point"] {
+            let value = m.get(key).map(String::as_str).unwrap_or_default();
+            if !sw.resolves(value)? {
+                bail!("the new manifest's {key} {value:?} does not name an entry in the updated pack (contract §11)");
+            }
+        }
+        sw.set_manifest(m);
+    }
     sw.finish().with_context(|| format!("appending the update to {}", pack.display()))?;
 
     let sidecar = match sign_key {
@@ -313,6 +318,32 @@ pub fn update(pack: &Path, candidate: &Path, zstd_level: i32, created_at: Option
         signature_sidecar: sidecar,
         cautions,
     })
+}
+
+/// CalVer `YYYY.MM.N` as a comparable triple.
+fn calver(v: &str) -> Option<(u32, u32, u32)> {
+    wax_builder::config::check_calver(v).ok()?;
+    let mut p = v.split('.').map(|x| x.parse::<u32>().ok());
+    Some((p.next()??, p.next()??, p.next()??))
+}
+
+fn check_version_advances(old: Option<&String>, new: Option<&String>, d: &EditionDiff) -> Result<()> {
+    let changed: Vec<&str> = d.manifest_changes.keys().map(String::as_str).collect();
+    match (old.and_then(|v| calver(v)), new.and_then(|v| calver(v))) {
+        (Some(o), Some(n)) if n > o => Ok(()),
+        (Some(_), Some(_)) => bail!(
+            "the manifest changed ({}) but its version {} is not newer than the pack's {}. An update \
+             that changes the manifest is a newer edition, so raise the version (CalVer YYYY.MM.N, \
+             contract §11).",
+            changed.join(", "),
+            new.map(String::as_str).unwrap_or("none"),
+            old.map(String::as_str).unwrap_or("none")
+        ),
+        // The pack's own version predates the CalVer rule; the candidate's
+        // was validated when it was built.
+        (None, Some(_)) => Ok(()),
+        (_, None) => bail!("the candidate's manifest has no valid CalVer version (contract §11)"),
+    }
 }
 
 // ---------------------------------------------------------------------------
