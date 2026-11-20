@@ -67,6 +67,11 @@ enum Commands {
         /// rather than the entries that actually changed.
         #[arg(long)]
         carry_dictionary_from: Option<PathBuf>,
+        /// Leave out the embedded search index (SPEC section 5.7). By default
+        /// every HTML article's title and visible text are indexed, so the
+        /// pack is searchable on any box with no extra step.
+        #[arg(long)]
+        no_search_index: bool,
     },
     /// Read-only: show a ZIM's metadata and what the manifest would derive.
     Probe {
@@ -91,9 +96,11 @@ fn main() -> Result<()> {
             created_at,
             archive_uuid,
             carry_dictionary_from,
+            no_search_index,
         } => cmd_convert(
             input, output, category, min_ram_bytes, min_storage_bytes, arch, gpu, license,
             attribution, sign_key, created_at, archive_uuid, carry_dictionary_from,
+            !no_search_index,
         ),
         Commands::Probe { input } => cmd_probe(input),
     }
@@ -114,6 +121,7 @@ fn cmd_convert(
     created_at: Option<u64>,
     archive_uuid: Option<String>,
     carry_dictionary_from: Option<PathBuf>,
+    search_index: bool,
 ) -> Result<()> {
     let opts = ConvertOptions {
         category,
@@ -129,10 +137,18 @@ fn cmd_convert(
         archive_uuid: archive_uuid.as_deref().map(wax_builder::parse_uuid).transpose()?,
         sign_key: wax_builder::sign::resolve_seckey(sign_key),
         carry_dictionary_from,
+        search_index,
     };
     opts.validate()?;
 
     let r = convert(&input, &output, &opts)?;
+    match &r.search {
+        zim2wax::SearchIndexOutcome::Built { tokenizer, documents } => {
+            println!("search index : {documents} articles, tokenizer {tokenizer}")
+        }
+        zim2wax::SearchIndexOutcome::NotRequested => println!("search index : not built (--no-search-index)"),
+        zim2wax::SearchIndexOutcome::Withheld { reason } => println!("search index : not built: {reason}"),
+    }
     let w = &r.write;
     println!(
         "converted {} → {}",

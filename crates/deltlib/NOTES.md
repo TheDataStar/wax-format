@@ -1,0 +1,50 @@
+# deltlib / deltd — build notes (2026-11-20)
+
+First build of `deltd` against `docs/deltd-api-v1.md` §11 steps 1 and 2.
+
+## What is built
+
+| API doc | State |
+|---|---|
+| §2 hostname split, rule 16 (unknown hosts refused) | Built. One listener, routed by `Host`. |
+| §4.1 every row | Built: 200/206, 301 alias, 410 tombstone, 404, 302 `/`, 500 on hash mismatch or unknown codec, 404 for unissued hostnames before lookup, 405. |
+| §4.2 headers | Built: ETag = entry sha256, `-zst` suffix for the zstd bytes, `Vary`, ranges on plain responses, the pack CSP with `frame-ancestors` = WebOS origin, CORP, nosniff, Referrer-Policy, no cookies ever. |
+| §4.3 compression | Built: zstd passthrough only for plain-zstd entries to clients that send `zstd`, no range; dictionary entries always decoded on the box. |
+| §4.4 issued, live hostnames | Built: current generation, partition live via `identityd`, Guest only on guest-accessible packs. |
+| §6.2 Library | `GET /packs`, `/packs/{uuid}` (with this person's pack hostname), `/packs/{uuid}/pages`. Not yet: `/random` (waits on format ask F6), `/catalog`, `/updates`, the `outdated` filter. |
+| §6.3 Search | `GET /search`, `/search/packs/{uuid}`, `/suggest`. Snippets are off (`snippet: null`), as §11 asks until their speed is measured. |
+| `/status`, `/openapi.json` | Built. |
+| §6.1 sessions, §6.4–§6.8, §8 progress | Not built. `identityd` is the `Identity` trait; `StaticIdentity` is a dev-only fixed table. |
+| HTTPS | Not built. `deltd` listens on plain HTTP; Secure endpoints arrive with TLS. |
+| §9 rate limits | Not built: the numbers are to be measured (API §10 #9). |
+
+Packs are found in `/var/lib/deltos/packs/` (contract §10) and rescanned every few seconds. A pack whose header changed is reopened, so an appended edition (and its search index) is served without a restart. `pack_index`/`pack_generation` live in a small table under `/var/lib/deltos/b4/` until B4 exists.
+
+## Measured (x86_64 dev container, not the target)
+
+On `wikipedia_en_climate_change_mini_2024-06` (8.98 MB ZIM, 3,821 articles):
+
+| | |
+|---|---|
+| Search index added to the pack | 8.21 MB → 9.55 MB (+16%; pack is 1.06× the ZIM). wax-core still writes zstd level 3 (ADR-0003 follow-up). |
+| Conversion time with index | 3.6 s vs 3.1 s without |
+| Rebuild determinism | Byte-identical |
+| Page, plain HTTP | p50 0.53 ms |
+| Search, two words | p50 1.7 ms |
+| Title completion | p50 1.0 ms |
+| 40 concurrent clients | ~2,100 pages/s, p95 26 ms |
+| deltd resident memory | ~12 MB with one pack open |
+
+None of this is the 2 GB ARM64 floor; the API doc requires those numbers before release.
+
+## Findings for the format-gaps work
+
+1. **CJK search cannot work as SPEC §5.7 stands.** With `detail=none`, SQLite's `trigram` tokenizer refuses any term longer than three characters ("phrase queries are not supported"), and a two-character word, which is most Chinese words, can never match. Because every later edition must keep the base's tokenizer, `zim2wax` withholds the index for `zh`/`ja`/`ko` packs rather than lock them into it. `deltd` still queries any `trigram` pack by splitting long words into three-character windows. Needs a format decision (for example `detail=full` for CJK only, or a bigram tokenizer).
+2. **Ranking is weak under `detail=none`.** The index stores neither columns nor term counts, so bm25 favours short pages that merely mention a word. `deltd` puts exact and leading title matches first (up to 5 per pack), which fixed the obvious cases on real Wikipedia ("Kyoto Protocol" now finds *Kyoto Protocol* first). A better fix belongs to the format.
+3. **`unicode61` does not fold `ß`/`ss`, `œ`/`oe` or ligatures** (it removes accents only). Title completion folds them (`nfkc-cf-16`), full-text search does not.
+4. **zstd passthrough almost never applies to real packs.** `zim2wax` stores all text against the shared dictionary, which a browser cannot use, so the box decodes every page (as ADR-0003 already notes for plain HTTP).
+5. **Media byte ranges cannot be checked.** `sha256` covers a whole entry, so a range of a video is served unverified; a whole-entry read is verified as it streams and cut off on mismatch. Per-chunk hashes would be a format addition.
+
+## Not decided here (still open in the contract)
+
+The WebOS hostname (`--webos-host` is required and has no default), session lengths, rate-limit numbers, translated error pages for the pack zone.

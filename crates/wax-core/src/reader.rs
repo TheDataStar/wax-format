@@ -625,6 +625,14 @@ impl WaxReader {
     /// most [`PAGE_ROWS`] rows per segment. An error ends the iteration.
     /// Deleted paths (SPEC v0.12 §5.5.1) are left out.
     pub fn entries(&self) -> Entries<'_> {
+        self.entries_after(None)
+    }
+
+    /// Like [`entries`](Self::entries), but starting strictly after `after`
+    /// in path byte order. Each segment's cursor seeks with one index range
+    /// scan, so a server can page through a large pack (keyset pagination)
+    /// without walking it from the start.
+    pub fn entries_after(&self, after: Option<&str>) -> Entries<'_> {
         Entries {
             cursors: self
                 .segments
@@ -632,7 +640,7 @@ impl WaxReader {
                 .map(|seg| SegCursor {
                     seg,
                     buf: VecDeque::new(),
-                    last: None,
+                    last: after.map(str::to_string),
                     exhausted: false,
                 })
                 .collect(),

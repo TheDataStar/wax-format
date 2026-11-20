@@ -27,11 +27,12 @@ _Last updated: 2026-09-15, Directive 01._
 |---|---|---|
 | `wax-core` | Streaming reader (A1b) + streaming writer (A2e), both memory-bounded. Segment-chain merge, one-hop redirects, checksum verification. | 60 tests |
 | `wax-builder` | `build` / `append` / `inspect` / `verify` / `ls` / `read`; manifest, aliases, compression policy, UUIDv4 identity, minisign hook (A7). | 95 tests |
-| `zim2wax` | Track B v0, text + image. §20 canonical paths, href rewriting, redirect flattening, manifest derivation, §11 licensing + build report. | 61 tests |
+| `zim2wax` | Track B v0, text + image; **builds the embedded search index by default** (titles + visible text, `unicode61`; withheld for CJK, see `crates/deltlib/NOTES.md`). §20 canonical paths, href rewriting, redirect flattening, manifest derivation, §11 licensing + build report. | 61 tests |
+| `deltlib` / `deltd` | **The pack server (A5) and cross-pack search, first build (2026-11-20).** One `deltd` serves every pack by hostname (contract §8): issued, live pack hostnames only; `410` for removed pages; ETag per encoding; ranges; zstd passthrough; dictionary entries decoded on the box. API v1 Library and Search groups: one query across all packs, fused by position (RRF), accent-insensitive, new editions searchable on refresh. `identityd` is a trait with a dev-only fixed table. Notes and findings: `crates/deltlib/NOTES.md`. | 28 tests |
 | `fuzz/` | 3 `cargo-fuzz` targets: `header-parse`, `index-loader`, `segment-merge`. | seed corpora committed |
-| WAX format | **v0.12** (proposed on `track-a/spec-v0.12`: tombstones, search on appended segments, declared title fold, verifiable append deltas). `SPEC.md` is normative and byte-exact; §13 is the version history. | `crates/wax-core/tests/v0_12.rs` |
+| WAX format | **v0.12** (merged 2026-11-15, PR #1: tombstones, search on appended segments, declared title fold, verifiable append deltas). `SPEC.md` is normative and byte-exact; §13 is the version history. | `crates/wax-core/tests/v0_12.rs` |
 
-**Test suite: 216 tests.** Platform results and all measured figures live in
+**Test suite: 294 tests** (2026-11-20, Linux x86_64; 6 skip without minisign and a real ZIM). Platform results and all measured figures live in
 `docs/baseline.md` and the Directive 01 report. Read `docs/baseline.md` before
 quoting any performance number.
 
@@ -111,7 +112,7 @@ The previous palette's blanket AA claim was false: six pairings failed 4.5:1, wo
 
 **Directive 04 — measurement: done.** Framing settled by **ADR-0001** (per-entry + shared dictionary, SPEC v0.10). The remaining knobs were measured 2026-11-20 in **ADR-0003**: build at zstd level 19 (16% smaller text, no decode cost), keep the 110 KiB dictionary, no brotli/xz/grouping, entropy-coded media stays verbatim, TTF/OTF fonts now compressed, and a new SPEC §3 rule bounds every frame's window to 8 MiB. Still open: the same numbers on ARM, SD vs SSD reads, and larger archives; and letting `wax-core` take a level (it hard-codes 3).
 
-**Then the P1 build line:** the embedded search index (contract §13 decision 1, specified in track-a §20.1) and **A5 `wax-serve`** with the Kiosk hostname-routing model (track-a §20.3).
+**P1 build line, started 2026-11-20:** the embedded search index is built by `zim2wax`, and `deltd` (A5, which replaces per-pack `wax-serve`) serves packs and search with hostname routing at every profile (track-a §20.3). Next for `deltd`: the real `identityd` link, HTTPS, `entry_viewed`, personal data, then admin through `deltos-shelld`. The box's DNS/DHCP plan is `docs/box-network-plan.md`.
 
 ## Session-start ritual
 

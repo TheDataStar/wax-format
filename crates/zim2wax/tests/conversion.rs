@@ -759,4 +759,58 @@ fn real_wikipedia_zim() {
     for p in paths.iter().step_by(97) {
         r.read(p).unwrap();
     }
+    // searchable on arrival: the index covers the articles, titled
+    assert!(
+        matches!(&rep.search, zim2wax::SearchIndexOutcome::Built { tokenizer, documents } if tokenizer == "unicode61" && *documents > 1000),
+        "{:?}",
+        rep.search
+    );
+    let hits = r.search("\"the\"", 5).unwrap();
+    assert!(!hits.is_empty() && hits.iter().all(|h| h.title.is_some()), "{hits:?}");
+}
+
+
+// ===========================================================================
+// the embedded search index (SPEC §5.7)
+// ===========================================================================
+
+#[test]
+fn articles_are_indexed_by_title_and_visible_text() {
+    let fx = fixture(
+        &ZimBuilder::new()
+            .standard_meta()
+            .html(C, "index", "Home", "<html><body>Start here</body></html>")
+            .html(C, "Photosynthesis", "Photosynthesis", "<html><head><style>.chlorophyll{}</style></head><body><p>Plants turn light into sugar.</p><script>var hidden='zebra'</script></body></html>")
+            .html(C, "Caf", "", "<html><body>Caf&eacute; culture</body></html>")
+            .content(C, "_res_/style.css", "null", "text/css", "body{color:red} .sugar{}")
+            .main_page(C, "index"),
+    );
+    let rep = convert(&fx.zim, &fx.wax, &opts()).unwrap();
+    assert_eq!(rep.search, zim2wax::SearchIndexOutcome::Built { tokenizer: "unicode61".into(), documents: 3 });
+    let r = WaxReader::open(&fx.wax).unwrap();
+    assert_eq!(r.search_tokenizer(), Some("unicode61"));
+    let paths = |q: &str| r.search(q, 10).unwrap().into_iter().map(|h| h.path).collect::<Vec<_>>();
+    assert_eq!(paths("\"sugar\""), ["Photosynthesis.html"], "CSS is not article text");
+    assert!(paths("\"zebra\"").is_empty(), "script contents are not indexed");
+    assert!(paths("\"chlorophyll\"").is_empty(), "style contents are not indexed");
+    assert_eq!(paths("\"cafe\""), ["Caf.html"], "entities decoded, accents folded");
+    // an empty ZIM title means the url is the title
+    assert_eq!(r.search("\"culture\"", 1).unwrap()[0].title.as_deref(), Some("Caf"));
+    assert_eq!(r.suggest("Photo", 5).unwrap()[0].path, "Photosynthesis.html");
+}
+
+#[test]
+fn no_search_index_when_asked_or_for_cjk() {
+    let base = || ZimBuilder::new().standard_meta().html(C, "index", "Home", "<html><body>x</body></html>").main_page(C, "index");
+    let fx = fixture(&base());
+    let mut o = opts();
+    o.search_index = false;
+    let rep = convert(&fx.zim, &fx.wax, &o).unwrap();
+    assert_eq!(rep.search, zim2wax::SearchIndexOutcome::NotRequested);
+    assert!(!WaxReader::open(&fx.wax).unwrap().has_search_index());
+
+    let fx = fixture(&base().meta("Language", "zho"));
+    let rep = convert(&fx.zim, &fx.wax, &opts()).unwrap();
+    assert!(matches!(rep.search, zim2wax::SearchIndexOutcome::Withheld { .. }), "{:?}", rep.search);
+    assert!(!WaxReader::open(&fx.wax).unwrap().has_search_index());
 }
