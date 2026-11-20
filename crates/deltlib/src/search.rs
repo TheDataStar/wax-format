@@ -13,6 +13,9 @@
 //! word never becomes a phrase: SPEC §5.7's `detail=none` refuses phrase
 //! queries outright.
 //!
+//! **CJK and `ß`** *(SPEC v0.13)*: packs declaring `wax-bigram-16` get their
+//! query from `wax_core::tokenize`, the same code that rewrote their text.
+//!
 //! **Accent-insensitive.** `unicode61` removes diacritics on both sides, so
 //! `cafe` finds `café`. Title completion follows each pack's declared fold
 //! (SPEC §5.7.1), which keeps accents; [`suggest_pack`] adds the
@@ -73,6 +76,11 @@ pub fn words(q: &str) -> Vec<String> {
 /// The FTS5 expression for `q` under `tokenizer`, or why there is none.
 /// `prefix_last` makes the last word a prefix (`"caf"*`), for completion.
 pub fn match_expr(q: &str, tokenizer: &str, prefix_last: bool) -> Result<String, Skip> {
+    // SPEC v0.13 §5.7.2: the query goes through the same rewriting as the
+    // pack's text, which wax-core owns, so box and builder cannot drift.
+    if tokenizer == wax_core::tokenize::WAX_BIGRAM {
+        return wax_core::tokenize::match_expr(q, prefix_last).ok_or(Skip::QueryTooShort);
+    }
     let ws = words(q);
     if ws.is_empty() {
         return Err(Skip::QueryTooShort);
@@ -217,7 +225,7 @@ pub fn suggest_pack(r: &WaxReader, pack: &str, q: &str, limit: usize) -> Result<
         Err(WaxError::UnknownTitleFold { .. }) => {}
         Err(e) => return Err(skip_for(&e)),
     }
-    if out.len() >= limit || tok != "unicode61" {
+    if out.len() >= limit || !(tok == "unicode61" || tok == wax_core::tokenize::WAX_BIGRAM) {
         return Ok(out);
     }
     let want = base_fold(q.trim_start());
@@ -261,6 +269,10 @@ mod tests {
         assert_eq!(match_expr("caf", "unicode61", true).unwrap(), "\"caf\"*");
         assert_eq!(match_expr("北京大学", "trigram", false).unwrap(), "\"北京大\" \"京大学\"");
         assert_eq!(match_expr("北京", "trigram", false), Err(Skip::QueryTooShort));
+        // v0.13: wax-bigram-16 answers what trigram could not
+        assert_eq!(match_expr("北京", "wax-bigram-16", false).unwrap(), "\"北京\"");
+        assert_eq!(match_expr("北京大学", "wax-bigram-16", false).unwrap(), "\"北京\" \"京大\" \"大学\"");
+        assert_eq!(match_expr("Straße", "wax-bigram-16", true).unwrap(), "\"strasse\"*");
         assert_eq!(match_expr("x", "martian", false), Err(Skip::UnknownTokenizer));
         assert_eq!(match_expr("!!", "unicode61", false), Err(Skip::QueryTooShort));
     }

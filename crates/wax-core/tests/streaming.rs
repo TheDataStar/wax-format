@@ -234,8 +234,11 @@ fn streaming_append_follows_the_commit_protocol() {
     a.finish().unwrap();
     let after = f.bytes();
 
-    // §7: nothing already written changes except the 128-byte header
-    assert_eq!(&before[128..], &after[128..before.len()], "prior bytes untouched");
+    // §7: nothing before the old logical end changes except the 128-byte
+    // header; the old header mirror past it (v0.13 §2.4) is overwritten.
+    let end = before.len() - 128;
+    assert_eq!(&before[128..end], &after[128..end], "prior bytes untouched");
+    assert_eq!(&after[after.len() - 128..], &after[..128], "new mirror written");
     assert_ne!(&before[..128], &after[..128], "header rewritten");
 
     let r = WaxReader::open(&f.path).unwrap();

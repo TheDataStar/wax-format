@@ -50,7 +50,12 @@ pub const DEFAULT_TOKENIZER: &str = "unicode61";
 
 /// Tokenizers this build can reproduce on the query side. A pack declaring
 /// anything else is refused at query time rather than answered wrongly.
-pub const SUPPORTED_TOKENIZERS: [&str; 3] = ["unicode61", "trigram", "porter unicode61"];
+pub const SUPPORTED_TOKENIZERS: [&str; 4] = [
+    "unicode61",
+    "trigram",
+    "porter unicode61",
+    crate::tokenize::WAX_BIGRAM,
+];
 
 /// Shared-dictionary size, SPEC v0.10. 110 KiB is the size Directive 04
 /// measured the codec decision against; it is a knob, not a format value.
@@ -137,6 +142,7 @@ impl WaxWriter {
             search_tokenizer: None,
             pack_tokenizer: None,
             search_rows: 0,
+            passage_rows: 0,
             prev_state_digest: None,
             prev_header: None,
             tombstones: 0,
@@ -165,11 +171,16 @@ impl WaxWriter {
             .write(true)
             .open(archive.as_ref())?;
         let file_size = file.seek(SeekFrom::End(0))?;
-        let mut hbuf = [0u8; HEADER_LEN];
-        file.seek(SeekFrom::Start(0))?;
-        file.read_exact(&mut hbuf)?;
-        let old = WaxHeader::parse(&hbuf)?;
-        old.validate(file_size)?;
+        // The header the reader chose (SPEC v0.13 §2.4). If slot A was torn
+        // and the mirror stands in, put the mirror back in slot A first, so
+        // `prev_header` below records a real header and rollback works.
+        let hbuf = existing.header_bytes();
+        let old = *existing.header();
+        if existing.header_source() == crate::reader::HeaderSource::Mirror {
+            file.seek(SeekFrom::Start(0))?;
+            file.write_all(&hbuf)?;
+            file.sync_all()?;
+        }
         let next_index = read_segment_index(&mut file, old.index_offset, old.index_length)? + 1;
         // A reader refuses a chain longer than MAX_SEGMENTS (SPEC §5.1), so a
         // writer that appended past it would turn a readable pack into one
@@ -233,6 +244,7 @@ impl WaxWriter {
             search_tokenizer: pack_tokenizer.clone(),
             pack_tokenizer,
             search_rows: 0,
+            passage_rows: 0,
             prev_state_digest: Some(prev_state_digest),
             prev_header: Some(hbuf),
             tombstones: 0,
@@ -352,6 +364,8 @@ pub struct StreamingWriter {
     pack_tokenizer: Option<String>,
     /// Documents indexed so far; doubles as the next FTS rowid.
     search_rows: u64,
+    /// Entries given a `passages` row in this segment (SPEC v0.13 §5.10).
+    passage_rows: u64,
     /// The §8.1 digest of the archive this segment is appended to (SPEC
     /// v0.12 §7.4). `None` for a fresh build.
     prev_state_digest: Option<[u8; 32]>,
@@ -464,14 +478,64 @@ impl StreamingWriter {
             .unwrap_or_else(|| DEFAULT_TOKENIZER.to_string());
         self.index.ensure_search(&tok)?;
         self.search_rows += 1;
+        // `wax-bigram-16` rewrites the text before SQLite sees it (SPEC
+        // v0.13 §5.7.2); `search_docs.title` keeps the title as written.
+        let (fts_title, fts_body) = if tok == crate::tokenize::WAX_BIGRAM {
+            (
+                crate::tokenize::prepare_document(title.unwrap_or("")),
+                crate::tokenize::prepare_document(body),
+            )
+        } else {
+            (title.unwrap_or("").to_string(), body.to_string())
+        };
         self.index
-            .index_text(self.search_rows as i64, path, title, body)?;
+            .index_text(self.search_rows as i64, path, title, &fts_title, &fts_body)?;
+        Ok(())
+    }
+
+    /// Re-add one document from the exact terms an earlier index holds for
+    /// it, bypassing any rewriting (compaction, SPEC v0.13 §7.6). `terms`
+    /// are already tokens of the pack's tokenizer.
+    pub(crate) fn index_terms(&mut self, path: &str, title: Option<&str>, terms: &str) -> Result<()> {
+        let path = &normalize_path(path)?;
+        let tok = self
+            .search_tokenizer
+            .clone()
+            .unwrap_or_else(|| DEFAULT_TOKENIZER.to_string());
+        self.index.ensure_search(&tok)?;
+        self.search_rows += 1;
+        self.index
+            .index_text(self.search_rows as i64, path, title, "", terms)?;
         Ok(())
     }
 
     /// How many documents have been indexed.
     pub fn indexed_count(&self) -> u64 {
         self.search_rows
+    }
+
+    /// Record the passages of `path` (SPEC v0.13 §5.10): `content` is the
+    /// entry's uncompressed bytes, exactly as stored, and is cut with
+    /// `html-headings-1`. `path` must be content this segment adds, which
+    /// `finish` checks. Returns the number of passages.
+    pub fn index_passages(&mut self, path: &str, content: &[u8]) -> Result<usize> {
+        let starts = crate::passage::html_heading_starts(content);
+        self.add_passage_starts(path, &crate::passage::encode_starts(&starts))?;
+        Ok(starts.len())
+    }
+
+    /// Store an already-encoded `passages.starts` value for `path`
+    /// (compaction carries them over unchanged).
+    pub(crate) fn add_passage_starts(&mut self, path: &str, starts: &[u8]) -> Result<()> {
+        let path = normalize_path(path)?;
+        self.index.insert_passages(&path, starts)?;
+        self.passage_rows += 1;
+        Ok(())
+    }
+
+    /// Entries given passages in this segment so far.
+    pub fn passage_count(&self) -> u64 {
+        self.passage_rows
     }
 
     /// Delete `path` from the pack (SPEC v0.12 §5.5.1): a zero-length row
@@ -598,6 +662,40 @@ impl StreamingWriter {
             uncompressed_length: uncompressed,
             sha256,
         })
+    }
+
+    /// Copy an entry's stored bytes as they are, already encoded with
+    /// `entry.compression` (compaction, SPEC v0.13 §7.6). The caller vouches
+    /// for `sha256` and `uncompressed_length`; nothing is re-encoded, which
+    /// is what keeps a compacted pack's frames identical to the original's.
+    pub(crate) fn add_raw_entry(&mut self, entry: &crate::model::Entry, src: &mut dyn Read) -> Result<()> {
+        let path = normalize_path(&entry.path)?;
+        if entry.compression == Compression::ZstdDict.as_str() && self.dictionary.is_none() {
+            return Err(WaxError::DictionaryMissing { path });
+        }
+        let offset = self.cursor;
+        let written = io::copy(&mut src.take(entry.length), &mut self.file)?;
+        if written != entry.length {
+            return Err(WaxError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("entry {path:?} ends past the end of the archive"),
+            )));
+        }
+        self.cursor += written;
+        self.index.insert(&SegRow {
+            path,
+            title: entry.title.clone(),
+            offset: offset as i64,
+            length: entry.length as i64,
+            uncompressed_length: entry.uncompressed_length as i64,
+            mime: entry.mime.clone(),
+            compression: entry.compression.clone(),
+            sha256: entry.sha256.map(|h| h.to_vec()),
+            volume_id: 0,
+            redirect_to: None,
+        })?;
+        self.entries += 1;
+        Ok(())
     }
 
     /// Add a redirect entry. Carries no blob. The declared target may itself be
@@ -785,6 +883,16 @@ impl StreamingWriter {
             self.index.optimize_search()?;
         }
 
+        // Passage table (SPEC v0.13 §5.10): rows only for this segment's own
+        // content entries, starts inside each entry, rule declared.
+        if self.passage_rows > 0 {
+            self.index.check_passage_rows()?;
+            self.index.write_meta(&[(
+                "passage_rule".to_string(),
+                crate::passage::RULE_HTML_HEADINGS.to_string(),
+            )])?;
+        }
+
         if let (Some(d), 0) = (self.dictionary.as_deref(), self.segment_index) {
             self.index.write_dictionary(d)?;
         }
@@ -795,7 +903,7 @@ impl StreamingWriter {
         let index_length = io::copy(&mut db, &mut self.file)?;
         self.cursor += index_length;
 
-        // fsync, then overwrite the header in place (SPEC §7.1 steps 3–5).
+        // fsync the tail (SPEC §7.1 step 3).
         self.file.sync_all()?;
         let header = match self.header {
             HeaderPlan::Fresh {
@@ -805,7 +913,7 @@ impl StreamingWriter {
             } => WaxHeader {
                 version_major: FORMAT_VERSION_MAJOR,
                 version_minor: FORMAT_VERSION_MINOR,
-                flags,
+                flags: flags | crate::header::flag::HAS_HEADER_CHECK,
                 archive_uuid,
                 created_at,
                 index_offset,
@@ -820,7 +928,7 @@ impl StreamingWriter {
                 // (SPEC v0.12 §10): an append by this writer can add
                 // tombstones or a search segment, so it never lowers it.
                 version_minor: old.version_minor.max(FORMAT_VERSION_MINOR),
-                flags: old.flags,
+                flags: old.flags | crate::header::flag::HAS_HEADER_CHECK,
                 archive_uuid: old.archive_uuid,
                 created_at,
                 index_offset,
@@ -830,8 +938,15 @@ impl StreamingWriter {
                 search_index_length: old.search_index_length,
             },
         };
+        // The mirror first (SPEC v0.13 §2.4): a copy of the new header
+        // after the newest segment, synced before slot A is touched, so a
+        // header write torn by power loss can be recovered from it.
+        let raw = header.to_bytes();
+        self.file.write_all(&raw)?;
+        self.file.sync_all()?;
+        // Then slot A, in place (SPEC §7.1 steps 4–5).
         self.file.seek(SeekFrom::Start(0))?;
-        self.file.write_all(&header.to_bytes())?;
+        self.file.write_all(&raw)?;
         self.file.sync_all()?;
 
         Ok(FinishStats {
@@ -887,7 +1002,8 @@ const SCHEMA: &str = "PRAGMA page_size=4096;
         compression TEXT,
         sha256 BLOB,
         volume_id INTEGER DEFAULT 0,
-        redirect_to TEXT DEFAULT NULL
+        redirect_to TEXT DEFAULT NULL,
+        passages BLOB DEFAULT NULL
      ) WITHOUT ROWID;
      CREATE TABLE segment_meta (key TEXT PRIMARY KEY, value TEXT);
      CREATE TABLE signatures (
@@ -922,13 +1038,13 @@ impl IndexBuilder {
         // can reproduce on the query side; anything else is stored as a
         // declaration and the index is built with the default.
         let tok = if SUPPORTED_TOKENIZERS.contains(&tokenizer) {
-            tokenizer
+            crate::tokenize::sqlite_tokenize_arg(tokenizer)
         } else {
-            DEFAULT_TOKENIZER
+            crate::tokenize::sqlite_tokenize_arg(DEFAULT_TOKENIZER)
         };
         conn.execute_batch(&format!(
             "CREATE VIRTUAL TABLE search_index USING fts5(
-                 title, body, content='', detail=none, tokenize='{tok}'
+                 title, body, content='', detail=none, tokenize={tok}
              );
              CREATE TABLE search_docs (
                  id         INTEGER PRIMARY KEY,
@@ -942,11 +1058,18 @@ impl IndexBuilder {
     }
 
     /// Index one document. `id` is the FTS rowid and the `search_docs` key.
-    fn index_text(&self, id: i64, path: &str, title: Option<&str>, body: &str) -> Result<()> {
+    fn index_text(
+        &self,
+        id: i64,
+        path: &str,
+        title: Option<&str>,
+        fts_title: &str,
+        fts_body: &str,
+    ) -> Result<()> {
         let conn = self.conn.as_ref().expect("connection open");
         conn.execute(
             "INSERT INTO search_index(rowid, title, body) VALUES (?1, ?2, ?3)",
-            rusqlite::params![id, title.unwrap_or(""), body],
+            rusqlite::params![id, fts_title, fts_body],
         )?;
         conn.execute(
             "INSERT INTO search_docs(id, path, title, title_fold) VALUES (?1, ?2, ?3, ?4)",
@@ -1113,6 +1236,66 @@ impl IndexBuilder {
     /// segment itself carries. A row for any other path would be dropped by
     /// every reader (it fails the ownership test), so writing one is a bug in
     /// the caller, reported here rather than shipped.
+    /// Stage passage starts for `path`. They may arrive before the entry
+    /// itself, so they wait in a scratch table that `finish` moves into
+    /// `entries.passages` and drops (SPEC v0.13 §5.10).
+    fn insert_passages(&self, path: &str, starts: &[u8]) -> Result<()> {
+        let conn = self.conn();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS passages (
+                 path   TEXT PRIMARY KEY,
+                 starts BLOB NOT NULL
+             ) WITHOUT ROWID;",
+        )?;
+        let n = conn.execute(
+            "INSERT OR IGNORE INTO passages (path, starts) VALUES (?1, ?2)",
+            rusqlite::params![path, starts],
+        )?;
+        if n == 0 {
+            return Err(WaxError::Schema {
+                detail: format!("passages for {path:?} recorded twice in one segment"),
+            });
+        }
+        Ok(())
+    }
+
+    /// Every staged passage row must name a content entry of this segment,
+    /// and every start must lie inside it (SPEC v0.13 §5.10); then the rows
+    /// move into `entries.passages`.
+    fn check_passage_rows(&self) -> Result<()> {
+        let mut st = self.conn().prepare(
+            "SELECT p.path, p.starts, e.uncompressed_length, e.compression, e.redirect_to
+               FROM passages p LEFT JOIN entries e ON e.path = p.path
+              ORDER BY p.path",
+        )?;
+        let mut rows = st.query([])?;
+        while let Some(r) = rows.next()? {
+            let path: String = r.get(0)?;
+            let blob: Vec<u8> = r.get(1)?;
+            let len: Option<i64> = r.get(2)?;
+            let comp: Option<String> = r.get(3)?;
+            let redirect: Option<String> = r.get(4)?;
+            let ok = len.is_some() && redirect.is_none() && comp.as_deref() != Some(crate::model::TOMBSTONE);
+            if !ok {
+                return Err(WaxError::Schema {
+                    detail: format!(
+                        "passages for {path:?}, which is not a content entry of this segment \
+                         (SPEC v0.13 §5.10)"
+                    ),
+                });
+            }
+            crate::passage::decode_starts(&path, &blob, len.unwrap_or(0).max(0) as u64)?;
+        }
+        drop(rows);
+        drop(st);
+        self.conn().execute_batch(
+            "UPDATE entries SET passages = (SELECT starts FROM passages p WHERE p.path = entries.path)
+              WHERE path IN (SELECT path FROM passages);
+             DROP TABLE passages;",
+        )?;
+        Ok(())
+    }
+
     fn check_search_paths(&self) -> Result<()> {
         let stray: Option<String> = self
             .conn()
@@ -1449,8 +1632,17 @@ pub fn rollback_last_update(archive: impl AsRef<Path>) -> Result<RollbackStats> 
     file.sync_all()?;
     file.set_len(prev_end)?;
     file.sync_all()?;
+    // A state written by a v0.13 writer ended with its header mirror (SPEC
+    // v0.13 §2.4); put it back so the result is byte-identical.
+    let mut file_length = prev_end;
+    if crate::header::check_of(&prev_raw) == crate::header::Check::Valid {
+        file.seek(SeekFrom::Start(prev_end))?;
+        file.write_all(&prev_raw)?;
+        file.sync_all()?;
+        file_length += HEADER_LEN as u64;
+    }
     Ok(RollbackStats {
         segments: upto,
-        file_length: prev_end,
+        file_length,
     })
 }

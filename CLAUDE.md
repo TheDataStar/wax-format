@@ -27,12 +27,12 @@ _Last updated: 2026-09-15, Directive 01._
 |---|---|---|
 | `wax-core` | Streaming reader (A1b) + streaming writer (A2e), both memory-bounded. Segment-chain merge, one-hop redirects, checksum verification. | 60 tests |
 | `wax-builder` | `build` / `append` / `inspect` / `verify` / `ls` / `read`; manifest, aliases, compression policy, UUIDv4 identity, minisign hook (A7). | 95 tests |
-| `zim2wax` | Track B v0, text + image; **builds the embedded search index by default** (titles + visible text, `unicode61`; withheld for CJK, see `crates/deltlib/NOTES.md`). §20 canonical paths, href rewriting, redirect flattening, manifest derivation, §11 licensing + build report. | 61 tests |
+| `zim2wax` | Track B v0, text + image; **builds the embedded search index by default** (titles + visible text, `wax-bigram-16` for every language including CJK, SPEC v0.13 §5.7.2) and **cuts every article into passages at its headings** (§5.10). §20 canonical paths, href rewriting, redirect flattening, manifest derivation, §11 licensing + build report. | 61 tests |
 | `deltlib` / `deltd` | **The pack server (A5) and cross-pack search, first build (2026-11-20).** One `deltd` serves every pack by hostname (contract §8): issued, live pack hostnames only; `410` for removed pages; ETag per encoding; ranges; zstd passthrough; dictionary entries decoded on the box. API v1 Library and Search groups: one query across all packs, fused by position (RRF), accent-insensitive, new editions searchable on refresh. `identityd` is a trait with a dev-only fixed table. Notes and findings: `crates/deltlib/NOTES.md`. | 28 tests |
 | `fuzz/` | 3 `cargo-fuzz` targets: `header-parse`, `index-loader`, `segment-merge`. | seed corpora committed |
-| WAX format | **v0.12** (merged 2026-11-15, PR #1: tombstones, search on appended segments, declared title fold, verifiable append deltas). `SPEC.md` is normative and byte-exact; §13 is the version history. | `crates/wax-core/tests/v0_12.rs` |
+| WAX format | **v0.13** (2026-11-20, proposed in its own PR, stacked on PR #4): crash-safe header (check + mirror at end of file), `wax-bigram-16` CJK-capable search, passages, `wax-builder gc`. v0.12 (merged 2026-11-15, PR #1) added tombstones, search on appended segments, declared title fold, verifiable append deltas. `SPEC.md` is normative and byte-exact; §13 is the version history. | `crates/wax-core/tests/v0_12.rs`, `v0_13.rs` |
 
-**Test suite: 294 tests** (2026-11-20, Linux x86_64; 6 skip without minisign and a real ZIM). Platform results and all measured figures live in
+**Test suite: 326 tests** (2026-11-20, Linux x86_64; 5 skip without minisign; `real_wikipedia_zim` fails on the climate-change *mini* ZIM, which has no audio/video — pre-existing, not a regression). Platform results and all measured figures live in
 `docs/baseline.md` and the Directive 01 report. Read `docs/baseline.md` before
 quoting any performance number.
 

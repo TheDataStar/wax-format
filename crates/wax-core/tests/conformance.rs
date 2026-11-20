@@ -138,9 +138,75 @@ fn pos_multi_segment_append_turns_entry_into_redirect() {
 // §11.2  negative corpus — must reject cleanly (Err, never panic)
 // ===========================================================================
 
+/// Drop the v0.13 header mirror (SPEC §2.4) from the end of `bytes`, if it
+/// carries one. The header cases below damage slot A; with the mirror in
+/// place the reader recovers from it (see `header_damage_recovers_from_mirror`),
+/// so the rejection cases are what a reader must do with only one header.
+fn strip_mirror(bytes: &[u8]) -> Vec<u8> {
+    let n = bytes.len();
+    if n >= 256 {
+        let mut t = [0u8; 128];
+        t.copy_from_slice(&bytes[n - 128..]);
+        if wax_core::header::check_of(&t) == wax_core::header::Check::Valid {
+            return bytes[..n - 128].to_vec();
+        }
+    }
+    bytes.to_vec()
+}
+
+/// Recompute slot A's header check (SPEC v0.13 §2.3) after a patch, so a
+/// case reaches the rule it is about instead of failing the check first.
+fn reseal(mut bytes: Vec<u8>) -> Vec<u8> {
+    let mut a = [0u8; 128];
+    a.copy_from_slice(&bytes[..128]);
+    if wax_core::header::check_of(&a) == wax_core::header::Check::Invalid {
+        let c = wax_core::header::header_check(&a);
+        bytes[120..128].copy_from_slice(&c);
+    }
+    bytes
+}
+
 fn expect_open_err(bytes: &[u8]) -> WaxError {
-    let f = write_wax(bytes);
+    let f = write_wax(&reseal(strip_mirror(bytes)));
     WaxReader::open(&f.path).expect_err("archive should have been rejected")
+}
+
+#[test]
+fn neg_header_check_mismatch_without_mirror() {
+    // A slot A that fails its own check, with no mirror to stand in, is
+    // refused (SPEC v0.13 §2.3), even though every field still validates.
+    let good = strip_mirror(&minimal().bytes());
+    let created = good[24];
+    let bytes = patch(good, 24, &[created ^ 1]);
+    let f = write_wax(&bytes);
+    assert!(matches!(
+        WaxReader::open(&f.path).unwrap_err(),
+        WaxError::HeaderCheckMismatch
+    ));
+}
+
+#[test]
+fn header_damage_recovers_from_mirror() {
+    // SPEC v0.13 §2.4: each damage that a single header must reject is
+    // recovered when the file ends with the mirror, and the result reads
+    // exactly like the undamaged archive.
+    let good = minimal().bytes();
+    let damages: Vec<(usize, Vec<u8>)> = vec![
+        (hoff::MAGIC, b"WAX2".to_vec()),
+        (hoff::VERSION_MAJOR, vec![1]),
+        (hoff::INDEX_OFFSET, le64(0).to_vec()),
+        (hoff::INDEX_LENGTH, le64(1 << 40).to_vec()),
+        (hoff::INDEX_LENGTH, le64(100).to_vec()),
+        (hoff::BLOB_SECTION_LENGTH, le64(99999).to_vec()),
+        (0, vec![0u8; 128]),
+    ];
+    for (at, b) in damages {
+        let f = write_wax(&patch(good.clone(), at, &b));
+        let r = WaxReader::open(&f.path).unwrap_or_else(|e| panic!("damage at {at}: {e}"));
+        assert_eq!(r.header_source(), wax_core::HeaderSource::Mirror);
+        assert_eq!(&r.header_bytes()[..], &good[..128]);
+        assert_eq!(r.read("a").unwrap(), Vec::<u8>::new());
+    }
 }
 
 #[test]

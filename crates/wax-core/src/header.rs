@@ -5,6 +5,47 @@
 //! and no way for malformed input to do anything but return an error.
 
 use crate::{Result, WaxError, HEADER_LEN, MIN_SQLITE_LEN, WAX_MAGIC};
+use sha2::{Digest, Sha256};
+
+/// Where the header check lives (SPEC v0.13 §2.3): the last 8 bytes of the
+/// reserved area.
+pub const CHECK_AT: usize = 120;
+
+/// The header check of a 128-byte header: the first 8 bytes of
+/// SHA-256(bytes 0..120) (SPEC v0.13 §2.3).
+pub fn header_check(raw: &[u8; HEADER_LEN]) -> [u8; 8] {
+    let d = Sha256::digest(&raw[..CHECK_AT]);
+    let mut out = [0u8; 8];
+    out.copy_from_slice(&d[..8]);
+    out
+}
+
+/// What the header check says about `raw` (SPEC v0.13 §2.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Check {
+    /// The header does not claim a check (pre-v0.13, or flag clear).
+    Absent,
+    /// It claims one and the bytes match it.
+    Valid,
+    /// It claims one and the bytes do not match: a torn or damaged header.
+    Invalid,
+}
+
+/// Classify `raw`'s header check. A check is claimed only when
+/// `version_minor >= 13` *and* flag bit 4 is set, so no archive written
+/// before v0.13 (which kept bit 4 and the reserved bytes zero, or set them
+/// to arbitrary values a reader had to ignore) can fail it.
+pub fn check_of(raw: &[u8; HEADER_LEN]) -> Check {
+    let flags = u16::from_le_bytes([raw[6], raw[7]]);
+    if raw[5] < 13 || flags & flag::HAS_HEADER_CHECK == 0 {
+        return Check::Absent;
+    }
+    if raw[CHECK_AT..] == header_check(raw) {
+        Check::Valid
+    } else {
+        Check::Invalid
+    }
+}
 
 /// `flags` bit positions (SPEC §2.1).
 pub mod flag {
@@ -12,8 +53,12 @@ pub mod flag {
     pub const HAS_DELTA_BASE: u16 = 1 << 1;
     pub const IS_MULTI_VOLUME: u16 = 1 << 2;
     pub const IS_SIGNED: u16 = 1 << 3;
+    /// *(v0.13)* Bytes 120..128 hold the header check (SPEC §2.3), and the
+    /// file ends with a mirror of this header (§2.4).
+    pub const HAS_HEADER_CHECK: u16 = 1 << 4;
     /// Bits the reader must ignore but the writer must keep zero.
-    pub const RESERVED_MASK: u16 = !(HAS_SEARCH_INDEX | HAS_DELTA_BASE | IS_MULTI_VOLUME | IS_SIGNED);
+    pub const RESERVED_MASK: u16 =
+        !(HAS_SEARCH_INDEX | HAS_DELTA_BASE | IS_MULTI_VOLUME | IS_SIGNED | HAS_HEADER_CHECK);
 }
 
 /// Parsed header. Field order and offsets match SPEC §2 exactly.
@@ -138,7 +183,12 @@ impl WaxHeader {
         out[48..56].copy_from_slice(&self.blob_section_length.to_le_bytes());
         out[56..64].copy_from_slice(&self.search_index_offset.to_le_bytes());
         out[64..72].copy_from_slice(&self.search_index_length.to_le_bytes());
-        // 72..128 stay zero (reserved).
+        // 72..120 stay zero (reserved). 120..128 carry the check when the
+        // header claims one (SPEC v0.13 §2.3), else zero.
+        if self.flags & flag::HAS_HEADER_CHECK != 0 && self.version_minor >= 13 {
+            let c = header_check(&out);
+            out[CHECK_AT..].copy_from_slice(&c);
+        }
         out
     }
 

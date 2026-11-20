@@ -315,6 +315,12 @@ impl PackStream {
         Ok(self.writer.index_text(path, title, body)?)
     }
 
+    /// Record the passages of `path`, cut at its headings (SPEC v0.13
+    /// §5.10). `content` is the entry's bytes exactly as added.
+    pub fn index_passages(&mut self, path: &str, content: &[u8]) -> Result<usize> {
+        Ok(self.writer.index_passages(path, content)?)
+    }
+
     /// How many documents the search index holds so far.
     pub fn indexed_count(&self) -> u64 {
         self.writer.indexed_count()
@@ -566,6 +572,8 @@ fn maybe_sign(archive: &Path, opts: &WriteOptions) -> Result<Option<PathBuf>> {
 /// Result of `wax-builder verify`.
 #[derive(Debug)]
 pub struct VerifyReport {
+    /// Something about the header worth saying that is not a failure.
+    pub header_note: Option<String>,
     pub entries_checked: usize,
     pub redirects: usize,
     pub bad_entries: Vec<(String, String)>,
@@ -600,7 +608,18 @@ pub fn verify_pack(
         }
         match reader.read(&entry.path) {
             Ok(_) => checked += 1,
-            Err(e) => bad.push((entry.path, e.to_string())),
+            Err(e) => {
+                bad.push((entry.path, e.to_string()));
+                continue;
+            }
+        }
+        // SPEC v0.13 §5.10: a passage table that cannot be decoded against
+        // its entry is malformed.
+        if !entry.is_redirect() {
+            match reader.passages(&entry.path) {
+                Ok(_) | Err(wax_core::WaxError::PassagesUnavailable { .. }) => {}
+                Err(e) => bad.push((entry.path, e.to_string())),
+            }
         }
     }
     // SPEC v0.12 §4.2: the stored live count must match what a walk finds,
@@ -641,7 +660,18 @@ pub fn verify_pack(
         }
     };
 
+    // SPEC v0.13 §2.4: a torn slot A is recovered, not malformed, but it is
+    // worth repairing before anything else writes.
+    let header_note = match reader.header_source() {
+        wax_core::HeaderSource::Mirror => Some(
+            "slot A of the header is torn; opened from its mirror. Run `wax-builder gc --tail-only` to repair it."
+                .to_string(),
+        ),
+        wax_core::HeaderSource::SlotA => None,
+    };
+
     Ok(VerifyReport {
+        header_note,
         entries_checked: checked,
         redirects,
         bad_entries: bad,

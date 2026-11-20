@@ -497,6 +497,34 @@ async fn search_is_one_query_across_packs_accent_insensitive() {
 }
 
 #[tokio::test]
+async fn a_chinese_pack_is_searchable_with_wax_bigram_16() {
+    // SPEC v0.13 §5.7.2: CJK packs were built without an index until the
+    // format could answer CJK queries; now they declare wax-bigram-16.
+    let b = boot(|_| {});
+    let out = b.packs.join("chinese.wax");
+    let id = [0x40, 0, 0, 0, 0, 0, 0x40, 0, 0x80, 0, 0, 0, 0, 0, 0, 4];
+    let mut m = manifest("中文", "zh", false);
+    m.insert("name".into(), "中文".into());
+    let mut sw = WaxWriter::new(id).created_at(1_700_000_000).create(&out, &m).unwrap();
+    sw.set_search_tokenizer(wax_core::tokenize::WAX_BIGRAM).unwrap();
+    html(&mut sw, "index.html", "首页", "欢迎。", Compression::Zstd, true);
+    html(&mut sw, "Beijing.html", "北京", "北京大学是中国的大学。北京有山和水。", Compression::Zstd, true);
+    sw.finish().unwrap();
+    b.lib.refresh().unwrap();
+    for q in ["北京大学", "大学", "水"] {
+        let (_, v) = b.api(&format!("/api/v1/search?q={}", urlenc(q)), Some("alice-token")).await;
+        assert_eq!(v["items"][0]["path"], "Beijing.html", "{q}: {v}");
+    }
+    let (_, one) = b.api("/api/v1/packs/40000000-0000-4000-8000-000000000004", Some("alice-token")).await;
+    assert_eq!(one["search"]["tokenizer"], "wax-bigram-16");
+    assert_eq!(one["search"]["available"], true);
+}
+
+fn urlenc(s: &str) -> String {
+    s.bytes().map(|b| format!("%{b:02X}")).collect()
+}
+
+#[tokio::test]
 async fn suggestions_exact_first_then_accent_insensitive() {
     let b = boot(|_| {});
     let (_, v) = b.api("/api/v1/suggest?q=Hy", Some("alice-token")).await;

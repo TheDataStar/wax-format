@@ -761,7 +761,7 @@ fn real_wikipedia_zim() {
     }
     // searchable on arrival: the index covers the articles, titled
     assert!(
-        matches!(&rep.search, zim2wax::SearchIndexOutcome::Built { tokenizer, documents } if tokenizer == "unicode61" && *documents > 1000),
+        matches!(&rep.search, zim2wax::SearchIndexOutcome::Built { tokenizer, documents } if tokenizer == "wax-bigram-16" && *documents > 1000),
         "{:?}",
         rep.search
     );
@@ -786,9 +786,9 @@ fn articles_are_indexed_by_title_and_visible_text() {
             .main_page(C, "index"),
     );
     let rep = convert(&fx.zim, &fx.wax, &opts()).unwrap();
-    assert_eq!(rep.search, zim2wax::SearchIndexOutcome::Built { tokenizer: "unicode61".into(), documents: 3 });
+    assert_eq!(rep.search, zim2wax::SearchIndexOutcome::Built { tokenizer: "wax-bigram-16".into(), documents: 3 });
     let r = WaxReader::open(&fx.wax).unwrap();
-    assert_eq!(r.search_tokenizer(), Some("unicode61"));
+    assert_eq!(r.search_tokenizer(), Some("wax-bigram-16"));
     let paths = |q: &str| r.search(q, 10).unwrap().into_iter().map(|h| h.path).collect::<Vec<_>>();
     assert_eq!(paths("\"sugar\""), ["Photosynthesis.html"], "CSS is not article text");
     assert!(paths("\"zebra\"").is_empty(), "script contents are not indexed");
@@ -800,7 +800,7 @@ fn articles_are_indexed_by_title_and_visible_text() {
 }
 
 #[test]
-fn no_search_index_when_asked_or_for_cjk() {
+fn no_search_index_only_when_asked() {
     let base = || ZimBuilder::new().standard_meta().html(C, "index", "Home", "<html><body>x</body></html>").main_page(C, "index");
     let fx = fixture(&base());
     let mut o = opts();
@@ -808,9 +808,39 @@ fn no_search_index_when_asked_or_for_cjk() {
     let rep = convert(&fx.zim, &fx.wax, &o).unwrap();
     assert_eq!(rep.search, zim2wax::SearchIndexOutcome::NotRequested);
     assert!(!WaxReader::open(&fx.wax).unwrap().has_search_index());
+}
 
-    let fx = fixture(&base().meta("Language", "zho"));
+#[test]
+fn cjk_packs_are_searchable_and_cut_into_passages() {
+    // Until v0.13 a Chinese pack was built without an index (SPEC §5.7's
+    // built-in tokenizers could not answer CJK queries). wax-bigram-16
+    // closes that gap (SPEC v0.13 §5.7.2).
+    let fx = fixture(
+        &ZimBuilder::new()
+            .standard_meta()
+            .meta("Language", "zho")
+            .html(C, "index", "首页", "<html><body>欢迎</body></html>")
+            .html(
+                C,
+                "Beijing",
+                "北京",
+                "<html><body><p>北京是首都。</p><h2 id=\"history\">历史</h2><p>北京大学建于1898年。</p>\
+                 <h2 id=\"geo\">地理</h2><p>北京有很多山和水。</p></body></html>",
+            )
+            .main_page(C, "index"),
+    );
     let rep = convert(&fx.zim, &fx.wax, &opts()).unwrap();
-    assert!(matches!(rep.search, zim2wax::SearchIndexOutcome::Withheld { .. }), "{:?}", rep.search);
-    assert!(!WaxReader::open(&fx.wax).unwrap().has_search_index());
+    assert_eq!(rep.search, zim2wax::SearchIndexOutcome::Built { tokenizer: "wax-bigram-16".into(), documents: 2 });
+    assert_eq!(rep.stats.passage_entries, 2);
+    let r = WaxReader::open(&fx.wax).unwrap();
+    let q = |w: &str| {
+        let e = wax_core::tokenize::match_expr(w, false).unwrap();
+        r.search(&e, 5).unwrap().into_iter().map(|h| h.path).collect::<Vec<_>>()
+    };
+    assert_eq!(q("北京大学"), ["Beijing.html"]);
+    assert_eq!(q("大学"), ["Beijing.html"]);
+    assert_eq!(q("水"), ["Beijing.html"]);
+    let hits = r.search_passages(&wax_core::tokenize::match_expr("大学", false).unwrap(), 5).unwrap();
+    let p = hits[0].passage.as_ref().unwrap();
+    assert_eq!((p.ordinal, p.heading.as_deref(), p.anchor.as_deref()), (1, Some("历史"), Some("history")));
 }

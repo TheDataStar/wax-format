@@ -1,6 +1,6 @@
 //! `wax-core` — reader/writer for the WAX archive format.
 //!
-//! The on-disk contract is [`SPEC.md`](../../../SPEC.md) (WAX format **v0.9**).
+//! The on-disk contract is [`SPEC.md`](../../../SPEC.md) (WAX format **v0.13**).
 //! This crate implements:
 //!
 //! * [`header`] — the fixed 128-byte header (parse / validate / serialize).
@@ -20,18 +20,23 @@
 //! Nothing here ever panics on malformed archive input; every failure path is a
 //! [`WaxError`].
 
+pub mod compact;
 pub mod fold;
 pub mod fuzz;
 pub mod header;
 pub mod model;
+pub mod passage;
 pub mod reader;
 pub mod segment;
+pub mod text;
+pub mod tokenize;
 pub mod vfs;
 pub mod writer;
 
 pub use header::WaxHeader;
-pub use model::{Compression, Entry, EntryContent, EntryInput, Resolved, SearchHit, Suggestion};
-pub use reader::{Entries, ReadOptions, WaxReader};
+pub use model::{Compression, Entry, EntryContent, EntryInput, PassageHit, Resolved, SearchHit, Suggestion};
+pub use passage::Passage;
+pub use reader::{Entries, HeaderSource, ReadOptions, WaxReader};
 pub use writer::{rollback_last_update, EntryMeta, EntryStats, FinishStats, RollbackStats, StreamingWriter, WaxWriter};
 
 /// Magic bytes at offset 0: ASCII `"WAX1"`.
@@ -43,7 +48,7 @@ pub const HEADER_LEN: usize = 128;
 /// Format version implemented by this crate (SPEC §10).
 pub const FORMAT_VERSION_MAJOR: u8 = 0;
 /// Format minor version implemented by this crate.
-pub const FORMAT_VERSION_MINOR: u8 = 12;
+pub const FORMAT_VERSION_MINOR: u8 = 13;
 
 /// Smallest possible SQLite database (one 512-byte page). Used as the lower
 /// bound for `index_length` and `prev_segment_length` (SPEC §2.2, §5.1).
@@ -67,6 +72,10 @@ pub enum WaxError {
     IndexTooSmall { found: u64 },
     #[error("header index_offset {found} is inside the header region (< 128)")]
     IndexOffsetInHeader { found: u64 },
+    /// *(v0.13)* The header claims a check (SPEC §2.3) and does not match
+    /// it, and no valid mirror (§2.4) can stand in: a torn or damaged header.
+    #[error("header check does not match the header bytes (torn or damaged header, and no valid mirror at the end of the file)")]
+    HeaderCheckMismatch,
     #[error("index segment [{offset}, {offset}+{length}) lies outside the file ({file_size} bytes)")]
     IndexOutOfBounds {
         offset: u64,
@@ -130,6 +139,18 @@ pub enum WaxError {
     TokenizerMismatch { first: String, other: String },
     #[error("archive folds titles with {fold:?}, which this build cannot reproduce; refusing title completion rather than miss titles that are present")]
     UnknownTitleFold { fold: String },
+
+    // --- Passages (SPEC v0.13 §5.10) ---------------------------------
+    #[error("this archive carries no passage table for {path:?}")]
+    PassagesUnavailable { path: String },
+    #[error("passage table row for {path:?} is malformed: {detail}")]
+    BadPassageTable { path: String, detail: String },
+    #[error("archive declares passage rule {rule:?}, which this build does not know")]
+    UnknownPassageRule { rule: String },
+
+    // --- Compaction (SPEC v0.13 §7.6) ---------------------------------
+    #[error("compaction refused: {detail}")]
+    Compaction { detail: String },
 
     // --- Shared dictionary (v0.10) -------------------------------------
     #[error("shared dictionary: {detail}")]
