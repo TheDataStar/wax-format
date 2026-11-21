@@ -336,3 +336,45 @@ async fn the_library_folder_can_be_moved_to_a_drive_of_packs() {
     assert!(d.set_library_dir(&src.path().join("missing")).is_err());
     assert_eq!(d.settings().unwrap().library_dir.as_deref(), Some(src.path().to_string_lossy().as_ref()));
 }
+
+/// EPUB chapters are XHTML, and the web view revalidates a page it has
+/// seen with `If-None-Match` (answered `304`). Both are still the reader
+/// moving to that page: history, the "you are here" line, bookmarks and notes
+/// must follow (found with real EPUBs, 2026-11-21).
+#[tokio::test]
+async fn xhtml_chapters_and_revisited_pages_are_navigations() {
+    let (_data, src, d) = desktop();
+    let out = src.path().join("book.wax");
+    let mut sw = WaxWriter::new(SCIENCE).created_at(1_700_000_000).create(&out, &manifest("Book", Some("2026.11.1"))).unwrap();
+    page(&mut sw, "index.html", "Contents", &[("Chapters", "One chapter.")]);
+    let xhtml = "<?xml version=\"1.0\"?><html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>Loomings</title></head><body><p>Call me Ishmael.</p></body></html>";
+    sw.add_entry(
+        EntryMeta::new("OPS/chapter_001.xhtml").mime("application/xhtml+xml").title("Chapter 1. Loomings.").compression(Compression::Zstd),
+        &mut xhtml.as_bytes(),
+    )
+    .unwrap();
+    sw.add_entry(EntryMeta::new("OPS/style.css").mime("text/css").compression(Compression::Zstd), &mut "p{}".as_bytes()).unwrap();
+    sw.finish().unwrap();
+    d.import(&out, ImportMode::Copy).unwrap();
+
+    // an XHTML chapter is a page
+    let ch = get(&d, SCIENCE_ID, "/OPS/chapter_001.xhtml").await;
+    assert_eq!(ch.status, 200);
+    let nav = ch.navigated.expect("an XHTML chapter is a navigation");
+    assert_eq!((nav.path.as_str(), nav.title.as_str()), ("OPS/chapter_001.xhtml", "Chapter 1. Loomings."));
+
+    // a stylesheet is not
+    assert!(get(&d, SCIENCE_ID, "/OPS/style.css").await.navigated.is_none());
+
+    // going back to the contents page, answered from the web view's cache
+    let first = get(&d, SCIENCE_ID, "/index.html").await;
+    let etag = header(&first, "etag").unwrap().to_string();
+    let _ = get(&d, SCIENCE_ID, "/OPS/chapter_001.xhtml").await;
+    let mut h = HeaderMap::new();
+    h.insert("if-none-match", etag.parse().unwrap());
+    let again = d.serve_content(&host_of(&d, SCIENCE_ID), &Method::GET, "/index.html", &h).await;
+    assert_eq!(again.status, 304);
+    let nav = again.navigated.expect("a revalidated page is still a navigation");
+    assert_eq!(nav.title, "Contents");
+    assert_eq!(d.store().history(1).unwrap()[0].title, "Contents");
+}

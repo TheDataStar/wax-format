@@ -104,25 +104,34 @@ pub async fn serve(
     let resp = packzone::serve(Arc::clone(&lib), ident, &cfg, ph, method, path, headers).await;
     let mut served = into_served(resp).await;
 
-    let is_html = served
-        .headers
-        .iter()
-        .any(|(k, v)| k == "content-type" && v.starts_with(b"text/html"));
+    // A page the frame now shows: answered whole (200) or confirmed unchanged
+    // from the web view's cache (304, which carries no content type), and a
+    // web page by the entry's own type. EPUB chapters are XHTML
+    // (`application/xhtml+xml`), so `text/html` alone missed every chapter.
     let dest_ok = headers
         .get("sec-fetch-dest")
         .and_then(|v| v.to_str().ok())
         .is_none_or(|d| d == "iframe" || d == "document");
-    if served.status == 200 && *method == Method::GET && is_html && dest_ok {
+    if matches!(served.status, 200 | 304) && *method == Method::GET && dest_ok {
         if let Some(p) = pack {
             let entry_path = percent_decode(path.trim_start_matches('/'));
-            let title = p
-                .readers
-                .with(|r| r.entry(&entry_path).ok().and_then(|e| e.title))
-                .unwrap_or_else(|| entry_path.clone());
-            served.navigated = Some(Navigated { pack: p.archive_uuid.clone(), path: entry_path, title });
+            let entry = p.readers.with(|r| r.entry(&entry_path).ok());
+            let mime = entry.as_ref().and_then(|e| e.mime.clone()).or_else(|| {
+                served.headers.iter().find(|(k, _)| k == "content-type").map(|(_, v)| String::from_utf8_lossy(v).into_owned())
+            });
+            if mime.as_deref().is_some_and(is_page_type) {
+                let title = entry.and_then(|e| e.title).unwrap_or_else(|| entry_path.clone());
+                served.navigated = Some(Navigated { pack: p.archive_uuid.clone(), path: entry_path, title });
+            }
         }
     }
     served
+}
+
+/// The types a reader shows as a page of its own.
+fn is_page_type(mime: &str) -> bool {
+    let base = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    base == "text/html" || base == "application/xhtml+xml"
 }
 
 fn percent_decode(s: &str) -> String {
