@@ -1,0 +1,15 @@
+# Step 2: give the hotspot interface the box's address.
+[Unit]
+Description=DeltOS hotspot address
+ConditionPathExists=/run/deltos/network/hotspot.env
+Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-radio-and-boot.md
+Requires=deltos-net-render.service
+After=deltos-net-render.service
+Before=deltos-hostapd.service deltos-dnsmasq.service network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/run/deltos/network/hotspot.env
+ExecStart=/usr/lib/deltos/libexec/deltos-hotspot-address
+TimeoutStartSec=90s

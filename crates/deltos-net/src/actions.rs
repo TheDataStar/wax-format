@@ -22,15 +22,16 @@ use std::net::Ipv4Addr;
 use sha2::{Digest, Sha256};
 
 use crate::leases::{self, Lease};
+use crate::radio::{Radio, Secret};
 use crate::registry::{check_label, check_mac, check_service_name, ApprovedName, NetError, Registry, Reservation, Target};
 use crate::render::{self, Layout, Reload};
 
 /// The permission every network action needs (contract §4).
 pub const PERMISSION: &str = "network.configure";
 
-/// The closed list of network actions this crate performs. `join_network`
-/// and `configure_ap` (privilege boundary §8) change the radio, which is
-/// Track E's E3 and not built; they write [`crate::Settings`] when they are.
+/// The closed list of network actions this crate performs. `configure_ap`
+/// (privilege boundary §8) is E3's hotspot radio. `join_network` (joining
+/// another Wi-Fi network as a client) is not built yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// A requested name is approved (Track E §23.3). `requested_by` is the
@@ -41,6 +42,9 @@ pub enum Action {
     RemoveAddressReservation { mac: String },
     /// Hotspot devices reach the internet through the box, or stop.
     SetUplinkSharing { on: bool },
+    /// Change the box's own hotspot: its name, password, country and channel
+    /// (privilege boundary §8, Track E §6). The password never prints.
+    ConfigureAp { ssid: String, passphrase: Secret, country: String, channel: u8 },
 }
 
 impl Action {
@@ -51,13 +55,15 @@ impl Action {
             Action::SetAddressReservation { .. } => "set_address_reservation",
             Action::RemoveAddressReservation { .. } => "remove_address_reservation",
             Action::SetUplinkSharing { .. } => "set_uplink_sharing",
+            Action::ConfigureAp { .. } => "configure_ap",
         }
     }
 
     /// Asks for the password again (plan §7): turning sharing on changes
-    /// what leaves the box.
+    /// what leaves the box; changing the hotspot can cut every phone off it
+    /// (privilege boundary §8).
     pub fn needs_reconfirm(&self) -> bool {
-        matches!(self, Action::SetUplinkSharing { .. })
+        matches!(self, Action::SetUplinkSharing { .. } | Action::ConfigureAp { .. })
     }
 
     /// The canonical argument string a confirmation ticket is bound to.
@@ -74,6 +80,12 @@ impl Action {
             Action::SetAddressReservation { mac, address, label } => format!("mac={mac}\naddress={address}\nlabel={label}"),
             Action::RemoveAddressReservation { mac } => format!("mac={mac}"),
             Action::SetUplinkSharing { on } => format!("on={on}"),
+            // the password is bound by its digest, so the ticket binds the
+            // exact password without the argument string ever holding it
+            Action::ConfigureAp { ssid, passphrase, country, channel } => {
+                let pd: String = Sha256::digest(passphrase.expose().as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+                format!("ssid={ssid}\npassphrase_sha256={pd}\ncountry={country}\nchannel={channel}")
+            }
         }
     }
 
@@ -108,6 +120,11 @@ impl Action {
             }
             Action::RemoveAddressReservation { mac } => Action::RemoveAddressReservation { mac: check_mac(&mac)? },
             a @ Action::SetUplinkSharing { .. } => a,
+            Action::ConfigureAp { ssid, passphrase, country, channel } => {
+                let r = Radio { ssid, passphrase, country: country.trim().to_ascii_uppercase(), channel };
+                r.validate()?;
+                Action::ConfigureAp { ssid: r.ssid, passphrase: r.passphrase, country: r.country, channel: r.channel }
+            }
         })
     }
 }
@@ -196,6 +213,12 @@ pub fn apply(reg: &mut Registry, a: Authorized, layout: &Layout) -> Result<Reloa
         Action::SetAddressReservation { mac, address, label } => reg.set_reservation(&Reservation { mac, address, label })?,
         Action::RemoveAddressReservation { mac } => reg.remove_reservation(&mac)?,
         Action::SetUplinkSharing { on } => reg.set_uplink_sharing(on)?,
+        Action::ConfigureAp { ssid, passphrase, country, channel } => {
+            if !matches!(reg.settings()?.mode, crate::Mode::Hotspot { .. }) {
+                return Err(NetError::Invalid("the box is joined to another network and runs no hotspot".into()));
+            }
+            reg.set_radio(&Radio { ssid, passphrase, country, channel })?
+        }
     }
     render::write(reg, layout)
 }

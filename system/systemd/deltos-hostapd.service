@@ -1,0 +1,41 @@
+# Step 4: the hotspot's radio. Runs only on a box that has a hotspot and
+# radio settings (hostapd.conf exists only then).
+[Unit]
+Description=DeltOS hotspot radio (hostapd)
+Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-radio-and-boot.md
+ConditionPathExists=/run/deltos/network/hostapd.conf
+Requires=deltos-net-render.service
+After=deltos-net-render.service deltos-hotspot-address.service deltos-uplink-firewall.service
+StartLimitIntervalSec=10min
+StartLimitBurst=10
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/hostapd /run/deltos/network/hostapd.conf
+Restart=on-failure
+RestartSec=2s
+RestartSteps=5
+RestartMaxDelaySec=60s
+# root, but holding only the two network powers a radio needs
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+PrivateTmp=yes
+DevicePolicy=closed
+DeviceAllow=/dev/rfkill rw
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/run/deltos/network
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+

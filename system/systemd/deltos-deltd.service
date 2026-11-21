@@ -1,0 +1,59 @@
+# Step 6: the box API and pack server (deltd), as its own unprivileged user
+# (privilege boundary §3). It starts on every box, hotspot or not, and needs
+# two values set at provisioning in a drop-in, for example
+# /etc/systemd/system/deltos-deltd.service.d/provisioning.conf:
+#
+#   [Service]
+#   Environment=DELTOS_WEBOS_HOST=<name>.deltos.lan
+#   Environment=DELTD_IDENTITY_ARGS=--dev-sessions=/path/to/table.json
+#
+# Neither has a default: the WebOS hostname is still open (contract §13.2),
+# and deltos-identityd is not built, so the only identity source today is
+# deltd's development-only table. Until both are set, deltd is skipped with
+# a message saying so, rather than started on a guessed value.
+[Unit]
+Description=DeltOS box API and pack server (deltd)
+Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-radio-and-boot.md
+Wants=deltos-net-render.service
+After=deltos-net-render.service deltos-dnsmasq.service
+StartLimitIntervalSec=10min
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=deltos-deltd
+Group=deltos-deltd
+Environment=DELTOS_WEBOS_HOST= DELTD_IDENTITY_ARGS= DELTD_CONNECTIVITY_ARGS=
+EnvironmentFile=-/run/deltos/network/deltd.env
+ExecCondition=/usr/lib/deltos/libexec/deltos-deltd-ready
+ExecStart=/usr/lib/deltos/bin/deltd --webos-host ${DELTOS_WEBOS_HOST} --packs /var/lib/deltos/packs --catalog-dir /var/lib/deltos/b4 $DELTD_IDENTITY_ARGS $DELTD_CONNECTIVITY_ARGS
+Restart=on-failure
+RestartSec=2s
+RestartSteps=5
+RestartMaxDelaySec=60s
+StateDirectory=deltos/b4
+StateDirectoryMode=0750
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/var/lib/deltos/packs
+InaccessiblePaths=-/var/lib/deltos/network -/run/deltos/network
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources

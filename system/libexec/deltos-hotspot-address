@@ -1,0 +1,37 @@
+#!/bin/sh
+# Give the hotspot interface the box's address, before hostapd and dnsmasq
+# start (docs/box-radio-and-boot.md §2). Values come from hotspot.env, which
+# deltos-net-render generates from the validated registry.
+set -eu
+
+IFACE=${DELTOS_HOTSPOT_INTERFACE:-}
+ADDR=${DELTOS_HOTSPOT_ADDRESS:-}
+if [ -z "$IFACE" ]; then
+    echo "deltos-hotspot-address: the box runs no hotspot (joined to another network); nothing to do"
+    exit 0
+fi
+
+# The radio may appear a moment after boot (USB adapters, slow firmware).
+if [ ! -e "/sys/class/net/$IFACE" ]; then
+    udevadm wait --timeout=60 "/sys/class/net/$IFACE" 2>/dev/null || true
+fi
+if [ ! -e "/sys/class/net/$IFACE" ]; then
+    echo "deltos-hotspot-address: no network interface $IFACE on this box" >&2
+    exit 1
+fi
+
+# Keep any network manager off the hotspot, which would otherwise take the
+# interface back or add a second DHCP client to it.
+if command -v nmcli >/dev/null 2>&1 && nmcli -t general status >/dev/null 2>&1; then
+    nmcli device set "$IFACE" managed no || true
+fi
+# Some images (Raspberry Pi OS among them) keep Wi-Fi switched off until a
+# country is set. hostapd sets the country from the registry.
+if command -v rfkill >/dev/null 2>&1; then
+    rfkill unblock wlan || true
+fi
+
+ip addr flush dev "$IFACE" scope global
+ip addr add "$ADDR" dev "$IFACE"
+ip link set dev "$IFACE" up
+echo "deltos-hotspot-address: $IFACE is $ADDR"

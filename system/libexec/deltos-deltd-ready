@@ -1,0 +1,15 @@
+#!/bin/sh
+# deltd starts only once its two provisioning values are set
+# (system/systemd/deltos-deltd.service). Exit 1 skips it with this message;
+# nothing is guessed.
+case "${DELTOS_WEBOS_HOST:-}" in
+*?.deltos.lan) ;;
+*)
+    echo "deltd not started: DELTOS_WEBOS_HOST is not set to a name under deltos.lan (the WebOS hostname is still open, contract §13.2)" >&2
+    exit 1
+    ;;
+esac
+if [ -z "${DELTD_IDENTITY_ARGS:-}" ]; then
+    echo "deltd not started: no identity source in DELTD_IDENTITY_ARGS (deltos-identityd is not built yet)" >&2
+    exit 1
+fi

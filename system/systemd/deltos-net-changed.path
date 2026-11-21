@@ -1,0 +1,14 @@
+# After a checked network action rewrites a settings file, restart what it
+# belongs to. Started after step 1, so the boot-time writes trigger nothing.
+[Unit]
+Description=DeltOS network settings watcher
+Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-radio-and-boot.md
+After=deltos-net-render.service
+
+[Path]
+PathChanged=/run/deltos/network/dnsmasq.conf
+PathChanged=/run/deltos/network/hostapd.conf
+PathChanged=/run/deltos/network/uplink.nft
+PathChanged=/run/deltos/network/hotspot.env
+PathChanged=/run/deltos/network/deltd.env
+Unit=deltos-net-changed.service

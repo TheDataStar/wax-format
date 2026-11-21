@@ -1,0 +1,17 @@
+# Step 3: the uplink firewall, loaded before the hotspot exists, so no
+# hotspot device is ever forwarded anywhere it should not be.
+[Unit]
+Description=DeltOS uplink firewall (internet sharing for hotspot devices)
+ConditionPathExists=/run/deltos/network/uplink.nft
+Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-radio-and-boot.md
+Requires=deltos-net-render.service
+After=deltos-net-render.service
+Before=deltos-hostapd.service network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/run/deltos/network/hotspot.env
+ExecStart=/usr/lib/deltos/libexec/deltos-uplink-firewall start
+ExecStop=/usr/lib/deltos/libexec/deltos-uplink-firewall stop

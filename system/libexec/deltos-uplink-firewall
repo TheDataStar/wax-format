@@ -1,0 +1,42 @@
+#!/bin/sh
+# Load the uplink firewall, and switch forwarding on only while hotspot
+# devices may reach the internet (box-network-plan §3.1, contract §16).
+#
+#   start   load uplink.nft; if sharing is on, turn IPv4 forwarding on
+#   stop    if this script turned forwarding on, turn it off; unload
+#
+# The table's forward chain drops by default, so while it is loaded nothing
+# from the hotspot is forwarded unless sharing is on.
+set -eu
+
+D=/run/deltos/network
+MARK=$D/.forwarding-on
+
+case "${1:-}" in
+start)
+    nft -f "$D/uplink.nft"
+    if [ "${DELTOS_UPLINK_SHARING:-0}" = 1 ]; then
+        sysctl -q -w net.ipv4.ip_forward=1
+        : > "$MARK"
+        echo "deltos-uplink-firewall: internet sharing on"
+    else
+        if [ -e "$MARK" ]; then
+            sysctl -q -w net.ipv4.ip_forward=0
+            rm -f "$MARK"
+        fi
+        echo "deltos-uplink-firewall: internet sharing off; nothing from the hotspot is forwarded"
+    fi
+    ;;
+stop)
+    # forwarding off before the table goes, never the other way round
+    if [ -e "$MARK" ]; then
+        sysctl -q -w net.ipv4.ip_forward=0
+        rm -f "$MARK"
+    fi
+    nft delete table inet deltos_uplink 2>/dev/null || true
+    ;;
+*)
+    echo "usage: deltos-uplink-firewall start|stop" >&2
+    exit 2
+    ;;
+esac
