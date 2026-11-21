@@ -139,6 +139,13 @@ These are `identityd`'s: `deltd` forwards them to `identityd` over its local soc
 
 **Passwordless people sign in off the kiosk with a teacher-issued sign-in card** (decided 2026-11-20, privilege boundary §10). `GET /sign-in/profiles` is answered only on the kiosk, because listing every student's name to any device on the Wi-Fi is itself a privacy leak. A sign-in code never makes a secure session, and never signs in anyone with a password. **Teacher and admin passwords are HTTPS only** (decided 2026-11-20): `POST /session` with a password for a person who holds any secure-only permission is refused over plain HTTP with `secure_connection_required`.
 
+**The box's certificate** (built 2026-11-21, `docs/box-certificates.md` §5). Answered over plain HTTP too, with no session, because a device that does not trust the box yet cannot use HTTPS with it. Nothing in it is secret; the person compares the fingerprint with the one the box shows itself before trusting it.
+
+| Endpoint | Does | Needs |
+|---|---|---|
+| `GET /certificate` | The box CA's SHA-256 fingerprint, the download path, and whether HTTPS is running | None |
+| `GET /certificate/ca.crt` | The box CA's public certificate (DER, `application/x-x509-ca-cert`) to install on a device | None |
+
 ### 6.2 Library
 
 | Endpoint | Does | Needs |
@@ -256,6 +263,7 @@ Every error has the same JSON shape and a code from one closed list, so the WebO
 | `too_many_requests` | 429 | Too many attempts or requests from one device or person (F15, §9) |
 | `sign_in_failed` | 401 | Wrong name, password or card code; all said the same way (added 2026-11-21) |
 | `sign_in_unavailable` | 503 | The sign-in service cannot be reached; nobody is signed in meanwhile (added 2026-11-21) |
+| `certificate_unavailable` | 503 | The box has not made its certificates yet (added 2026-11-21, `docs/box-certificates.md`) |
 | `pack_damaged` | 500 | A hash check failed; a health event is raised |
 | `internal` | 500 | Anything else; logged on the box |
 

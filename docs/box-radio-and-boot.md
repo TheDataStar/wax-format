@@ -29,7 +29,8 @@ All of it hangs off one target, `deltos-box.target`, enabled for normal boot.
 | 4 | `deltos-hostapd` | The radio | The box runs a hotspot and its radio is set |
 | 5 | `deltos-dnsmasq` | DNS for the box's names; DHCP on the hotspot only | Step 1 wrote it |
 | 6a | `deltos-identityd` | The register of people and sign-ins, on a local socket only `deltd` can open (`docs/identityd.md`) | The box has its first admin (§4) |
-| 6b | `deltos-deltd` | The box API and pack server, on `home.deltos.lan`, over HTTP and (once the box has its certificates) HTTPS | Step 6a's register exists |
+| 6c | `deltos-tls` | Makes the box's own CA the first time, and renews the two server certificates when fewer than 30 days remain; otherwise changes nothing. Runs before `deltd`, and daily from `deltos-tls.timer` (`docs/box-certificates.md`) | Always |
+| 6b | `deltos-deltd` | The box API and pack server, on `home.deltos.lan`, over HTTP and HTTPS with step 6c's certificates | Step 6a's register exists |
 | — | `deltos-net-changed.path` | Watches the settings files; when a checked action rewrites one, restarts only the service it belongs to | Always |
 
 - **The generated files live in `/run`, which is empty at every boot.** They are rebuilt from the registry each time, so a crash, an interrupted change or an OS rollback can never leave stale ones. The registry is the only copy that is kept.
@@ -54,8 +55,9 @@ So shelld (not built yet) needs no power to restart anything: writing the regist
 
 | Program | User | Powers held | Can write | Cannot see |
 |---|---|---|---|---|
-| `deltd` | `deltos-deltd` | `CAP_NET_BIND_SERVICE` (ports 80 and 443) only | `/var/lib/deltos/b4/` | `/var/lib/deltos/network/`, `/run/deltos/network/`, `/var/lib/deltos/identity/` |
-| `deltos-identityd` | `deltos-identity` | none, and no network (loopback only) | `/var/lib/deltos/identity/`, its socket | `/var/lib/deltos/network/`, `/run/deltos/network/`, `/var/lib/deltos/tls/` |
+| `deltd` | `deltos-deltd` | `CAP_NET_BIND_SERVICE` (ports 80 and 443) only | `/var/lib/deltos/b4/` | `/var/lib/deltos/network/`, `/run/deltos/network/`, `/var/lib/deltos/identity/`, `/var/lib/deltos/ca/` |
+| `deltos-identityd` | `deltos-identity` | none, and no network (loopback only) | `/var/lib/deltos/identity/`, its socket | `/var/lib/deltos/network/`, `/run/deltos/network/`, `/var/lib/deltos/tls/`, `/var/lib/deltos/ca/` |
+| `deltos-tls-provision` | root | `CAP_CHOWN` only (to hand server keys to `deltd`'s group), and no network | `/var/lib/deltos/ca/`, `/var/lib/deltos/tls/` | `/var/lib/deltos/network/`, `/var/lib/deltos/identity/` |
 | `dnsmasq` | `deltos-dns` | bind ports 53 and 67, raw sockets, network admin (for DHCP) | its lease file only | `/var/lib/deltos/` |
 | `hostapd` | root | `CAP_NET_ADMIN`, `CAP_NET_RAW` only | nothing | — |
 | `deltos-net-render` | root | none, and no network at all | the registry's directory and the settings directory | — |
@@ -72,7 +74,7 @@ So shelld (not built yet) needs no power to restart anything: writing the regist
 Three things, once per box, all of them choices for whoever sets it up:
 
 1. **Network settings,** with `deltos-net-provision <registry> <settings-file>`. It works **only on a box with no settings yet** and refuses ever after, so it is never a way around the checked actions. The file states every value; there are no defaults (format in `crates/deltos-net/src/bin/provision.rs`). Internet sharing always starts off; only an admin turns it on (contract §16). Where the file comes from on an appliance image (for example written by E7's flashing tool onto the boot partition) is E7's to decide; it holds the Wi-Fi password, so E7 should delete it once read.
-2. **The first admin,** with `deltos-identity-provision` (`docs/identityd.md` §6), which works only once. `deltd`'s identity source is built in: `deltos-identityd`'s socket. Until there is an admin, neither starts, and neither shows as failed. Then **the box's two certificates** in `/var/lib/deltos/tls/`; without them `deltd` serves plain HTTP only and teachers and admins cannot sign in.
+2. **The first admin,** with `deltos-identity-provision` (`docs/identityd.md` §6), which works only once. `deltd`'s identity source is built in: `deltos-identityd`'s socket. Until there is an admin, neither starts, and neither shows as failed. **The box's certificates need no step:** `deltos-tls` makes them at the first boot (`docs/box-certificates.md`) and prints the fingerprint teachers compare before trusting the box.
 3. **Install** with `system/install.sh --bin-dir <built binaries>` on an installable-stack machine (Debian or Ubuntu), or `--destdir <image tree>` when building an appliance image. On a live machine it refuses, and says why, if the distribution's own `dnsmasq` or `hostapd` service is running there: two DNS or DHCP servers on one machine fight, and the person's services are theirs to stop, not ours.
 
 ## 5. Decisions made here

@@ -240,6 +240,7 @@ impl Desktop {
             ident: self.identity(),
             webos_host: String::new(),
             https_available: false,
+            ca_cert: None,
         };
         let mut h = HeaderMap::new();
         if let Ok(v) = HeaderValue::from_str(&format!("__Host-delt_session={}", self.ident.token())) {

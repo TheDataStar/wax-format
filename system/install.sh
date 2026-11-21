@@ -4,7 +4,8 @@
 #   system/install.sh --bin-dir DIR [--destdir DIR] [--no-enable]
 #
 # --bin-dir   where the built deltd, deltos-net-render, deltos-net-provision,
-#             deltos-identityd and deltos-identity-provision are
+#             deltos-identityd, deltos-identity-provision and
+#             deltos-tls-provision are
 #             (e.g. target/release)
 # --destdir   install into an image tree instead of this machine (the
 #             appliance image build); nothing is enabled or started there
@@ -28,9 +29,9 @@ while [ $# -gt 0 ]; do
 done
 die() { echo "install.sh: $*" >&2; exit 1; }
 [ -n "$BIN" ] || die "--bin-dir is required"
-BINS="deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision"
+BINS="deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision"
 for b in $BINS; do
-    [ -x "$BIN/$b" ] || die "$BIN/$b is missing; build with: cargo build --release -p deltlib -p deltos-net -p deltos-identity"
+    [ -x "$BIN/$b" ] || die "$BIN/$b is missing; build with: cargo build --release -p deltlib -p deltos-net -p deltos-identity -p deltos-tls"
 done
 
 if [ -z "$DEST" ]; then
@@ -80,7 +81,9 @@ Next, once per box:
   2. the first admin:   runuser -u deltos-identity -- /usr/lib/deltos/bin/deltos-identity-provision \
                           --display-name 'Your name' --sign-in-name admin
                         (prints the generated password once; only its hash is kept)
-  3. certificates:      the box's *.deltos.lan and *.deltos-packs.lan certificates in /var/lib/deltos/tls/
-                        (without them deltd serves plain HTTP only, and admins cannot sign in)
-  4. start:             systemctl start deltos-box.target   (or reboot)
+  3. start:             systemctl start deltos-box.target   (or reboot)
+The box makes its own certificates at start (deltos-tls.service) and prints
+their fingerprint: journalctl -u deltos-tls. Teachers and admins install
+http://home.deltos.lan/api/v1/certificate/ca.crt on their devices once,
+after comparing that fingerprint (docs/box-certificates.md §5).
 MSG

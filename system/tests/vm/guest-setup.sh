@@ -65,22 +65,10 @@ else
   echo "admin_reprovision_refused=yes" >> $OUT
 fi
 
-# The box's two certificates. TEST VALUES ONLY: issuing them is the box's
-# internal CA's job (Track G), which is not built. A throwaway CA here, which
-# the virtual phone trusts as a teacher's laptop would.
-T=/etc/deltos-vm-test
-install -d -m 0755 $T
-openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=DeltOS VM test CA" \
-  -keyout $T/ca.key -out $T/ca.crt 2>/dev/null
-for z in deltos.lan deltos-packs.lan; do
-  openssl req -newkey rsa:2048 -nodes -subj "/CN=*.$z" -keyout /var/lib/deltos/tls/$z.key -out $T/$z.csr 2>/dev/null
-  printf 'subjectAltName=DNS:*.%s\n' "$z" > $T/$z.ext
-  openssl x509 -req -in $T/$z.csr -CA $T/ca.crt -CAkey $T/ca.key -CAcreateserial -days 30 \
-    -extfile $T/$z.ext -out /var/lib/deltos/tls/$z.crt 2>/dev/null
-done
-chown root:deltos-deltd /var/lib/deltos/tls/*
-chmod 0640 /var/lib/deltos/tls/*
-chmod 0644 $T/ca.crt
+# The box's certificates are not made here: deltos-tls.service makes the
+# box's own CA and both server certificates at the next boot, as on a real
+# box (docs/box-certificates.md), and the virtual phone fetches the CA from
+# the box the way a teacher's laptop would.
 
 install -m 0644 $S/science.wax /var/lib/deltos/packs/science.wax
 

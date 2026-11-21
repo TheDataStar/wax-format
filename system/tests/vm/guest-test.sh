@@ -22,6 +22,9 @@ for u in deltos-net-render deltos-hotspot-address deltos-uplink-firewall deltos-
   if until_t 120 systemctl is-active --quiet "$u.service"; then ok "$u started at boot"; else bad "$u started at boot ($(systemctl is-active $u.service))"; journalctl -b -u $u --no-pager | tail -20 >> "$OUT"; fi
 done
 check "deltos-net-changed.path watching" systemctl is-active --quiet deltos-net-changed.path
+check "deltos-tls ran at boot and succeeded" bash -c "[ \"\$(systemctl show -p Result --value deltos-tls.service)\" = success ] && [ \"\$(systemctl show -p ExecMainStatus --value deltos-tls.service)\" = 0 ] && [ \"\$(systemctl show -p ExecMainExitTimestampMonotonic --value deltos-tls.service)\" != 0 ]"
+check "the certificates were made before deltd started" bash -c "[ \$(systemctl show -p ExecMainExitTimestampMonotonic --value deltos-tls) -lt \$(systemctl show -p ActiveEnterTimestampMonotonic --value deltos-deltd) ]"
+check "the daily certificate check is scheduled" systemctl is-active --quiet deltos-tls.timer
 check "no DeltOS unit failed" test "$(systemctl list-units --failed --plain --no-legend 'deltos-*' | wc -l)" = 0
 for u in deltos-net-render deltos-hostapd deltos-dnsmasq deltos-identityd deltos-deltd; do
   info "$u became active $(systemctl show -p ActiveEnterTimestampMonotonic --value $u.service | awk '{printf "%.1f", $1/1e6}') s after boot"
@@ -48,7 +51,18 @@ check "identityd's socket is 0660 deltos-identity:deltos-identc" test "$(stat -c
 check "deltos-deltd is in deltos-identc" bash -c 'id -nG deltos-deltd | grep -qw deltos-identc'
 check "deltd cannot see the register" bash -c "! nsenter -t $(pid deltos-deltd) -m test -e /var/lib/deltos/identity/identity.sqlite"
 check "another user cannot reach identityd's socket" bash -c "! runuser -u nobody -- python3 -c \"import socket;s=socket.socket(socket.AF_UNIX);s.connect('/run/deltos/identity/identityd.sock')\""
-check "the TLS keys are readable by deltd only" test "$(stat -c '%a %U %G' /var/lib/deltos/tls/deltos.lan.key)" = "640 root deltos-deltd"
+check "the TLS keys are readable by deltd only" bash -c "[ \"\$(stat -c '%a %U %G' /var/lib/deltos/tls/deltos.lan.key)\" = '640 root deltos-deltd' ] && [ \"\$(stat -c '%a %U %G' /var/lib/deltos/tls/deltos-packs.lan.key)\" = '640 root deltos-deltd' ]"
+check "the CA key is root's alone (directory 0700, key 0600)" bash -c "[ \"\$(stat -c '%a %U' /var/lib/deltos/ca)\" = '700 root' ] && [ \"\$(stat -c '%a %U' /var/lib/deltos/ca/ca.key)\" = '600 root' ]"
+check "deltd cannot see the CA key" bash -c "! nsenter -t $(pid deltos-deltd) -m test -e /var/lib/deltos/ca/ca.key && ! test -e /var/lib/deltos/tls/ca.key"
+FP_BOX=$(journalctl -b -u deltos-tls --no-pager -o cat | sed -n 's/^ *\([0-9A-F:]\{95\}\) *$/\1/p' | tail -1)
+info "box CA fingerprint printed at boot: $FP_BOX"
+# Name constraint: even with the CA key, a certificate for another site fails
+T=$(mktemp -d)
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj /CN=bank.example.com -keyout $T/k -out $T/csr 2>/dev/null
+printf 'subjectAltName=DNS:bank.example.com\n' > $T/ext
+openssl x509 -req -in $T/csr -CA /var/lib/deltos/ca/ca.crt -CAkey /var/lib/deltos/ca/ca.key -CAserial $T/srl -CAcreateserial -days 5 -extfile $T/ext -out $T/evil.crt 2>/dev/null
+check "the box CA cannot vouch for another website (name constraint)" bash -c "[ -s $T/evil.crt ] && ! openssl verify -CAfile /var/lib/deltos/ca/ca.crt $T/evil.crt && openssl verify -CAfile /var/lib/deltos/ca/ca.crt /var/lib/deltos/tls/deltos.lan.crt"
+rm -rf $T
 check "hostapd has no control socket" bash -c '! ls /var/run/hostapd 2>/dev/null | grep -q .'
 
 # --- a phone joins ----------------------------------------------------------
@@ -109,7 +123,14 @@ check "an outside name is 'no such name' at once (offline)" bash -c "$P dig +tim
 check "Android's internet check resolves to the box" test "$(dig1 connectivitycheck.gstatic.com)" = 10.42.0.1
 
 C="$P curl -s -o /dev/null -w %{http_code} --max-time 5"
-CA=/etc/deltos-vm-test/ca.crt
+# A teacher's device trusts the box once: it fetches the CA over plain
+# HTTP and compares its fingerprint with the one the box shows itself.
+CA=/tmp/box-ca.pem
+check "the phone downloads the box CA over plain HTTP, no session" bash -c "[ \"\$($P curl -s --max-time 10 -o /tmp/box-ca.der -w '%{http_code} %{content_type}' http://home.deltos.lan/api/v1/certificate/ca.crt)\" = '200 application/x-x509-ca-cert' ]"
+openssl x509 -inform DER -in /tmp/box-ca.der -out $CA 2>/dev/null
+FP_PHONE=$(openssl x509 -inform DER -in /tmp/box-ca.der -noout -fingerprint -sha256 2>/dev/null | sed 's/.*=//')
+check "its fingerprint is the one the box printed" bash -c "[ -n '$FP_BOX' ] && [ '$FP_PHONE' = '$FP_BOX' ]"
+check "the box API states the same fingerprint" bash -c "$P curl -s --max-time 10 http://home.deltos.lan/api/v1/certificate | grep -q '\"fingerprint_sha256\":\"$FP_BOX\"'"
 ADMIN_PW=$(cat /root/admin-pw)
 J=/tmp/jars; mkdir -p $J
 # a JSON field from a file (python3 is in the image)
@@ -181,6 +202,20 @@ old=$(pid deltos-identityd); kill -9 "$old"
 if until_t 30 bash -c "p=\$(systemctl show -p MainPID --value deltos-identityd); [ \"\$p\" != 0 ] && [ \"\$p\" != $old ] && systemctl is-active --quiet deltos-identityd"; then ok "identityd is restarted after a crash"; else bad "identityd is restarted after a crash"; fi
 sleep 6
 check "sessions survive an identityd restart (they are in the register)" test "$(G $J/phone http /status)" = 200
+
+# --- certificate renewal ------------------------------------------------------
+# Nothing due: nothing changes and deltd is left alone.
+old=$(pid deltos-deltd); before=$(sha256sum /var/lib/deltos/tls/deltos.lan.crt)
+systemctl start deltos-tls.service
+sleep 3
+check "a daily check with nothing due changes nothing and leaves deltd running" bash -c "[ \"\$(sha256sum /var/lib/deltos/tls/deltos.lan.crt)\" = '$before' ] && [ \"\$(systemctl show -p MainPID --value deltos-deltd)\" = $old ]"
+# A server certificate gone (as if renewal were due): reissued from the same
+# CA, deltd restarted onto it, and a device that trusted the box once still does.
+rm /var/lib/deltos/tls/deltos.lan.crt
+systemctl start deltos-tls.service
+if until_t 30 bash -c "p=\$(systemctl show -p MainPID --value deltos-deltd); [ \"\$p\" != 0 ] && [ \"\$p\" != $old ] && systemctl is-active --quiet deltos-deltd"; then ok "a reissued certificate restarts deltd"; else bad "a reissued certificate restarts deltd"; fi
+if until_t 30 bash -c "$P curl -s --max-time 5 --cacert $CA -o /dev/null https://home.deltos.lan/api/v1/openapi.json"; then ok "the renewed certificate is trusted by the device that trusted the box once"; else bad "the renewed certificate is trusted by the device that trusted the box once"; fi
+check "the CA did not change" bash -c "[ \"\$(openssl x509 -in /var/lib/deltos/ca/ca.crt -noout -fingerprint -sha256 | sed 's/.*=//')\" = '$FP_BOX' ]"
 
 # --- a checked change takes effect without a reboot --------------------------
 # configure_ap through authorize()/apply(), with a test stand-in for shelld.

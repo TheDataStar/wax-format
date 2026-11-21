@@ -1094,6 +1094,65 @@
           }
         }
       }
+    },
+    "/api/v1/certificate": {
+      "get": {
+        "summary": "The box CA's SHA-256 fingerprint, for a device about to trust the box (docs/box-certificates.md §5). Compare with the fingerprint the box shows on its own screen; this answer alone proves nothing over plain HTTP.",
+        "x-permission": "None",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "fingerprint_sha256": {
+                      "type": "string"
+                    },
+                    "download": {
+                      "type": "string"
+                    },
+                    "https": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "fingerprint_sha256",
+                    "download",
+                    "https"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/api/v1/certificate/ca.crt": {
+      "get": {
+        "summary": "The box CA's public certificate (DER), to install on a teacher's or admin's device.",
+        "x-permission": "None",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/x-x509-ca-cert": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1135,6 +1194,7 @@
                     "pack_damaged",
                     "sign_in_failed",
                     "sign_in_unavailable",
+                    "certificate_unavailable",
                     "internal"
                   ]
                 },

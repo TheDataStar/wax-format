@@ -1,0 +1,14 @@
+# Check the box's certificates once a day (docs/box-certificates.md §4), so
+# a box that runs for months renews them before they end. Persistent: a box
+# that was off at the time checks as soon as it is back.
+[Unit]
+Description=Daily check of the DeltOS box certificates
+Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-certificates.md
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

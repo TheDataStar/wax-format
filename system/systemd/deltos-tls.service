@@ -1,0 +1,43 @@
+# Step 6c: the box's own certificate authority and its two server
+# certificates (docs/box-certificates.md). Makes the CA the first time, and
+# renews the server certificates when fewer than 30 days remain; otherwise
+# changes nothing. Runs at every boot before deltd, and daily from
+# deltos-tls.timer, which restarts deltd only when something was reissued.
+#
+# Root, because it writes the CA key (root's alone) and hands the server
+# keys to deltd's group. No network, and it can write only its two
+# directories.
+[Unit]
+Description=DeltOS box certificates (make and renew)
+Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-certificates.md
+After=systemd-tmpfiles-setup.service systemd-sysusers.service time-sync.target
+Before=deltos-deltd.service
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/lib/deltos/bin/deltos-tls-provision --ca-dir /var/lib/deltos/ca --tls-dir /var/lib/deltos/tls --key-group deltos-deltd --restart deltos-deltd.service
+CapabilityBoundingSet=CAP_CHOWN
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/deltos/ca /var/lib/deltos/tls
+InaccessiblePaths=-/var/lib/deltos/network -/var/lib/deltos/identity -/run/deltos/network
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# not ~@privileged: handing a key to deltd's group is an fchown()
