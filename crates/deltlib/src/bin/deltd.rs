@@ -113,7 +113,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = router(
         AppState::new(lib, ident, &a.webos_host)
             .with_connectivity_checks(a.answer_connectivity_checks)
-            .with_https(tls.is_some()),
+            .with_https(tls.is_some())
+            .with_ca_cert(a.tls_cert_dir.as_ref().map(|d| d.join("ca.crt"))),
     );
     let listener = tokio::net::TcpListener::bind(a.listen).await?;
     eprintln!("deltd: listening on {} for {}", a.listen, a.webos_host);

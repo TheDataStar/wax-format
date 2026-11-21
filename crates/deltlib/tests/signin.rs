@@ -441,3 +441,68 @@ async fn the_https_listener_picks_the_certificate_by_zone_and_marks_requests_sec
     let resp = fetch(addr, &host, &ders["deltos-packs.lan"], format!("GET /index.html HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")).await;
     assert!(resp.starts_with("HTTP/1.1 "), "{resp}");
 }
+
+/// The box's own CA, end to end: `deltos-tls` makes the certificates, deltd
+/// loads them, a phone downloads the CA over plain HTTP, its fingerprint is
+/// the one the box printed, and a client trusting only that file reaches
+/// both zones over HTTPS.
+#[tokio::test]
+async fn a_device_that_trusts_the_downloaded_box_ca_reaches_both_zones() {
+    use rustls::pki_types::{CertificateDer, ServerName};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let b = boot();
+    let tls = b._dir.path().join("tls");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let made = deltos_tls::ensure(
+        &deltos_tls::Paths { ca_dir: b._dir.path().join("ca"), tls_dir: tls.clone(), key_group: None },
+        now.max(deltos_tls::CLOCK_FLOOR),
+    )
+    .unwrap();
+    let app = router(
+        AppState::new(Arc::clone(&b.lib), Arc::new(IdentitydLink::new(&b.sock)), WEBOS)
+            .with_https(true)
+            .with_ca_cert(Some(tls.join("ca.crt"))),
+    );
+    let get = |path: &str| {
+        let mut r = Request::builder().uri(path).header("host", WEBOS).body(Body::empty()).unwrap();
+        r.extensions_mut().insert(PHONE);
+        app.clone().oneshot(r)
+    };
+    // over plain HTTP, no session: the fingerprint and the file
+    let r = get("/api/v1/certificate").await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let v: Value = serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(v["fingerprint_sha256"], made.ca_fingerprint);
+    let r = get("/api/v1/certificate/ca.crt").await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(r.headers()["content-type"], "application/x-x509-ca-cert");
+    let der = r.into_body().collect().await.unwrap().to_bytes().to_vec();
+    assert_eq!(deltos_tls::fingerprint(&der), made.ca_fingerprint, "what the phone got is what the box printed");
+    let ca = CertificateDer::from(der);
+
+    let acc = deltlib::tls::acceptor(&tls).unwrap();
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(deltlib::tls::serve(l, app.clone(), Some(acc)));
+    for host in [WEBOS.to_string(), b.pack_host("aaaaaaaaaaaaaaaa")] {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(ca.clone()).unwrap();
+        let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut s = tokio_rustls::TlsConnector::from(Arc::new(cfg))
+            .connect(ServerName::try_from(host.clone()).unwrap(), tcp)
+            .await
+            .unwrap_or_else(|e| panic!("{host}: {e}"));
+        s.write_all(format!("GET /api/v1/certificate HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut out = Vec::new();
+        s.read_to_end(&mut out).await.ok();
+        assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 "), "{host}");
+    }
+}

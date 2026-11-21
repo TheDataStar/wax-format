@@ -38,6 +38,8 @@ pub struct AppState {
     pub answer_connectivity_checks: bool,
     /// An HTTPS listener runs beside the plain one.
     pub https_available: bool,
+    /// The box CA's public certificate, offered at `/api/v1/certificate`.
+    pub ca_cert: Option<std::path::PathBuf>,
 }
 
 impl AppState {
@@ -48,7 +50,13 @@ impl AppState {
             zone: ZoneConfig { webos_host: webos_host.to_ascii_lowercase() },
             answer_connectivity_checks: false,
             https_available: false,
+            ca_cert: None,
         }
+    }
+
+    pub fn with_ca_cert(mut self, path: Option<std::path::PathBuf>) -> Self {
+        self.ca_cert = path;
+        self
     }
 
     pub fn with_https(mut self, on: bool) -> Self {
@@ -90,6 +98,7 @@ async fn dispatch(State(st): State<AppState>, req: Request) -> Response<Body> {
             ident: Arc::clone(&st.ident),
             webos_host: st.zone.webos_host.clone(),
             https_available: st.https_available,
+            ca_cert: st.ca_cert.clone(),
         };
         return api.handle(&parts.method, &path, parts.uri.query(), &parts.headers, &body, &conn).await;
     }

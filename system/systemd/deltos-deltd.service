@@ -4,15 +4,16 @@
 # serve: its identity source is deltos-identityd's socket, and both wait for
 # the first admin (docs/identityd.md §6). There is no anonymous mode.
 #
-# HTTPS (port 443) runs when the box's two certificates are in
-# /var/lib/deltos/tls/ (contract §8); until then deltd serves plain HTTP
-# only, and says that teachers and admins cannot sign in.
+# HTTPS (port 443) runs with the box's two certificates from
+# /var/lib/deltos/tls/ (contract §8), made just before by deltos-tls.service
+# (docs/box-certificates.md). Without them deltd serves plain HTTP only, and
+# says that teachers and admins cannot sign in.
 [Unit]
 Description=DeltOS box API and pack server (deltd)
 Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-radio-and-boot.md
 ConditionPathExists=/var/lib/deltos/identity/identity.sqlite
-Wants=deltos-net-render.service deltos-identityd.service
-After=deltos-net-render.service deltos-dnsmasq.service deltos-identityd.service
+Wants=deltos-net-render.service deltos-identityd.service deltos-tls.service
+After=deltos-net-render.service deltos-dnsmasq.service deltos-identityd.service deltos-tls.service
 StartLimitIntervalSec=10min
 StartLimitBurst=10
 
@@ -40,7 +41,7 @@ PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadOnlyPaths=/var/lib/deltos/packs
-InaccessiblePaths=-/var/lib/deltos/network -/run/deltos/network -/var/lib/deltos/identity
+InaccessiblePaths=-/var/lib/deltos/network -/run/deltos/network -/var/lib/deltos/identity -/var/lib/deltos/ca
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

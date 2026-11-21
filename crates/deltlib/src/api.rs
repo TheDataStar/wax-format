@@ -34,6 +34,9 @@ pub struct Api {
     pub webos_host: String,
     /// `deltd` has an HTTPS listener (it has the box's certificates).
     pub https_available: bool,
+    /// The box CA's public certificate (PEM), offered to devices that are
+    /// to trust the box (docs/box-certificates.md §5). `None`: not offered.
+    pub ca_cert: Option<std::path::PathBuf>,
 }
 
 /// An error in the RFC 9457 shape with a code from API §7's closed list.
@@ -266,6 +269,9 @@ impl Api {
         if rest == "openapi.json" {
             return self.ok(json_bytes(OPENAPI.as_bytes().to_vec()), None, headers, false);
         }
+        if rest == "certificate" || rest == "certificate/ca.crt" {
+            return self.certificate(method, rest == "certificate/ca.crt");
+        }
         {
             let segs: Vec<&str> = rest.split('/').collect();
             let q = query_map(query);
@@ -310,6 +316,59 @@ impl Api {
             }
             Err(p) => p.response(),
         }
+    }
+
+    /// The box CA's public certificate, for a device that does not trust the
+    /// box yet (so: no session, and over plain HTTP too). Nothing secret: a
+    /// device must still compare the fingerprint with the one the box shows
+    /// on its own screen before trusting it (docs/box-certificates.md §5).
+    fn certificate(&self, method: &Method, der_file: bool) -> Response<Body> {
+        use rustls::pki_types::pem::PemObject;
+        if method != Method::GET && method != Method::HEAD {
+            let mut r = Problem::new(StatusCode::METHOD_NOT_ALLOWED, "invalid_request", "Method not allowed.").response();
+            r.headers_mut().insert(header::ALLOW, HeaderValue::from_static("GET, HEAD"));
+            return r;
+        }
+        let Some(der) = self
+            .ca_cert
+            .as_ref()
+            .and_then(|p| rustls::pki_types::CertificateDer::from_pem_file(p).ok())
+        else {
+            return Problem::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "certificate_unavailable",
+                "This box has not made its certificates yet.",
+            )
+            .response();
+        };
+        let mut r = Response::builder();
+        let h = r.headers_mut().unwrap();
+        api_headers(h);
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        let body = if der_file {
+            h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/x-x509-ca-cert"));
+            h.insert(
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_static("attachment; filename=\"deltos-box-ca.crt\""),
+            );
+            der.to_vec()
+        } else {
+            h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+            let fp = hex(&Sha256::digest(der.as_ref()))
+                .as_bytes()
+                .chunks(2)
+                .map(|c| std::str::from_utf8(c).unwrap().to_ascii_uppercase())
+                .collect::<Vec<_>>()
+                .join(":");
+            serde_json::to_vec(&json!({
+                "fingerprint_sha256": fp,
+                "download": "/api/v1/certificate/ca.crt",
+                "https": self.https_available
+            }))
+            .unwrap()
+        };
+        let body = if *method == Method::HEAD { Body::empty() } else { Body::from(body) };
+        r.status(StatusCode::OK).body(body).unwrap()
     }
 
     fn ok(&self, body: Vec<u8>, etag: Option<String>, headers: &HeaderMap, head: bool) -> Response<Body> {

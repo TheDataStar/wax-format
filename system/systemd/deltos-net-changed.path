@@ -3,6 +3,12 @@
 [Unit]
 Description=DeltOS network settings watcher
 Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-radio-and-boot.md
+# No default dependencies: a path unit is otherwise ordered before
+# paths.target (early boot), and so before deltos-net-render's own start:
+# an ordering cycle that systemd breaks by dropping this watcher.
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
 After=deltos-net-render.service
 
 [Path]

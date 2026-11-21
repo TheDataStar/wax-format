@@ -37,6 +37,7 @@ Read `cross-track-contract.md` before any other document.
 | `deltd-api-v1.md` | The `deltd` API v1 and how pack content is served. Companion to `privilege-boundary.md`. |
 | `box-network-plan.md` | Why the box answers its own DNS and runs DHCP on its hotspot, what it tracks about names and addresses, and how phones' "no internet" checks are handled. Proposes values for contract §8/§10 and Track E §14; binds nothing until those adopt them. |
 | `box-radio-and-boot.md` | The box's own Wi-Fi hotspot (E3) and what starts at boot, in what order, as which user with which powers. Built in `crates/deltos-net` and `system/`. |
+| `box-certificates.md` | The box's own certificate authority: what it makes (one name-constrained CA, two server certificates), lifetimes and renewal, the clock floor, how a teacher's device trusts the box once, and how Track G's proxy reuses the root later. Built in `crates/deltos-tls`. |
 | `identityd.md` | The box's sign-in service: how people, sessions, sign-in cards, remembered devices and re-confirmation tickets are stored, the local socket `deltd` uses, and the session lengths and other values it runs on. Built in `crates/deltos-identity`. |
 | `design-language.md` | Visual and interaction system for the shell. |
 | `implementability-sweep.md` | The known-defect register from the audit — a record of what was found, **not a to-do list**. Several of its Critical findings are already fixed in the Contract; check there before citing one as open. |

@@ -11,7 +11,8 @@
 #          (mac80211_hwsim), hostapd, dnsmasq-base, iw, wpasupplicant,
 #          libpcsclite1, wireless-regdb
 # --bin-dir  aarch64 builds of deltd, deltos-net-render, deltos-net-provision,
-#          deltos-identityd, deltos-identity-provision and the example
+#          deltos-identityd, deltos-identity-provision, deltos-tls-provision
+#          and the example
 #          configure_ap_standin
 # --pack   any .wax pack holding a page that matches "evaporation"
 #
@@ -41,7 +42,7 @@ echo "work dir: $WORK"
 SH=$WORK/share
 rm -rf "$SH"; mkdir -p "$SH/bin" "$SH/debs" "$SH/results" "$SH/system"
 cp -a "$SYSTEM/." "$SH/system/"
-for b in deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision; do cp "$BIN/$b" "$SH/bin/"; done
+for b in deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision; do cp "$BIN/$b" "$SH/bin/"; done
 cp "$BIN/examples/configure_ap_standin" "$SH/bin/" 2>/dev/null || cp "$BIN/configure_ap_standin" "$SH/bin/"
 # The virtual radio's kernel modules come from linux-modules-extra. Only the
 # Wi-Fi ones are copied in: installing the whole package rebuilds the boot

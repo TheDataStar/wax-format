@@ -33,6 +33,7 @@ tower = { version = "0.4", features = ["util"] }
 
 [dev-dependencies]
 rcgen = "0.13"
+deltos-tls = { path = "../deltos-tls" }
 libc = "0.2"
 tokio = { version = "1", features = ["io-util", "rt-multi-thread", "macros"] }
 http-body-util = "0.1"

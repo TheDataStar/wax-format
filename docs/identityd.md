@@ -94,14 +94,14 @@ Made 2026-11-21 under Commander's delegation of routine decisions. The first blo
 | Two new error codes (deltd API §7) | `sign_in_failed` (401: wrong name, password or code, all said the same way) and `sign_in_unavailable` (503: `identityd` not reachable) | Adding codes is allowed within v1; neither existing code meant either. |
 | Register files | `/var/lib/deltos/identity/identity.sqlite` and `card-key` | Inside contract §10's `/var/lib/deltos/identity/`. |
 | Socket and group | `/run/deltos/identity/identityd.sock`, group `deltos-identc` | As `deltos-shellc` does for shelld (privilege boundary rule 1). |
-| The box's certificates | `/var/lib/deltos/tls/`: `deltos.lan.crt`/`.key` and `deltos-packs.lan.crt`/`.key`, `0640 root:deltos-deltd` | Contract §8's two wildcards. **Proposed for contract §10** with the other new paths. Issuing them is the box's internal CA's (Track G), not built. |
+| The box's certificates | `/var/lib/deltos/tls/`: `deltos.lan.crt`/`.key` and `deltos-packs.lan.crt`/`.key`, `0640 root:deltos-deltd` | Contract §8's two wildcards. **Proposed for contract §10** with the other new paths. Made and renewed by the box's own CA (`docs/box-certificates.md`). |
 
 ## 6. Setting up a box
 
 Once per box, after the network settings (`docs/box-radio-and-boot.md` §4):
 
 1. **The first admin:** `runuser -u deltos-identity -- /usr/lib/deltos/bin/deltos-identity-provision --display-name 'Name' --sign-in-name admin`. It works **only while the register has no admin** and refuses ever after. The password is generated (20 characters, 100 bits, `XXXXX-XXXXX-XXXXX-XXXXX`), printed **once**, and only its hash is kept. This is Track F §2's first-boot step in command-line form; when `deltos-shelld` and the kiosk screen exist, F2's full-screen one-time display wraps the same call.
-2. **The certificates** in `/var/lib/deltos/tls/`. Until they are there, `deltd` serves plain HTTP only and says that teachers and admins cannot sign in.
+2. **The certificates** in `/var/lib/deltos/tls/`, made by `deltos-tls.service` at boot before `deltd` (`docs/box-certificates.md`). Until they are there, `deltd` serves plain HTTP only and says that teachers and admins cannot sign in.
 
 **At boot** the order is: settings → address → firewall → radio → DNS/DHCP → **`deltos-identityd`** → `deltd` (`docs/box-radio-and-boot.md` §2). `identityd` tells systemd when its socket is ready, so `deltd` never starts ahead of it. A box with no admin yet starts neither and shows neither as failed. `identityd` restarts on a crash like every other service, and sessions survive it (they are in the register).
 
@@ -113,14 +113,14 @@ Once per box, after the network settings (`docs/box-radio-and-boot.md` §4):
 
 - `crates/deltos-identity/tests/register.rs` (18 tests): the privilege boundary §13 sign-in tests against the register itself, with a fake clock: secure and plain sessions; teacher and admin passwords refused over HTTP; rate limits and recovery; cards (issue secure only, plain session even over HTTPS, a replaced card and an expired card refused, never for a passworded person); devices (remembered, removed and refused at once); teachers limited to their own class; tap-your-name kiosk only; switching person on one browser; partitions shut at sign-out; idle and absolute limits; tickets reused, late, for another action, for other arguments or for another session, each refused; a passwordless person never re-confirms; a password change ending every session; the table-level CHECK; a newer schema refused; files `0600` and no secret in the clear on disk.
 - `crates/deltos-identity/tests/socket.rs` (4 tests): a caller that is not `deltd` or `shelld` is disconnected; `deltd` cannot redeem tickets; `shelld` can do nothing but its three calls.
-- `crates/deltlib/tests/signin.rs` (8 tests): the real register on a real socket behind the real router: a student's whole day on a phone (card, cookies and their attributes, reading, the pack hostname, sign-out shutting it, the remembered phone, the teacher removing it); admin passwords refused over HTTP, and the check before typing; `__Host-` cookies and HSTS over HTTPS; **a plain session replayed over HTTPS refused**, and a secure session over plain HTTP refused; writes with a missing, foreign, wrong-scheme or pack `Origin`, or a missing or wrong anti-forgery token, each refused; tap-your-name kiosk only, and switching person ending the first; `identityd` down; and a real TLS handshake picking the certificate by zone.
+- `crates/deltlib/tests/signin.rs` (9 tests, the ninth with the box's own CA, `docs/box-certificates.md` §6): the real register on a real socket behind the real router: a student's whole day on a phone (card, cookies and their attributes, reading, the pack hostname, sign-out shutting it, the remembered phone, the teacher removing it); admin passwords refused over HTTP, and the check before typing; `__Host-` cookies and HSTS over HTTPS; **a plain session replayed over HTTPS refused**, and a secure session over plain HTTP refused; writes with a missing, foreign, wrong-scheme or pack `Origin`, or a missing or wrong anti-forgery token, each refused; tap-your-name kiosk only, and switching person ending the first; `identityd` down; and a real TLS handshake picking the certificate by zone.
 - `system/tests/vm/run.sh`: the emulated ARM64 machine (2 GB) now installs `identityd`, provisions the first admin, and on the real second boot checks the start order, `identityd`'s user, powers, network and file permissions, the socket refusing another user, and then a virtual phone: admin refused over HTTP, admin signs in over HTTPS, adds a student and issues a card; the phone signs in with the card over plain HTTP, searches, reads its own pack hostname, signs out (hostname shut), and comes back as a remembered device; the box's own screen gets the tap-your-name list and the phone does not; `deltd` and `identityd` each killed and coming back with the phone still signed in. Results and timings are in the pull request.
 
 ## 9. Not built yet, and who it belongs to
 
 | Item | Owner |
 |---|---|
-| Issuing the box's two certificates (the internal CA) and installing its certificate on teachers' devices and the kiosk | Track G (with F7) |
+| Installing the box CA on the kiosk image, and the WebOS walkthrough for teachers' devices (issuing is built: `docs/box-certificates.md`) | Track E, WebOS |
 | The WebOS sign-in screens, the card printing page and the teacher's device list | Track C (WebOS), later |
 | `deltos-shelld`, which redeems tickets and makes the second check | Track C (C1) |
 | Re-confirm on the admin endpoints (`confirm_password`), using `issue_ticket` | `deltd`, with each admin endpoint |
