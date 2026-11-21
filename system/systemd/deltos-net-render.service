@@ -4,8 +4,14 @@
 Description=DeltOS network settings from the registry
 Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-radio-and-boot.md
 ConditionPathExists=/var/lib/deltos/network/registry.sqlite
-After=systemd-tmpfiles-setup.service
-Before=network-pre.target
+# Early boot (before network-pre.target), so no default dependencies: with
+# them it would also be ordered after basic.target, which on systems whose
+# network starts in early boot (systemd-networkd with cloud-init, for one)
+# is an ordering cycle that systemd breaks by dropping a unit.
+DefaultDependencies=no
+Conflicts=shutdown.target
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=network-pre.target shutdown.target
 Wants=network-pre.target
 
 [Service]
