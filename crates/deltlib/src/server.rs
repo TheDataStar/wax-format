@@ -22,6 +22,10 @@ use crate::hostname::{normalize_host, PackHost, PACK_ZONE};
 use crate::identity::Identity;
 use crate::library::Library;
 use crate::packzone::{self, ZoneConfig};
+use crate::signin::ConnInfo;
+
+/// The largest request body the API reads (sign-in and profile JSON).
+pub const MAX_API_BODY: usize = 16 * 1024;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -32,6 +36,8 @@ pub struct AppState {
     /// exactly when the box's DNS sends those hosts here, which is when
     /// hotspot devices get no internet through the box.
     pub answer_connectivity_checks: bool,
+    /// An HTTPS listener runs beside the plain one.
+    pub https_available: bool,
 }
 
 impl AppState {
@@ -41,7 +47,13 @@ impl AppState {
             ident,
             zone: ZoneConfig { webos_host: webos_host.to_ascii_lowercase() },
             answer_connectivity_checks: false,
+            https_available: false,
         }
+    }
+
+    pub fn with_https(mut self, on: bool) -> Self {
+        self.https_available = on;
+        self
     }
 
     pub fn with_connectivity_checks(mut self, on: bool) -> Self {
@@ -62,12 +74,24 @@ async fn dispatch(State(st): State<AppState>, req: Request) -> Response<Body> {
         .or_else(|| req.uri().host())
         .and_then(normalize_host);
     let Some(host) = host else { return refused() };
-    let (parts, _body) = req.into_parts();
+    let conn = req.extensions().get::<ConnInfo>().copied().unwrap_or_default();
+    let (parts, body) = req.into_parts();
     let path = parts.uri.path().to_string();
 
     if host == st.zone.webos_host {
-        let api = Api { lib: Arc::clone(&st.lib), ident: Arc::clone(&st.ident) };
-        return api.handle(&parts.method, &path, parts.uri.query(), &parts.headers).await;
+        // API bodies are small JSON; anything bigger is refused unread
+        let Ok(body) = axum::body::to_bytes(body, MAX_API_BODY).await else {
+            let mut r = Response::builder().status(StatusCode::PAYLOAD_TOO_LARGE);
+            api_headers(r.headers_mut().unwrap());
+            return r.body(Body::empty()).unwrap();
+        };
+        let api = Api {
+            lib: Arc::clone(&st.lib),
+            ident: Arc::clone(&st.ident),
+            webos_host: st.zone.webos_host.clone(),
+            https_available: st.https_available,
+        };
+        return api.handle(&parts.method, &path, parts.uri.query(), &parts.headers, &body, &conn).await;
     }
     if host.ends_with(&format!(".{PACK_ZONE}")) {
         return packzone::serve(

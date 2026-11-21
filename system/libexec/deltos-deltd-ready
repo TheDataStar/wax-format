@@ -11,6 +11,6 @@ case "${DELTOS_WEBOS_HOST:-}" in
     ;;
 esac
 if [ -z "${DELTD_IDENTITY_ARGS:-}" ]; then
-    echo "deltd not started: no identity source in DELTD_IDENTITY_ARGS (deltos-identityd is not built yet)" >&2
+    echo "deltd not started: no identity source in DELTD_IDENTITY_ARGS (the unit's default is deltos-identityd's socket)" >&2
     exit 1
 fi

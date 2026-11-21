@@ -50,19 +50,37 @@ else
 fi
 rm /root/network.conf
 
-# deltd's identity source. TEST VALUE ONLY: identityd is not built, so this
-# is deltd's development table. The WebOS hostname is the unit's own.
-install -d -m 0755 /etc/deltos-vm-test
-cat > /etc/deltos-vm-test/sessions.json <<'JSON'
-{ "sessions": [ { "token": "vm-test-token", "profile_id": "learner-1", "browser_id": "phone-1",
-                  "permissions": ["content.read"], "partition": "0123456789abcdef" } ] }
-JSON
-chmod 0644 /etc/deltos-vm-test/sessions.json
-install -d /etc/systemd/system/deltos-deltd.service.d
-cat > /etc/systemd/system/deltos-deltd.service.d/vm-test.conf <<'DROPIN'
-[Service]
-Environment=DELTD_IDENTITY_ARGS=--dev-sessions=/etc/deltos-vm-test/sessions.json
-DROPIN
+# The first admin (docs/identityd.md §6), as a person would: once, as the
+# register's owner. The generated password is printed once; this test keeps
+# it (root-only) so the second boot can sign in with it.
+runuser -u deltos-identity -- /usr/lib/deltos/bin/deltos-identity-provision \
+  --display-name "VM Admin" --sign-in-name admin > /root/admin.txt
+chmod 0600 /root/admin.txt
+sed -n 's/^Password, shown this once and never stored: //p' /root/admin.txt > /root/admin-pw
+grep -q . /root/admin-pw && echo "admin_provisioned=yes" >> $OUT
+if runuser -u deltos-identity -- /usr/lib/deltos/bin/deltos-identity-provision \
+     --display-name "Again" --sign-in-name admin2 >/dev/null 2>&1; then
+  echo "admin_reprovision_refused=no" >> $OUT
+else
+  echo "admin_reprovision_refused=yes" >> $OUT
+fi
+
+# The box's two certificates. TEST VALUES ONLY: issuing them is the box's
+# internal CA's job (Track G), which is not built. A throwaway CA here, which
+# the virtual phone trusts as a teacher's laptop would.
+T=/etc/deltos-vm-test
+install -d -m 0755 $T
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=DeltOS VM test CA" \
+  -keyout $T/ca.key -out $T/ca.crt 2>/dev/null
+for z in deltos.lan deltos-packs.lan; do
+  openssl req -newkey rsa:2048 -nodes -subj "/CN=*.$z" -keyout /var/lib/deltos/tls/$z.key -out $T/$z.csr 2>/dev/null
+  printf 'subjectAltName=DNS:*.%s\n' "$z" > $T/$z.ext
+  openssl x509 -req -in $T/$z.csr -CA $T/ca.crt -CAkey $T/ca.key -CAcreateserial -days 30 \
+    -extfile $T/$z.ext -out /var/lib/deltos/tls/$z.crt 2>/dev/null
+done
+chown root:deltos-deltd /var/lib/deltos/tls/*
+chmod 0640 /var/lib/deltos/tls/*
+chmod 0644 $T/ca.crt
 
 install -m 0644 $S/science.wax /var/lib/deltos/packs/science.wax
 

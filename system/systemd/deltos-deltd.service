@@ -1,20 +1,18 @@
-# Step 6: the box API and pack server (deltd), as its own unprivileged user
+# Step 6b: the box API and pack server (deltd), as its own unprivileged user
 # (privilege boundary §3). It starts on every box, hotspot or not, on the
-# WebOS hostname home.deltos.lan (contract §8). It also needs an identity
-# source, set in a drop-in, for example
-# /etc/systemd/system/deltos-deltd.service.d/identity.conf:
+# WebOS hostname home.deltos.lan (contract §8), once the box has people to
+# serve: its identity source is deltos-identityd's socket, and both wait for
+# the first admin (docs/identityd.md §6). There is no anonymous mode.
 #
-#   [Service]
-#   Environment=DELTD_IDENTITY_ARGS=--dev-sessions=/path/to/table.json
-#
-# That has no default: deltos-identityd is not built, so the only identity
-# source today is deltd's development-only table, which no real box should
-# run with. Until one is set, deltd is skipped with a message saying so.
+# HTTPS (port 443) runs when the box's two certificates are in
+# /var/lib/deltos/tls/ (contract §8); until then deltd serves plain HTTP
+# only, and says that teachers and admins cannot sign in.
 [Unit]
 Description=DeltOS box API and pack server (deltd)
 Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-radio-and-boot.md
-Wants=deltos-net-render.service
-After=deltos-net-render.service deltos-dnsmasq.service
+ConditionPathExists=/var/lib/deltos/identity/identity.sqlite
+Wants=deltos-net-render.service deltos-identityd.service
+After=deltos-net-render.service deltos-dnsmasq.service deltos-identityd.service
 StartLimitIntervalSec=10min
 StartLimitBurst=10
 
@@ -22,10 +20,12 @@ StartLimitBurst=10
 Type=simple
 User=deltos-deltd
 Group=deltos-deltd
-Environment=DELTOS_WEBOS_HOST=home.deltos.lan DELTD_IDENTITY_ARGS= DELTD_CONNECTIVITY_ARGS=
+Environment=DELTOS_WEBOS_HOST=home.deltos.lan DELTD_CONNECTIVITY_ARGS=
+Environment="DELTD_IDENTITY_ARGS=--identity-socket /run/deltos/identity/identityd.sock"
+Environment="DELTD_TLS_ARGS=--tls-listen 0.0.0.0:443 --tls-cert-dir /var/lib/deltos/tls"
 EnvironmentFile=-/run/deltos/network/deltd.env
 ExecCondition=/usr/lib/deltos/libexec/deltos-deltd-ready
-ExecStart=/usr/lib/deltos/bin/deltd --webos-host ${DELTOS_WEBOS_HOST} --packs /var/lib/deltos/packs --catalog-dir /var/lib/deltos/b4 $DELTD_IDENTITY_ARGS $DELTD_CONNECTIVITY_ARGS
+ExecStart=/usr/lib/deltos/bin/deltd --webos-host ${DELTOS_WEBOS_HOST} --packs /var/lib/deltos/packs --catalog-dir /var/lib/deltos/b4 $DELTD_IDENTITY_ARGS $DELTD_TLS_ARGS $DELTD_CONNECTIVITY_ARGS
 Restart=on-failure
 RestartSec=2s
 RestartSteps=5
@@ -40,7 +40,7 @@ PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadOnlyPaths=/var/lib/deltos/packs
-InaccessiblePaths=-/var/lib/deltos/network -/run/deltos/network
+InaccessiblePaths=-/var/lib/deltos/network -/run/deltos/network -/var/lib/deltos/identity
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

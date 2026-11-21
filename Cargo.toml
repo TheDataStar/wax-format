@@ -6,6 +6,7 @@ members = [
     "crates/wax-bench",
     "crates/deltlib",
     "crates/deltos-net",
+    "crates/deltos-identity",
     "crates/delt-desktop",
     "crates/wss-core",
 ]

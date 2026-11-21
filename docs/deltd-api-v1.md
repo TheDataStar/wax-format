@@ -125,6 +125,18 @@ These are `identityd`'s: `deltd` forwards them to `identityd` over its local soc
 | `POST /classes/{id}/members/{profile_id}/sign-in-card` | Issue a new sign-in card; the old one stops working | `profile.manage`, for that class · **Secure** |
 | `GET /classes/{id}/members/{profile_id}/devices` and `DELETE …/devices/{device_id}` | See and remove a student's remembered devices | `profile.manage`, for that class · **Secure** |
 
+**Built 2026-11-21** (`docs/identityd.md`), with these additions, all forwarded to `identityd` like the rows above:
+
+| Endpoint | Does | Needs |
+|---|---|---|
+| `GET /sign-in/check?sign_in_name=` | Whether this name may sign in with a password over this connection, asked before the password box is shown, so a teacher on plain HTTP is told to use their certified device before typing it | None |
+| `POST /profiles` | Create a profile (`display_name`, `kind`, `sign_in_name` and `password` for passworded people, `class_or_group`, `roles`) | `admin.console`; or `profile.manage` for the class, for a passwordless student in it · **Secure** |
+| `GET /classes/{id}/members` | The people in a class, with each one's card expiry and number of remembered devices | `profile.manage`, for that class · **Secure** |
+| `PUT /me/password` | Change one's own password with the current one; every session of the person ends | Signed in · **Secure** |
+| `PUT /profiles/{id}/password` | Reset a passworded person's password; their sessions end | `admin.console` · **Secure** |
+
+`POST /session` takes `{"sign_in_name", "password"}`, `{"sign_in_code"}`, `{"profile_id"}` (kiosk only), or no body on a remembered device. `DELETE /session?forget_device=true` also forgets the remembered device; `DELETE /me/device` forgets it and signs this browser out. A successful sign-in answers with the session (as `GET /session`, including `csrf_token`) and sets `delt_session`, the browser id `delt_browser` and, after a card, `delt_device` (their `__Host-` names over HTTPS). "The kiosk" is a request whose connection comes from the box itself (loopback).
+
 **Passwordless people sign in off the kiosk with a teacher-issued sign-in card** (decided 2026-11-20, privilege boundary §10). `GET /sign-in/profiles` is answered only on the kiosk, because listing every student's name to any device on the Wi-Fi is itself a privacy leak. A sign-in code never makes a secure session, and never signs in anyone with a password. **Teacher and admin passwords are HTTPS only** (decided 2026-11-20): `POST /session` with a password for a person who holds any secure-only permission is refused over plain HTTP with `secure_connection_required`.
 
 ### 6.2 Library
@@ -242,6 +254,8 @@ Every error has the same JSON shape and a code from one closed list, so the WebO
 | `not_enough_resources` | 503 | The feature's declared floor is above what this box measured; `detail` gives both numbers |
 | `not_enough_storage` | 507 | An install, upload or conversion would exceed measured free storage |
 | `too_many_requests` | 429 | Too many attempts or requests from one device or person (F15, §9) |
+| `sign_in_failed` | 401 | Wrong name, password or card code; all said the same way (added 2026-11-21) |
+| `sign_in_unavailable` | 503 | The sign-in service cannot be reached; nobody is signed in meanwhile (added 2026-11-21) |
 | `pack_damaged` | 500 | A hash check failed; a health event is raised |
 | `internal` | 500 | Anything else; logged on the box |
 
@@ -285,10 +299,10 @@ Not answered here, and not to be filled in by whoever implements first. Items th
 | 3 | **Who gets `lists.assign` by default** | Teachers need it on a fresh box | The shipped `teacher` bundle | Contract §4 |
 | 4 | ~~Teacher and admin passwords over plain HTTP~~ | **Decided 2026-11-20: HTTPS only** (§6.1) | — | Closed |
 | 5 | ~~How students sign in on their own phones~~ | **Decided 2026-11-20: teacher-issued sign-in card** (§6.1) | — | Closed |
-| 6 | **How long a session lasts** | Shared screens and personal devices need different limits; also sets how long a remembered device lasts and the sign-in card's code length and validity | Choose with teachers | Contract, Track F |
+| 6 | ~~**How long a session lasts**~~ | **Answered 2026-11-21** (contract §13.2, `docs/identityd.md` §5) | — | Closed |
 | 7 | **Restricting a pack to some people** | v1 lets every signed-in person see every pack (§5) | Decide whether v1 needs it at all | Commander |
 | 8 | **How long an export file is kept** | Storage on a 32 GB box | Measure, then choose | Track C |
-| 9 | **Rate-limit numbers** (§9) | Fairness at 40 phones on 2 GB | Measure on the minimum spec | Track D, Track F |
+| 9 | **Rate-limit numbers** (§9) | Fairness at 40 phones on 2 GB | Measure on the minimum spec. Sign-in runs on starting values meanwhile: 10 failures per 10 minutes per device and per person (`docs/identityd.md` §5) | Track D, Track F |
 | 10 | **Snippet speed on an SD card** | Snippets are cut at query time | Measure before release; ship titles-only results if too slow | Track D |
 | 11 | **Which PDF engine runs on the box** | Size and memory at 2 GB | Measure candidates against the floor | Track C |
 | 12 | **Section ids for highlights** | `outline` and anchors need the chunks table | Waits on format ask F3 | Track A |
