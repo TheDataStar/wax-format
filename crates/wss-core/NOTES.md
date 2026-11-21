@@ -100,6 +100,14 @@ a GUI would receive.
 4. **Two zim2wax bugs fixed in this PR** (pre-existing): the build report's
    `archive_filename` named `<pack>.partial`, and a signed conversion left its
    signature at `<pack>.partial.minisig`, beside a file that no longer exists.
+5. **Found by the end-to-end check with real inputs, fixed (2026-11-21,
+   `docs/e2e-check-2026-11-21.md`):** EPUB file names are read as UTF-8 even
+   without the zip UTF-8 flag (OCF requires UTF-8; a Japanese book had lost
+   its chapters and its search); `pdf-extract` 0.7 → 0.10 so CJK PDFs with
+   predefined CMaps (`UniJIS-UCS2-H`) yield text; `wss refresh` defaults
+   category, resources, arch, gpu, name, license and attribution from the
+   pack's manifest. In `wax-core`, search text no longer breaks words at
+   inline tags and drops ruby readings, so Japanese phrases match.
 
 ## Shared-crate changes in this PR (minimal)
 

@@ -241,6 +241,60 @@ fn an_epub_becomes_a_book_with_contents_chapter_links_and_search() {
     assert!(!rd.contains("mimetype").unwrap() && !rd.contains("META-INF/container.xml").unwrap());
 }
 
+/// Clear the zip "names are UTF-8" flag (bit 11) on every entry, as the
+/// tools that zipped many real books leave it.
+fn clear_utf8_flag(zip: &mut [u8]) {
+    let mut i = 0;
+    while i + 10 <= zip.len() {
+        let at = match &zip[i..i + 4] {
+            [b'P', b'K', 3, 4] => Some(i + 6),
+            [b'P', b'K', 1, 2] => Some(i + 8),
+            _ => None,
+        };
+        if let Some(f) = at {
+            zip[f + 1] &= !0x08;
+        }
+        i += 1;
+    }
+}
+
+#[test]
+fn a_japanese_epub_without_the_zip_utf8_flag_keeps_its_chapters_and_search() {
+    // Found converting the IDPF 草枕 sample: chapters named 一.xhtml were
+    // read as CP437 (Σ╕Ç.xhtml), missed the spine, and the book had no
+    // search. OCF requires UTF-8 names, flag or not.
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    let d = tempfile::tempdir().unwrap();
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut z = zip::ZipWriter::new(&mut buf);
+        let o = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        z.start_file("mimetype", o).unwrap();
+        z.write_all(b"application/epub+zip").unwrap();
+        z.start_file("META-INF/container.xml", o).unwrap();
+        z.write_all(br#"<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OPS/package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#).unwrap();
+        z.start_file("OPS/package.opf", o).unwrap();
+        z.write_all(r#"<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">urn:uuid:2</dc:identifier><dc:title>草枕</dc:title><dc:creator>夏目 漱石</dc:creator><dc:language>ja</dc:language><dc:rights>CC0-1.0</dc:rights></metadata><manifest><item id="c1" href="xhtml/一.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/></spine></package>"#.as_bytes()).unwrap();
+        z.start_file("OPS/xhtml/一.xhtml", o).unwrap();
+        z.write_all(r#"<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>一</title></head><body><p>山路を登りながら、こう考えた。</p><p><ruby>智<rt>ち</rt></ruby>に働けば<ruby>角<rt>かど</rt></ruby>が立つ。</p></body></html>"#.as_bytes()).unwrap();
+        z.finish().unwrap();
+    }
+    let mut bytes = buf.into_inner();
+    clear_utf8_flag(&mut bytes);
+    let book = d.path().join("kusamakura.epub");
+    fs::write(&book, &bytes).unwrap();
+    let out = d.path().join("kusamakura.wax");
+    convert(book.to_str().unwrap(), &out, &recipe()).unwrap();
+    let rd = WaxReader::open(&out).unwrap();
+    assert!(rd.contains("OPS/xhtml/一.xhtml").unwrap(), "the chapter keeps its UTF-8 name");
+    assert_eq!(rd.entry("OPS/xhtml/一.xhtml").unwrap().title.as_deref(), Some("一"));
+    // a phrase across ruby: the reading (ち, かど) is not part of the text
+    let find = |q: &str| rd.search(&wax_core::tokenize::match_expr(q, false).unwrap(), 5).unwrap();
+    assert_eq!(find("智に働けば角が立つ")[0].path, "OPS/xhtml/一.xhtml");
+    assert_eq!(find("こう考えた")[0].path, "OPS/xhtml/一.xhtml");
+}
+
 #[test]
 fn a_drm_protected_epub_is_refused_but_font_obfuscation_is_carried() {
     let d = tempfile::tempdir().unwrap();

@@ -785,6 +785,7 @@ dependencies = [
  "axum",
  "caseless",
  "clap",
+ "deltos-net",
  "percent-encoding",
  "rusqlite",
  "serde",
@@ -795,6 +796,15 @@ dependencies = [
  "tokio-stream",
  "unicode-normalization",
  "wax-core",
+]
+
+[[package]]
+name = "deltos-net"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
