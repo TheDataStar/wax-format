@@ -1,0 +1,54 @@
+#!/bin/sh
+# Restart what a changed network settings file belongs to
+# (docs/box-radio-and-boot.md §2). Started by deltos-net-changed.path when
+# deltos-net rewrites a file after a checked action; deltos-net-render only
+# rewrites files whose content changed, and this compares against the last
+# applied copy so a spurious trigger restarts nothing.
+#
+#   deltos-net-apply --record   remember the current files (at boot)
+#   deltos-net-apply            act on whatever changed since
+set -eu
+
+D=/run/deltos/network
+S=$D/.applied
+mkdir -p "$S"
+
+sum() {
+    if [ -e "$D/$1" ]; then sha256sum "$D/$1" | cut -d' ' -f1; else echo absent; fi
+}
+# changed FILE: true when FILE differs from the recorded copy; records it
+changed() {
+    new=$(sum "$1")
+    old=$(cat "$S/$1" 2>/dev/null || echo unknown)
+    echo "$new" > "$S/$1"
+    [ "$new" != "$old" ]
+}
+
+FILES="dnsmasq.conf hostapd.conf uplink.nft hotspot.env deltd.env"
+if [ "${1:-}" = --record ]; then
+    for f in $FILES; do sum "$f" > "$S/$f"; done
+    exit 0
+fi
+
+addr=0; fw=0
+if changed hotspot.env; then addr=1; fw=1; fi
+if changed uplink.nft; then fw=1; fi
+if [ "$addr" = 1 ]; then
+    systemctl restart deltos-hotspot-address.service
+fi
+if [ "$fw" = 1 ]; then
+    systemctl restart deltos-uplink-firewall.service
+fi
+if changed hostapd.conf || [ "$addr" = 1 ]; then
+    if [ -e "$D/hostapd.conf" ]; then
+        systemctl restart deltos-hostapd.service
+    else
+        systemctl stop deltos-hostapd.service
+    fi
+fi
+if changed dnsmasq.conf || [ "$addr" = 1 ]; then
+    systemctl try-restart deltos-dnsmasq.service
+fi
+if changed deltd.env; then
+    systemctl try-restart deltos-deltd.service
+fi

@@ -1,0 +1,7 @@
+[Unit]
+Description=DeltOS network settings: restart what changed
+Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-radio-and-boot.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/deltos/libexec/deltos-net-apply

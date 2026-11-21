@@ -9,6 +9,10 @@ license = "MIT"
 name = "deltos-net-render"
 path = "src/bin/render.rs"
 
+[[bin]]
+name = "deltos-net-provision"
+path = "src/bin/provision.rs"
+
 [dependencies]
 rusqlite = { version = "0.30", features = ["bundled"] }
 thiserror = "1.0"

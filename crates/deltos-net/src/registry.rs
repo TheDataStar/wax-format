@@ -9,11 +9,18 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-/// Schema version, in `PRAGMA user_version`.
-pub const REGISTRY_SCHEMA_VERSION: i64 = 1;
+use crate::radio::{Radio, Secret};
+
+/// Schema version, in `PRAGMA user_version`. 2 added the hotspot's radio
+/// settings (E3); a version-1 registry is upgraded in place on open.
+pub const REGISTRY_SCHEMA_VERSION: i64 = 2;
 
 /// The zone service names live in (contract §8).
 pub const SERVICE_ZONE: &str = "deltos.lan";
+/// The WebOS and box API's hostname (contract §8, decided 2026-11-21 under
+/// Commander's delegation; docs/box-radio-and-boot.md §5). Never approvable
+/// for anything else: it is the one origin that carries people's sessions.
+pub const WEBOS_HOST: &str = "home.deltos.lan";
 /// The pack zone (contract §8). The registry never holds a name in it:
 /// pack hostnames are issued by `identityd` and answered by the wildcard.
 pub const PACK_ZONE: &str = "deltos-packs.lan";
@@ -225,6 +232,13 @@ impl Registry {
                  mac TEXT PRIMARY KEY,
                  address TEXT NOT NULL UNIQUE,
                  label TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS radio (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 ssid TEXT NOT NULL,
+                 passphrase TEXT NOT NULL,
+                 country TEXT NOT NULL,
+                 channel INTEGER NOT NULL
              );",
         )?;
         conn.execute_batch(&format!("PRAGMA user_version = {REGISTRY_SCHEMA_VERSION};"))?;
@@ -374,5 +388,30 @@ impl Registry {
         let mut s = self.settings()?;
         s.uplink_sharing = on;
         self.set_settings(&s)
+    }
+
+    /// The hotspot's radio settings, if any were set.
+    pub fn radio(&self) -> Result<Option<Radio>> {
+        let r = self
+            .conn
+            .query_row("SELECT ssid, passphrase, country, channel FROM radio WHERE id = 1", [], |r| {
+                Ok(Radio { ssid: r.get(0)?, passphrase: Secret::new(r.get::<_, String>(1)?), country: r.get(2)?, channel: r.get::<_, i64>(3)? as u8 })
+            })
+            .optional()?;
+        Ok(r)
+    }
+
+    /// Store the radio settings. Provisioning (Track E, E7) and the
+    /// `configure_ap` action write these. The registry file therefore holds
+    /// the Wi-Fi password: it lives in a directory only root can read
+    /// (`system/tmpfiles.d/deltos.conf`).
+    pub fn set_radio(&mut self, r: &Radio) -> Result<()> {
+        r.validate()?;
+        self.conn.execute(
+            "INSERT INTO radio (id, ssid, passphrase, country, channel) VALUES (1, ?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET ssid = ?1, passphrase = ?2, country = ?3, channel = ?4",
+            params![r.ssid, r.passphrase.expose(), r.country, r.channel as i64],
+        )?;
+        Ok(())
     }
 }

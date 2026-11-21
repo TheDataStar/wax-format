@@ -1,0 +1,9 @@
+# Everything a DeltOS box starts at boot (docs/box-radio-and-boot.md §2).
+[Unit]
+Description=DeltOS box services
+Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-radio-and-boot.md
+Wants=deltos-net-render.service deltos-hotspot-address.service deltos-uplink-firewall.service
+Wants=deltos-hostapd.service deltos-dnsmasq.service deltos-deltd.service deltos-net-changed.path
+
+[Install]
+WantedBy=multi-user.target

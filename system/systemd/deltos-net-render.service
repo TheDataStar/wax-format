@@ -1,0 +1,39 @@
+# Step 1: write the network settings files from the registry.
+# Needs no network, no capabilities, and can write only its two directories.
+[Unit]
+Description=DeltOS network settings from the registry
+Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-radio-and-boot.md
+ConditionPathExists=/var/lib/deltos/network/registry.sqlite
+After=systemd-tmpfiles-setup.service
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+UMask=0027
+ExecStart=/usr/lib/deltos/bin/deltos-net-render /var/lib/deltos/network/registry.sqlite /run/deltos/network
+ExecStartPost=/usr/lib/deltos/libexec/deltos-net-apply --record
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/deltos/network /run/deltos/network
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# not ~@privileged: SQLite, run as root, fchown()s its journal to the database's owner

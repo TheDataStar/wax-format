@@ -22,7 +22,7 @@ Contract §8 puts every surface on its own hostname:
 
 | Surface | Name | Changes |
 |---|---|---|
-| WebOS and API | `<webos-host>.deltos.lan` (name still open, contract §13.2) | Fixed |
+| WebOS and API | `home.deltos.lan` (contract §8, decided 2026-11-21) | Fixed |
 | Service surfaces | `<service>.deltos.lan` | When an app is installed, or a name is approved (Track E §23.3) |
 | Pack content | `pack-<index>-g<generation>-<partition>.deltos-packs.lan` | **A new partition for every person on every browser** (contract §8) |
 
@@ -108,12 +108,12 @@ And one listing: `GET /network/leases`, `network.configure`, Secure.
 | 3 | DNS and DHCP software | `dnsmasq` + Avahi, replacing CoreDNS (§5), once the memory figures are measured | Track E §14 |
 | 4 | How phones' internet checks are answered | "Internet works", tested on real handsets first (§6) | Track E §6 (E3) |
 | 5 | The three new actions (§7) | Add to the closed list | `docs/privilege-boundary.md` |
-| 6 | The WebOS hostname | Still open; both DNS and `deltd` need it | Contract §13.2 |
+| 6 | The WebOS hostname | **Answered 2026-11-21: `home.deltos.lan`** | Contract §8 |
 
 ## 9. Build order
 
 1. ~~**E10 network registry and `dnsmasq` configuration generator**~~ **Built** (`crates/deltos-net`): the registry, the wildcard records, the hotspot DHCP settings, the watched names and reservations directories, the uplink firewall file, and the §7 actions behind shelld's checks. Tested without a radio: a real `dnsmasq` on a virtual ethernet pair, with a DHCP client in its own network namespace standing in for a phone.
 2. ~~**`deltd`'s connectivity-check answers**~~ **Built** (`deltd --answer-connectivity-checks`), answering only the listed paths, `GET`/`HEAD` only, no cookie.
-   Not built yet: the radio itself (`configure_ap`, `join_network`, Track E's E3), the supervisor units that run `dnsmasq`, the firewall and `deltos-net-render` at boot, and the `deltos-shelld` socket that calls the actions.
+   **Built since (2026-11-21, `docs/box-radio-and-boot.md`):** the hotspot radio (`configure_ap`) and the boot units that run `deltos-net-render`, the firewall, `hostapd`, `dnsmasq` and `deltd`. Not built yet: `join_network` and the `deltos-shelld` socket that calls the actions.
 3. **Admin endpoints** for §7, built with the rest of deltd API step 4.
 4. **Real handset testing** of §3 and §6, when Commander starts hardware testing.

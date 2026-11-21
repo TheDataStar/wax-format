@@ -243,7 +243,7 @@ The sweep's most consequential security finding sits here, and it is a cross-tra
 
 | **Surface** | **Origin** |
 |---|---|
-| WebOS and box API | `<webos-host>.deltos.lan`, **one origin for both**, used by the kiosk and by every other browser. **The name is open (§13.2).** |
+| WebOS and box API | **`home.deltos.lan`**, **one origin for both**, used by the kiosk and by every other browser. Decided 2026-11-21 (§13.2). |
 | Pack content | `pack-<pack_index>-g<pack_generation>-<pack_partition>.deltos-packs.lan` |
 | Admin, service surfaces | `<service>.deltos.lan` (admin, git, flows, cloud, wiki, mail, code, blog) |
 
@@ -487,7 +487,7 @@ Not answered, and not to be filled in by whoever implements first:
 - ~~Whether `community_hub` and `field_ops` require `x86_64`~~ — **answered: no.** The floor is the resources, not the architecture. A 16 GB ARM64 box meeting the RAM and storage numbers **qualifies for both profiles**. The old `mini_pc` label bundled 16 GB with x86 in one name, and only the numbers were ever the requirement. **x86 remains the preferred spec (§2.1), never a gate** — treating it as one would reintroduce exactly the device-shaped gate §2 removes.
 - **The exact icon set** implementing the design language's icon rule. `design-language.md` specifies the visual rule, not the asset source, and nothing in the locked token set depends on the answer. **Owned by `design-language.md`.**
 - **From the privilege-boundary and deltd API review (2026-11-20).** Each is a value or design the two documents need and do not invent:
-  - **The WebOS hostname** (§8). Needed before C1 is built.
+  - ~~**The WebOS hostname** (§8)~~ — **answered 2026-11-21: `home.deltos.lan`**, under Commander's delegation of routine decisions. Short enough to type on a phone and print on a sign-in card, says what it is (the box's home screen, not one app), and collides with none of §8's service names. It can never be approved for another device (E10 refuses it). Recorded in `docs/box-radio-and-boot.md` §5.
   - **How long a session lasts**, idle and absolute, on a shared screen and on a personal device, with how long a remembered device lasts and the sign-in card's code length and validity (§5.1).
   - **Paths** under `/var/lib/deltos/` (§10) for `deltd`'s personal data (notes, lists, history) and for the privilege boundary's action log.
   - **Whether the shipped `teacher` bundle holds `lists.assign`**, the Classroom app's permission.
