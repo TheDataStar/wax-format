@@ -227,6 +227,83 @@ if until_t 30 bash -c "iw dev wlan0 info | grep -q 'channel 11 '"; then ok "the 
 if until_t 90 bash -c "$P iw dev wlan1 link | grep -q 'freq: 2462'"; then ok "the phone follows the hotspot to channel 11"; else bad "the phone follows the hotspot to channel 11"; fi
 check "dnsmasq was not restarted by a radio change" test "$(pid deltos-dnsmasq)" = "$dns_before"
 
+# --- backup and restore (docs/box-backup.md) ----------------------------------
+# A folder stands in for the mounted USB drive. The backup is made after the
+# channel change above, so the restore must bring channel 11 back too.
+DRIVE=/srv/backup-drive; mkdir -p $DRIVE
+BK=/usr/lib/deltos/bin/deltos-backup
+BPASS="vm test backup passphrase"
+t0=$(date +%s)
+check "root makes an encrypted backup at the console" bash -c "echo '$BPASS' | $BK create --to $DRIVE --passphrase-stdin"
+info "backup took $(( $(date +%s) - t0 )) s"
+BID=$($BK list $DRIVE | awk 'NR==1{print $1}')
+info "backup $BID: $(stat -c %s $DRIVE/$BID 2>/dev/null) bytes; the pack is $(stat -c %s /var/lib/deltos/packs/science.wax) bytes"
+check "the drive holds the one backup file and nothing else" test "$(ls -A $DRIVE | wc -l)" = 1
+check "nothing in it is readable without the passphrase" bash -c "head -c 22 $DRIVE/$BID | grep -q '^age-encryption.org/v1' && ! grep -a -q -e 'SQLite format' -e 'DeltOS VM Test' -e 'test-only passphrase' -e 'BEGIN' $DRIVE/$BID"
+check "the backup file is the admin's alone (0600)" test "$(stat -c %a $DRIVE/$BID)" = 600
+check "a wrong passphrase is refused" bash -c "! echo 'not the right passphrase' | $BK review --from $DRIVE $BID --passphrase-stdin"
+check "a non-root user cannot make a backup" bash -c "! echo '$BPASS' | runuser -u nobody -- $BK create --to /tmp --passphrase-stdin"
+SSL_FP() { openssl x509 -in /var/lib/deltos/ca/ca.crt -noout -fingerprint -sha256 | sed 's/.*=//'; }
+FP_OLD=$(SSL_FP)
+
+# A fresh box: every piece of state thrown away and set up again from
+# nothing, with a different Wi-Fi name, a new first admin and (at start) a
+# new certificate authority. The pack file stays, as on a box whose SD card
+# kept its packs; the review must notice it is there.
+systemctl stop deltos-deltd deltos-identityd deltos-hostapd deltos-dnsmasq deltos-uplink-firewall deltos-hotspot-address deltos-net-render deltos-net-changed.path
+rm -rf /var/lib/deltos/identity /var/lib/deltos/ca /var/lib/deltos/tls /var/lib/deltos/network /var/lib/deltos/b4
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/deltos.conf
+cat > /root/fresh.conf <<'CONF'
+mode=hotspot
+interface=wlan0
+address=10.42.0.1/24
+uplink_interface=eth0
+ssid=Fresh Box
+passphrase=fresh box passphrase
+country=GB
+channel=1
+CONF
+/usr/lib/deltos/bin/deltos-net-provision /var/lib/deltos/network/registry.sqlite /root/fresh.conf >/dev/null
+rm /root/fresh.conf
+runuser -u deltos-identity -- /usr/lib/deltos/bin/deltos-identity-provision --display-name "Fresh Admin" --sign-in-name fresh > /root/fresh-admin.txt
+FRESH_PW=$(sed -n 's/^Password, shown this once and never stored: //p' /root/fresh-admin.txt)
+systemctl start deltos-box.target
+until_t 120 systemctl is-active --quiet deltos-deltd.service
+FP_FRESH=$(SSL_FP)
+info "fresh box CA: $FP_FRESH"
+check "the fresh box made its own, different certificate stamp" bash -c "[ -n '$FP_FRESH' ] && [ '$FP_FRESH' != '$FP_OLD' ]"
+HS="curl -s -o /dev/null -w %{http_code} --max-time 10 --resolve home.deltos.lan:443:127.0.0.1"
+check "a device that trusted the old box does not trust the fresh one" bash -c "! $HS --cacert $CA https://home.deltos.lan/api/v1/openapi.json"
+
+# Review, then restore.
+echo "$BPASS" | $BK review --from $DRIVE $BID --passphrase-stdin > /tmp/review.txt 2>&1
+cat /tmp/review.txt >> "$OUT"
+RID=$(sed -n 's/^To restore it: deltos-backup restore //p' /tmp/review.txt)
+check "the review shows the backup's stamp, people, Wi-Fi and pack" bash -c "grep -q 'certificate (stamp): $FP_OLD' /tmp/review.txt && grep -q 'admins who can sign in: admin' /tmp/review.txt && grep -q 'Wi-Fi name \"DeltOS VM Test\"' /tmp/review.txt && grep -q '^  pack ' /tmp/review.txt && ! grep -q reinstall /tmp/review.txt"
+check "the review changed nothing live" test "$(SSL_FP)" = "$FP_FRESH"
+check "a restore is not started without typing restore" bash -c "! echo no | $BK restore $RID"
+t0=$(date +%s)
+check "root restores the reviewed backup" bash -c "$BK restore $RID --yes"
+info "restore took $(( $(date +%s) - t0 )) s"
+for u in deltos-identityd deltos-deltd deltos-hostapd deltos-dnsmasq; do
+  if until_t 90 systemctl is-active --quiet "$u.service"; then ok "$u is running after the restore"; else bad "$u is running after the restore ($(systemctl is-active $u.service))"; fi
+done
+check "the certificate stamp is the backed-up box's again" test "$(SSL_FP)" = "$FP_OLD"
+check "no DeltOS unit failed after the restore" test "$(systemctl list-units --failed --plain --no-legend 'deltos-*' | wc -l)" = 0
+check "owners and modes came back (CA root 0700/0600, register deltos-identity 0700, server keys root:deltos-deltd 0640)" bash -c "[ \"\$(stat -c '%a %U' /var/lib/deltos/ca)\" = '700 root' ] && [ \"\$(stat -c '%a %U' /var/lib/deltos/ca/ca.key)\" = '600 root' ] && [ \"\$(stat -c '%a %U' /var/lib/deltos/identity)\" = '700 deltos-identity' ] && [ \"\$(stat -c '%a %U' /var/lib/deltos/identity/identity.sqlite)\" = '600 deltos-identity' ] && [ \"\$(stat -c '%a %U %G' /var/lib/deltos/tls/deltos.lan.key)\" = '640 root deltos-deltd' ] && [ \"\$(stat -c '%a %U' /var/lib/deltos/network)\" = '700 root' ]"
+if until_t 60 bash -c "$HS --cacert $CA https://home.deltos.lan/api/v1/openapi.json | grep -q 200"; then ok "a device that trusted the box before the restore trusts it again, with nothing to set up"; else bad "a device that trusted the box before the restore trusts it again"; fi
+if until_t 60 bash -c "iw dev wlan0 info | grep -q 'ssid DeltOS VM Test' && iw dev wlan0 info | grep -q 'channel 11 '"; then ok "the hotspot's name and channel came back"; else bad "the hotspot's name and channel came back"; fi
+if until_t 120 joined && until_t 60 bash -c "$P iw dev wlan1 link | grep -q 'freq: 2462'"; then ok "the phone rejoins the restored hotspot on its own"; else bad "the phone rejoins the restored hotspot on its own"; fi
+$P busybox udhcpc -i wlan1 -n -q -f -t 10 -T 2 -s /tmp/udhcpc.sh >/dev/null 2>&1 || true
+rm -f $J/admin $J/admin.csrf
+if until_t 30 bash -c "[ \"\$(W $J/admin https POST /session '{\"sign_in_name\":\"admin\",\"password\":\"$ADMIN_PW\"}')\" = 200 ]"; then ok "the backed-up admin signs in over HTTPS from the phone with their old password"; else bad "the backed-up admin signs in over HTTPS with their old password ($(cat $J/admin.out 2>/dev/null))"; fi
+check "the fresh box's throwaway admin is gone" bash -c "[ \"\$(W $J/fresh https POST /session '{\"sign_in_name\":\"fresh\",\"password\":\"$FRESH_PW\"}')\" != 200 ]"
+rm -f $J/phone.csrf
+check "the student's remembered phone signs in again without the card" test "$(W $J/phone http POST /session '')" = 200
+check "search still finds the page after the restore" bash -c "[ \"\$(G $J/phone http '/search?q=evaporation')\" = 200 ] && grep -q 'Water cycle' $J/phone.out"
+check "the replaced state is kept once, root-only" test "$(stat -c '%a %U' /var/lib/deltos/.restore-previous)" = "700 root"
+rm -f /root/fresh-admin.txt
+
 # --- outcome -----------------------------------------------------------------
 info "memory in use: $(free -m | awk '/Mem:/{print $3}') MB of $(free -m | awk '/Mem:/{print $2}') MB"
 for u in deltos-hostapd deltos-dnsmasq deltos-identityd deltos-deltd; do

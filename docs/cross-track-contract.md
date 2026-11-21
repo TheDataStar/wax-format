@@ -295,6 +295,8 @@ Track E confines DeltOS state to one tree so that OS rollback has a defined boun
 | /var/lib/deltos/ca/ | **[Proposed 2026-11-21]** The box CA (§8): `ca.key` and `ca.crt`. Root's alone (`0700`); never readable by `deltd` (`docs/box-certificates.md`). |
 | /var/lib/deltos/tls/ | **[Proposed 2026-11-21]** The box's two certificates and keys (§8): `deltos.lan.crt`/`.key` and `deltos-packs.lan.crt`/`.key`, readable by `deltd` only, plus the CA's public `ca.crt` and `issued.json`. Issued by the box CA. |
 | /var/lib/deltos/health/ | Health snapshots. |
+| /var/lib/deltos/.restore-staging/ | **[Proposed 2026-11-21]** F10's working folder: a backup being made or reviewed, root's alone (`0700`), on the state's own filesystem so a restore is a rename (`docs/box-backup.md` §5). Never itself backed up. |
+| /var/lib/deltos/.restore-previous/ | **[Proposed 2026-11-21]** What the last restore replaced, root's alone (`0700`), kept until the next restore. Never itself backed up. |
 | /var/lib/deltos/<service>-adapter/ | Each Track H adapter's profile-to-account mapping (§5.1). |
 
 - **[New decision]** State written under this tree carries a schema version that its owner refuses to open if newer than it understands. This is the missing half of Track E's rollback design: /var is shared and never rolled back, so a rollback hands old code data that new code already migrated. Track E presents this as the guarantee without noticing it is also the hazard.
@@ -455,6 +457,7 @@ Every value in this document that had no defensible source anywhere — chosen r
 | 5.1 | **Passwordless sign-in off the kiosk uses a teacher-issued sign-in card and a remembered device** (2026-11-20) | On personal phones tap-your-name let classmates open each other's private notes. |
 | 5.1 | **Passworded identities sign in with a unique `sign_in_name`** (2026-11-21) | Off the kiosk there is no name list, and display names are not unique. |
 | 13.2 | **Session, remembered-device and sign-in card lengths chosen** (2026-11-21, delegated) | `identityd` could not be built without them; reasons in `docs/identityd.md` §5. |
+| 10, 16 | **F10 backup set and lock** (2026-11-21, delegated): the whole state tree minus `capability.json`, `health/` and the restore's own folders; pack files listed, not copied; sessions and tickets dropped; age v1 under the admin's passphrase (10 characters minimum, scrypt `2^18`); two restore folders proposed in §10 | Track F §9 left the format open and nothing named the set; reasons in `docs/box-backup.md` §3–§4. |
 | 5.2 | **`profile_id` comes from a live session, never the pack origin** (Commander, 2026-11-20) | On personal phones a pack address proves nothing about who is reading. |
 | 8 | **The box makes its own name-constrained CA at every profile; G2 later reuses its root** (2026-11-21, delegated) | HTTPS is needed from the first admin at every profile, and G2 is dormant at Kiosk; one root means a device enrols once. `docs/box-certificates.md`. |
 | 8 | **`profile_slot` retired for a random per-(browser, person) `pack_partition`** (goal approved by Commander, 2026-11-20) | 32 slots capped a box at 32 people; a numbered per-browser slot could leak data after a partial browser reset. |

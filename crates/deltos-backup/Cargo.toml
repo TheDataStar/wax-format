@@ -1,0 +1,31 @@
+[package]
+name = "deltos-backup"
+version = "0.1.0"
+edition = "2021"
+description = "F10: encrypted backup and restore of the box's own state under /var/lib/deltos (docs/box-backup.md)"
+license = "MIT"
+
+[[bin]]
+name = "deltos-backup"
+path = "src/bin/deltos-backup.rs"
+
+[dependencies]
+age = { version = "0.11", default-features = false }
+tar = "0.4"
+zstd = "0.13"
+rusqlite = { version = "0.30", features = ["bundled"] }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1.0"
+libc = "0.2"
+clap = { version = "4.4", features = ["derive"] }
+rand = "0.8"
+wax-core = { path = "../wax-core" }
+deltos-identity = { path = "../deltos-identity" }
+deltos-net = { path = "../deltos-net" }
+deltos-tls = { path = "../deltos-tls" }
+deltlib = { path = "../deltlib" }
+
+[dev-dependencies]
+tempfile = "3.8"

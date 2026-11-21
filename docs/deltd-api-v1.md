@@ -227,7 +227,8 @@ These endpoints never act themselves. They check, then hand the job to `deltos-s
 | `POST /fleet/pairings` | `pair_box` | `fleet.manage` · re-confirm |
 | `GET /backups?drive=` | listing | `backup.manage` |
 | `POST /backups` | `start_backup` | `backup.manage` |
-| `POST /backups/{id}/restore` | `restore_backup`, with the staged review | `backup.manage` · re-confirm |
+| `POST /backups/{id}/review` | `review_backup`: the staged review (`docs/box-backup.md` §5) | `backup.manage` |
+| `POST /backups/{id}/restore` | `restore_backup`, naming the review id and digest | `backup.manage` · re-confirm |
 | `GET /system-updates` | listing | `system.update` |
 | `POST /system-updates/{id}/apply` and `POST /system-updates/rollback` | `apply_update` / `roll_back_update` | `system.update` · re-confirm |
 | `GET /audit` | Read the action log | `admin.console` |

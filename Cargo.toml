@@ -8,8 +8,20 @@ members = [
     "crates/deltos-net",
     "crates/deltos-identity",
     "crates/deltos-tls",
+    "crates/deltos-backup",
     "crates/delt-desktop",
     "crates/wss-core",
 ]
 exclude = ["fuzz", "crates/delt-desktop-app"]
 resolver = "2"
+
+# The backup's scrypt (2^18, docs/box-backup.md §4) takes minutes unoptimised;
+# tests and debug builds would otherwise crawl.
+[profile.dev.package.scrypt]
+opt-level = 3
+[profile.dev.package.salsa20]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
