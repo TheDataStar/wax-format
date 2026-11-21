@@ -23,7 +23,6 @@ for u in deltos-net-render deltos-hotspot-address deltos-uplink-firewall deltos-
 done
 check "deltos-net-changed.path watching" systemctl is-active --quiet deltos-net-changed.path
 check "no DeltOS unit failed" test "$(systemctl list-units --failed --plain --no-legend 'deltos-*' | wc -l)" = 0
-info "boot: $(systemd-analyze 2>/dev/null | head -1)"
 for u in deltos-net-render deltos-hostapd deltos-dnsmasq deltos-deltd; do
   info "$u became active $(systemctl show -p ActiveEnterTimestampMonotonic --value $u.service | awk '{printf "%.1f", $1/1e6}') s after boot"
 done
@@ -65,10 +64,12 @@ network={
   key_mgmt=WPA-PSK
 }
 W
-joined() { $P iw dev wlan1 link | grep -q 'Connected to'; }
+# joined = the key handshake finished (associating alone happens even with a wrong password)
+joined() { $P wpa_cli -p /run/wpa-phone -i wlan1 status 2>/dev/null | grep -q '^wpa_state=COMPLETED$'; }
 
 $P wpa_supplicant -B -i wlan1 -c /tmp/phone-wrong.conf -P /run/wpa-phone.pid >/dev/null
 if until_t 25 joined; then bad "a wrong Wi-Fi password is refused"; else ok "a wrong Wi-Fi password is refused"; fi
+check "the box saw the wrong password" bash -c "journalctl -b -u deltos-hostapd --no-pager | grep -q AP-STA-POSSIBLE-PSK-MISMATCH"
 kill "$(cat /run/wpa-phone.pid)"; sleep 1
 
 $P wpa_supplicant -B -i wlan1 -c /tmp/phone.conf -P /run/wpa-phone.pid >/dev/null
