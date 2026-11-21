@@ -22,7 +22,7 @@
 
 | Surface | Hostname (contract §8) | Sees the sign-in? | Serves |
 |---|---|---|---|
-| **WebOS and API** | the WebOS hostname on `deltos.lan` — **one origin for both**; the name itself is still open (§10) | Yes: `identityd`'s session cookie, set on this hostname only | The WebOS's own files, and `/api/v1/...` JSON |
+| **WebOS and API** | `home.deltos.lan` — **one origin for both** (contract §8, decided 2026-11-21) | Yes: `identityd`'s session cookie, set on this hostname only | The WebOS's own files, and `/api/v1/...` JSON |
 | **Pack content** | `pack-<pack_index>-g<pack_generation>-<pack_partition>.deltos-packs.lan` | Never. No cookie is set or read on this zone. | The pack's pages and media, raw, inside the WebOS's sandboxed frame |
 
 - **One origin for the WebOS and the API** means no cross-origin requests between them, so no CORS (the browser rules that let one site call another) is ever turned on. `deltd` answers no CORS request on any surface.
@@ -280,7 +280,7 @@ Not answered here, and not to be filled in by whoever implements first. Items th
 
 | # | Question | Why it matters | Recommendation | Owner |
 |---|---|---|---|---|
-| 1 | **The WebOS hostname** | Needs a fixed name every client can reach; this API shares it | Name it in contract §8 and the local name service (E10) before C1 is built | Contract §8 |
+| 1 | ~~**The WebOS hostname**~~ | Needs a fixed name every client can reach; this API shares it | **Answered 2026-11-21: `home.deltos.lan`** (contract §8) | Contract §8 |
 | 2 | **Where personal data lives** | Notes and lists need a path, a schema version (contract §10) and a place in backups | A `deltd` directory under `/var/lib/deltos/`, added to contract §10 and declared in `deltd`'s backup set (§15) | Contract §10 |
 | 3 | **Who gets `lists.assign` by default** | Teachers need it on a fresh box | The shipped `teacher` bundle | Contract §4 |
 | 4 | ~~Teacher and admin passwords over plain HTTP~~ | **Decided 2026-11-20: HTTPS only** (§6.1) | — | Closed |

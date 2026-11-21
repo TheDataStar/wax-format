@@ -22,7 +22,7 @@ Contract §8 puts every surface on its own hostname:
 
 | Surface | Name | Changes |
 |---|---|---|
-| WebOS and API | `<webos-host>.deltos.lan` (name still open, contract §13.2) | Fixed |
+| WebOS and API | `home.deltos.lan` (contract §8, decided 2026-11-21) | Fixed |
 | Service surfaces | `<service>.deltos.lan` | When an app is installed, or a name is approved (Track E §23.3) |
 | Pack content | `pack-<index>-g<generation>-<partition>.deltos-packs.lan` | **A new partition for every person on every browser** (contract §8) |
 
@@ -108,7 +108,7 @@ And one listing: `GET /network/leases`, `network.configure`, Secure.
 | 3 | DNS and DHCP software | `dnsmasq` + Avahi, replacing CoreDNS (§5), once the memory figures are measured | Track E §14 |
 | 4 | How phones' internet checks are answered | "Internet works", tested on real handsets first (§6) | Track E §6 (E3) |
 | 5 | The three new actions (§7) | Add to the closed list | `docs/privilege-boundary.md` |
-| 6 | The WebOS hostname | Still open; both DNS and `deltd` need it | Contract §13.2 |
+| 6 | The WebOS hostname | **Answered 2026-11-21: `home.deltos.lan`** | Contract §8 |
 
 ## 9. Build order
 

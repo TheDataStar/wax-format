@@ -50,8 +50,8 @@ else
 fi
 rm /root/network.conf
 
-# deltd's two provisioning values. TEST VALUES ONLY: the WebOS hostname is
-# still open (contract §13.2) and identityd is not built.
+# deltd's identity source. TEST VALUE ONLY: identityd is not built, so this
+# is deltd's development table. The WebOS hostname is the unit's own.
 install -d -m 0755 /etc/deltos-vm-test
 cat > /etc/deltos-vm-test/sessions.json <<'JSON'
 { "sessions": [ { "token": "vm-test-token", "profile_id": "learner-1", "browser_id": "phone-1",
@@ -61,7 +61,6 @@ chmod 0644 /etc/deltos-vm-test/sessions.json
 install -d /etc/systemd/system/deltos-deltd.service.d
 cat > /etc/systemd/system/deltos-deltd.service.d/vm-test.conf <<'DROPIN'
 [Service]
-Environment=DELTOS_WEBOS_HOST=webos-test.deltos.lan
 Environment=DELTD_IDENTITY_ARGS=--dev-sessions=/etc/deltos-vm-test/sessions.json
 DROPIN
 

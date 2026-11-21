@@ -110,7 +110,11 @@ impl Action {
                         return Err(NetError::Invalid(format!("{a}: a name may only point at a device on the box's own network")));
                     }
                 }
-                Action::ApproveName { name: check_service_name(&name)?, target, requested_by }
+                let name = check_service_name(&name)?;
+                if name == crate::registry::WEBOS_HOST {
+                    return Err(NetError::Invalid(format!("{name} is the WebOS's own name and cannot be given to anything else")));
+                }
+                Action::ApproveName { name, target, requested_by }
             }
             Action::RemoveName { name } => Action::RemoveName { name: check_service_name(&name)? },
             Action::SetAddressReservation { mac, address, label } => {

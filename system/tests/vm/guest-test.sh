@@ -93,15 +93,15 @@ check "DHCP names the box as DNS server" test "${PDNS:-}" = 10.42.0.1
 check "the lease is visible to the box" grep -q "${PIP:-none}" /run/deltos/network/leases
 
 dig1() { $P dig +short +time=2 +tries=1 @10.42.0.1 "$1" | head -1; }
-check "WebOS name resolves to the box" test "$(dig1 webos-test.deltos.lan)" = 10.42.0.1
+check "WebOS name resolves to the box" test "$(dig1 home.deltos.lan)" = 10.42.0.1
 check "a fresh pack hostname resolves to the box" test "$(dig1 pack-3-g1-0123456789abcdef.deltos-packs.lan)" = 10.42.0.1
 check "an outside name is 'no such name' at once (offline)" bash -c "$P dig +time=2 +tries=1 @10.42.0.1 example.com | grep -q 'status: NXDOMAIN'"
 check "Android's internet check resolves to the box" test "$(dig1 connectivitycheck.gstatic.com)" = 10.42.0.1
 
 C="$P curl -s -o /dev/null -w %{http_code} --max-time 5"
-check "box API refuses a phone with no session (401)" test "$($C http://webos-test.deltos.lan/api/v1/status)" = 401
-check "box API answers a signed-in phone (200)" test "$($C -H 'Cookie: delt_session=vm-test-token' http://webos-test.deltos.lan/api/v1/status)" = 200
-check "search across packs finds the page" bash -c "$P curl -s --max-time 5 -H 'Cookie: delt_session=vm-test-token' 'http://webos-test.deltos.lan/api/v1/search?q=evaporation' | grep -q 'Water cycle'"
+check "box API refuses a phone with no session (401)" test "$($C http://home.deltos.lan/api/v1/status)" = 401
+check "box API answers a signed-in phone (200)" test "$($C -H 'Cookie: delt_session=vm-test-token' http://home.deltos.lan/api/v1/status)" = 200
+check "search across packs finds the page" bash -c "$P curl -s --max-time 5 -H 'Cookie: delt_session=vm-test-token' 'http://home.deltos.lan/api/v1/search?q=evaporation' | grep -q 'Water cycle'"
 check "Android's check is answered 'internet works' (204)" test "$($C http://connectivitycheck.gstatic.com/generate_204)" = 204
 check "Apple's check is answered 'Success'" bash -c "$P curl -s --max-time 5 http://captive.apple.com/hotspot-detect.html | grep -q Success"
 check "a name deltd does not serve is refused" test "$($C -H 'Host: evil.example' http://10.42.0.1/)" = 404
@@ -111,12 +111,12 @@ check "no DNS query is logged" bash -c "! journalctl -b -u deltos-dnsmasq --no-p
 # --- self-healing (Track E §23.5) -----------------------------------------
 old=$(pid deltos-dnsmasq); kill -9 "$old"
 if until_t 30 bash -c "p=\$(systemctl show -p MainPID --value deltos-dnsmasq); [ \"\$p\" != 0 ] && [ \"\$p\" != $old ] && systemctl is-active --quiet deltos-dnsmasq"; then ok "dnsmasq is restarted after a crash"; else bad "dnsmasq is restarted after a crash"; fi
-check "names still resolve after the restart" bash -c "sleep 1; [ \"\$($P dig +short +time=2 +tries=3 @10.42.0.1 webos-test.deltos.lan)\" = 10.42.0.1 ]"
+check "names still resolve after the restart" bash -c "sleep 1; [ \"\$($P dig +short +time=2 +tries=3 @10.42.0.1 home.deltos.lan)\" = 10.42.0.1 ]"
 old=$(pid deltos-hostapd); kill -9 "$old"
 if until_t 30 bash -c "p=\$(systemctl show -p MainPID --value deltos-hostapd); [ \"\$p\" != 0 ] && [ \"\$p\" != $old ]"; then ok "hostapd is restarted after a crash"; else bad "hostapd is restarted after a crash"; fi
 if until_t 60 joined; then ok "the phone rejoins after the radio restarts"; else bad "the phone rejoins after the radio restarts"; fi
 old=$(pid deltos-deltd); kill -9 "$old"
-if until_t 30 bash -c "[ \"\$($C -H 'Cookie: delt_session=vm-test-token' http://webos-test.deltos.lan/api/v1/status)\" = 200 ]"; then ok "deltd is restarted after a crash"; else bad "deltd is restarted after a crash"; fi
+if until_t 30 bash -c "[ \"\$($C -H 'Cookie: delt_session=vm-test-token' http://home.deltos.lan/api/v1/status)\" = 200 ]"; then ok "deltd is restarted after a crash"; else bad "deltd is restarted after a crash"; fi
 
 # --- a checked change takes effect without a reboot --------------------------
 # configure_ap through authorize()/apply(), with a test stand-in for shelld.

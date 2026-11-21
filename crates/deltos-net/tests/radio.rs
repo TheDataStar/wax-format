@@ -237,3 +237,14 @@ fn a_version_1_registry_is_upgraded_and_a_newer_one_refused() {
 fn rusqlite_conn(p: &std::path::Path) -> rusqlite::Connection {
     rusqlite::Connection::open(p).unwrap()
 }
+
+#[test]
+fn the_webos_name_cannot_be_given_away() {
+    let id = Id::new();
+    let caller = Caller { session_ref: ADMIN, over_https: true, confirmation_ticket: None };
+    for n in ["home.deltos.lan", "HOME.deltos.lan."] {
+        let a = Action::ApproveName { name: n.into(), target: deltos_net::Target::Address(Ipv4Addr::new(10, 42, 0, 9)), requested_by: "student-7".into() };
+        assert!(matches!(authorize(a, &caller, &id), Err(Refusal::Invalid(_))), "{n}");
+    }
+    assert_eq!(deltos_net::WEBOS_HOST, "home.deltos.lan");
+}

@@ -17,6 +17,10 @@ pub const REGISTRY_SCHEMA_VERSION: i64 = 2;
 
 /// The zone service names live in (contract §8).
 pub const SERVICE_ZONE: &str = "deltos.lan";
+/// The WebOS and box API's hostname (contract §8, decided 2026-11-21 under
+/// Commander's delegation; docs/box-radio-and-boot.md §5). Never approvable
+/// for anything else: it is the one origin that carries people's sessions.
+pub const WEBOS_HOST: &str = "home.deltos.lan";
 /// The pack zone (contract §8). The registry never holds a name in it:
 /// pack hostnames are issued by `identityd` and answered by the wildcard.
 pub const PACK_ZONE: &str = "deltos-packs.lan";

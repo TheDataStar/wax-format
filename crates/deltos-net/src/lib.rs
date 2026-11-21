@@ -21,5 +21,5 @@ pub mod render;
 
 pub use actions::{apply, authorize, Action, Authorized, Caller, IdentityCheck, Refusal};
 pub use radio::{Radio, Secret};
-pub use registry::{Mode, NetError, Registry, Settings, Target};
+pub use registry::{Mode, NetError, Registry, Settings, Target, WEBOS_HOST};
 pub use render::{render, write, Layout, Reload, Rendered};

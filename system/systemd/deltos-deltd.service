@@ -1,16 +1,15 @@
 # Step 6: the box API and pack server (deltd), as its own unprivileged user
-# (privilege boundary §3). It starts on every box, hotspot or not, and needs
-# two values set at provisioning in a drop-in, for example
-# /etc/systemd/system/deltos-deltd.service.d/provisioning.conf:
+# (privilege boundary §3). It starts on every box, hotspot or not, on the
+# WebOS hostname home.deltos.lan (contract §8). It also needs an identity
+# source, set in a drop-in, for example
+# /etc/systemd/system/deltos-deltd.service.d/identity.conf:
 #
 #   [Service]
-#   Environment=DELTOS_WEBOS_HOST=<name>.deltos.lan
 #   Environment=DELTD_IDENTITY_ARGS=--dev-sessions=/path/to/table.json
 #
-# Neither has a default: the WebOS hostname is still open (contract §13.2),
-# and deltos-identityd is not built, so the only identity source today is
-# deltd's development-only table. Until both are set, deltd is skipped with
-# a message saying so, rather than started on a guessed value.
+# That has no default: deltos-identityd is not built, so the only identity
+# source today is deltd's development-only table, which no real box should
+# run with. Until one is set, deltd is skipped with a message saying so.
 [Unit]
 Description=DeltOS box API and pack server (deltd)
 Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-radio-and-boot.md
@@ -23,7 +22,7 @@ StartLimitBurst=10
 Type=simple
 User=deltos-deltd
 Group=deltos-deltd
-Environment=DELTOS_WEBOS_HOST= DELTD_IDENTITY_ARGS= DELTD_CONNECTIVITY_ARGS=
+Environment=DELTOS_WEBOS_HOST=home.deltos.lan DELTD_IDENTITY_ARGS= DELTD_CONNECTIVITY_ARGS=
 EnvironmentFile=-/run/deltos/network/deltd.env
 ExecCondition=/usr/lib/deltos/libexec/deltos-deltd-ready
 ExecStart=/usr/lib/deltos/bin/deltd --webos-host ${DELTOS_WEBOS_HOST} --packs /var/lib/deltos/packs --catalog-dir /var/lib/deltos/b4 $DELTD_IDENTITY_ARGS $DELTD_CONNECTIVITY_ARGS

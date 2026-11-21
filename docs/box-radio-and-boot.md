@@ -28,7 +28,7 @@ All of it hangs off one target, `deltos-box.target`, enabled for normal boot.
 | 3 | `deltos-uplink-firewall` | Loads the uplink firewall **before the radio exists**, so a hotspot device is never forwarded anywhere while it is unset | Step 1 wrote it |
 | 4 | `deltos-hostapd` | The radio | The box runs a hotspot and its radio is set |
 | 5 | `deltos-dnsmasq` | DNS for the box's names; DHCP on the hotspot only | Step 1 wrote it |
-| 6 | `deltos-deltd` | The box API and pack server | Its two provisioning values are set (§4) |
+| 6 | `deltos-deltd` | The box API and pack server, on `home.deltos.lan` | An identity source is set (§4) |
 | — | `deltos-net-changed.path` | Watches the settings files; when a checked action rewrites one, restarts only the service it belongs to | Always |
 
 - **The generated files live in `/run`, which is empty at every boot.** They are rebuilt from the registry each time, so a crash, an interrupted change or an OS rollback can never leave stale ones. The registry is the only copy that is kept.
@@ -70,7 +70,7 @@ So shelld (not built yet) needs no power to restart anything: writing the regist
 Three things, once per box, all of them choices for whoever sets it up:
 
 1. **Network settings,** with `deltos-net-provision <registry> <settings-file>`. It works **only on a box with no settings yet** and refuses ever after, so it is never a way around the checked actions. The file states every value; there are no defaults (format in `crates/deltos-net/src/bin/provision.rs`). Internet sharing always starts off; only an admin turns it on (contract §16). Where the file comes from on an appliance image (for example written by E7's flashing tool onto the boot partition) is E7's to decide; it holds the Wi-Fi password, so E7 should delete it once read.
-2. **`deltd`'s two values,** in a systemd drop-in: the WebOS hostname and the identity source. **Neither has an answer yet** (the hostname is open in contract §13.2, and `deltos-identityd` is not built, so the only identity source is `deltd`'s development table). Until both are set, `deltd` is skipped with a message saying which is missing.
+2. **`deltd`'s identity source,** in a systemd drop-in. The WebOS hostname is built in (`home.deltos.lan`, §5). The identity source has no answer yet: `deltos-identityd` is not built, so the only one is `deltd`'s development table, which no real box should run with. Until one is set, `deltd` is skipped with a message saying so.
 3. **Install** with `system/install.sh --bin-dir <built binaries>` on an installable-stack machine (Debian or Ubuntu), or `--destdir <image tree>` when building an appliance image. On a live machine it refuses, and says why, if the distribution's own `dnsmasq` or `hostapd` service is running there: two DNS or DHCP servers on one machine fight, and the person's services are theirs to stop, not ours.
 
 ## 5. Decisions made here
@@ -88,6 +88,7 @@ Made under Commander's delegation (2026-11-20); each is local to the box and bin
 | New system user | `deltos-dns` for dnsmasq | Its own user, as the privilege boundary does for `deltd`. |
 | Program location | `/usr/lib/deltos/bin/` and `/usr/lib/deltos/libexec/` | Inside the read-only image on the appliance path (Track E §3), off everyone's `PATH`. |
 | Registry schema | Version 2 adds the radio; version 1 is upgraded in place | Contract §10's versioning rule. |
+| **The WebOS hostname** (was open in contract §13.2) | **`home.deltos.lan`** | Short enough to type on a phone and print on a sign-in card; says what it is, the box's home screen rather than one app (`library` would undersell the WebOS, which also launches services); clashes with none of contract §8's service names. Recorded in contract §8. E10 refuses to approve it for any other device, since it is the one origin that carries people's sessions. |
 
 ## 6. How it was tested
 
