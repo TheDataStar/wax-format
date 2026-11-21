@@ -9,13 +9,36 @@
 //!   `<noscript>`, `<template>` and `<head>` (none of which a reader sees);
 //! * decodes character references — numeric, and the named ones that occur
 //!   in real pack content — so `caf&eacute;` indexes as `café`;
-//! * turns every tag boundary into a space, so `a<br>b` is two words.
+//! * turns every tag boundary into a space, so `a<br>b` is two words —
+//!   **except** the boundaries of inline phrasing elements (`<span>`, `<a>`,
+//!   `<em>`, `<ruby>` …), which a reader does not see as a gap. Japanese and
+//!   Chinese put no spaces between words, so a space at `<ruby>角</ruby>が`
+//!   would cut the run `角が立つ` in two and `wax-bigram-16` (SPEC §5.7.2)
+//!   could never find the phrase;
+//! * drops ruby annotations (`<rt>`, `<rp>`): the reading printed above `智`
+//!   is not part of the sentence, and keeping it puts `ち` between `智` and
+//!   `に`, which breaks every phrase across it. The base text stays.
 //!
 //! It is a pure function of its input, which SPEC §5.7's determinism rule
 //! needs: the same page always yields the same text, so the same index.
 
-/// Elements whose contents are not text a reader sees.
-const SKIP: &[&str] = &["script", "style", "noscript", "template", "head"];
+/// Elements whose contents are not text a reader sees, or (ruby annotations)
+/// not part of the running text.
+const SKIP: &[&str] = &["script", "style", "noscript", "template", "head", "rt", "rp"];
+
+/// Inline phrasing elements: their tag boundaries are not word breaks.
+const INLINE: &[&str] = &[
+    "a", "abbr", "b", "bdi", "bdo", "cite", "code", "data", "del", "dfn", "em", "font", "i", "ins", "kbd", "mark",
+    "q", "rb", "rp", "rt", "rtc", "ruby", "s", "samp", "small", "span", "strong", "sub", "sup", "time", "tt", "u",
+    "var", "wbr",
+];
+
+/// `<rt>` and `<rp>` may be left unclosed in HTML; the annotation then ends
+/// at the next ruby part or at `</ruby>`, never later.
+fn ends_ruby_note(skipping: &str, name: &str, closing: bool) -> bool {
+    matches!(skipping, "rt" | "rp")
+        && (matches!(name, "rb" | "rt" | "rp" | "rtc") && !closing || name == "ruby" && closing)
+}
 
 /// Visible text of an HTML document, whitespace-collapsed.
 pub fn html_to_text(html: &str) -> String {
@@ -39,12 +62,13 @@ pub fn html_to_text(html: &str) -> String {
                 .take_while(|c| c.is_ascii_alphanumeric())
                 .map(|c| c.to_ascii_lowercase())
                 .collect();
-            match skip_until {
-                Some(s) => {
-                    if closing && name == s {
-                        skip_until = None;
-                    }
+            if let Some(s) = skip_until {
+                if (closing && name == s) || ends_ruby_note(s, &name, closing) {
+                    skip_until = None;
                 }
+            }
+            match skip_until {
+                Some(_) => {}
                 None => {
                     if !closing && !tag.ends_with('/') {
                         if let Some(s) = SKIP.iter().find(|s| **s == name) {
@@ -53,7 +77,9 @@ pub fn html_to_text(html: &str) -> String {
                     }
                 }
             }
-            push_space(&mut out);
+            if !INLINE.contains(&name.as_str()) {
+                push_space(&mut out);
+            }
             i = end;
             continue;
         }
@@ -240,6 +266,24 @@ mod tests {
     fn tag_boundaries_split_words() {
         assert_eq!(html_to_text("a<br>b<td>c</td>"), "a b c");
         assert_eq!(html_to_text("<a title=\"x > y\">link</a>"), "link");
+    }
+
+    #[test]
+    fn inline_tags_do_not_split_words() {
+        // Japanese has no spaces: an inline tag must not cut the run.
+        assert_eq!(html_to_text("<p><span>角</span>が<a href=x>立つ</a>。</p>"), "角が立つ。");
+        assert_eq!(html_to_text("<p>un<em>believ</em>able</p><p>next</p>"), "unbelievable next");
+    }
+
+    #[test]
+    fn ruby_annotations_are_dropped() {
+        // 草枕, first line, as the IDPF sample writes it.
+        let html = "<p><ruby>智<rt>ち</rt></ruby>に働けば<ruby>角<rt>かど</rt></ruby>が立つ。</p>";
+        assert_eq!(html_to_text(html), "智に働けば角が立つ。");
+        assert_eq!(html_to_text("<ruby>漢<rp>(</rp><rt>かん</rt><rp>)</rp>字</ruby>"), "漢字");
+        // Unclosed <rt> (valid HTML) ends at </ruby>, not at the end of the page.
+        assert_eq!(html_to_text("<ruby>漢<rt>かん</ruby>字<p>kept</p>"), "漢字 kept");
+        assert_eq!(html_to_text("<ruby>漢<rt>かん<rb>字<rt>じ</ruby>"), "漢字");
     }
 
     #[test]

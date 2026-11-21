@@ -35,12 +35,11 @@ _Last updated: 2026-09-15, Directive 01._
 | `fuzz/` | 3 `cargo-fuzz` targets: `header-parse`, `index-loader`, `segment-merge`. | seed corpora committed |
 | WAX format | **v0.13** (2026-11-20, proposed in its own PR, stacked on PR #4): crash-safe header (check + mirror at end of file), `wax-bigram-16` CJK-capable search, passages, `wax-builder gc`, and appended editions that replace the manifest (so `version` can change on an update). v0.12 (merged 2026-11-15, PR #1) added tombstones, search on appended segments, declared title fold, verifiable append deltas. `SPEC.md` is normative and byte-exact; §13 is the version history. | `crates/wax-core/tests/v0_12.rs`, `v0_13.rs` |
 
-**Test suite: 404 tests** (2026-11-20, Linux x86_64, after merging PRs #2–#8; 5 skip without minisign; `real_wikipedia_zim` fails on the climate-change *mini* ZIM, which has no audio/video — pre-existing, not a regression). Platform results and all measured figures live in
+**Test suite: 407 tests** (2026-11-21, Linux x86_64, minisign 0.12 installed so the signing tests ran; end-to-end check with real inputs in `docs/e2e-check-2026-11-21.md`; `real_wikipedia_zim` fails on the climate-change *mini* ZIM, which has no audio/video — pre-existing, not a regression). Platform results and all measured figures live in
 `docs/baseline.md` and the Directive 01 report. Read `docs/baseline.md` before
 quoting any performance number.
 
-**Not yet measured:** WAX output size vs source ZIM size (Directive 01 §5.7).
-The Directive 03 compression decision depends on it.
+**WAX vs ZIM size, first measurement (2026-11-21):** the climate-change *mini* ZIM (8,978,471 bytes) becomes an 8,925,435-byte pack through `wss` (zstd 19, search index included): **0.994×**. One small English ZIM only; larger archives and other languages still to measure (Directive 01 §5.7).
 
 ### Two tests need an external input — both are hardened
 

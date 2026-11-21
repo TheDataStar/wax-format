@@ -36,7 +36,8 @@ enum Cmd {
         save_recipe: Option<PathBuf>,
     },
     /// Re-convert a source as the next edition of a pack and append only what
-    /// changed.
+    /// changed. Category, resources, arch, gpu, name, license and attribution
+    /// default to what the pack already declares; give the new --version.
     Refresh {
         /// The pack to update, in place.
         #[arg(short, long)]
@@ -178,6 +179,21 @@ struct RecipeArgs {
 
 impl RecipeArgs {
     fn recipe(self) -> Result<Recipe> {
+        self.recipe_inheriting(None)
+    }
+
+    /// For `refresh`: what the operator declared for the pack's first
+    /// edition (category, resources, arch, gpu, and the name, license and
+    /// attribution fallbacks) is read back from the pack's manifest when not
+    /// given again, so refreshing a pack needs only the source and the new
+    /// version. Anything given on the command line or in `--recipe` wins.
+    fn recipe_for_refresh(self, pack: &std::path::Path) -> Result<Recipe> {
+        let r = wax_core::WaxReader::open(pack).with_context(|| format!("opening {}", pack.display()))?;
+        let m = r.manifest().clone();
+        self.recipe_inheriting(Some(&m))
+    }
+
+    fn recipe_inheriting(self, inherit: Option<&std::collections::BTreeMap<String, String>>) -> Result<Recipe> {
         let mut r = match &self.recipe {
             Some(p) => Recipe::from_toml(&std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?)
                 .with_context(|| format!("parsing {}", p.display()))?,
@@ -202,6 +218,18 @@ impl RecipeArgs {
         set!(p.attribution, self.attribution);
         set!(p.languages, self.languages);
         set!(p.entry_point, self.entry_point);
+        if let Some(m) = inherit {
+            let get = |k: &str| m.get(k).filter(|v| !v.is_empty()).cloned();
+            let num = |k: &str| get(k).and_then(|v| v.parse::<i64>().ok());
+            p.category = p.category.take().or_else(|| get("category"));
+            p.min_ram_bytes = p.min_ram_bytes.or_else(|| num("min_ram_bytes"));
+            p.min_storage_bytes = p.min_storage_bytes.or_else(|| num("min_storage_bytes"));
+            p.arch = p.arch.take().or_else(|| get("arch"));
+            p.gpu = p.gpu.take().or_else(|| get("gpu"));
+            p.name = p.name.take().or_else(|| get("name"));
+            p.license = p.license.take().or_else(|| get("license"));
+            p.attribution = p.attribution.take().or_else(|| get("attribution"));
+        }
         let b = &mut r.build;
         if let Some(l) = self.zstd_level {
             b.zstd_level = l;
@@ -316,7 +344,7 @@ fn main() -> Result<()> {
             emit(json, &o, print_convert)
         }
         Cmd::Refresh { pack, source, recipe } => {
-            let r = recipe.recipe()?;
+            let r = recipe.recipe_for_refresh(&pack)?;
             let o = wss_core::refresh(&pack, &source, &r)?;
             emit(json, &o, |o| print_update(&o.update))
         }

@@ -57,9 +57,49 @@ struct Book {
     media: BTreeMap<String, String>,
 }
 
+/// The book's zip, with every file named the way EPUB requires.
+///
+/// OCF says every name in an EPUB is UTF-8, but many real books are zipped
+/// by tools that do not set the zip "UTF-8" flag, and the zip format then
+/// says to read the name as CP437. Read that way, a Japanese chapter called
+/// `一.xhtml` becomes `Σ╕Ç.xhtml`, no longer matches the spine, and the book
+/// loses its text and its search. So a name that is valid UTF-8 is read as
+/// UTF-8, flag or not; only a name that is not falls back to the zip rule.
+struct Container<R> {
+    zip: zip::ZipArchive<R>,
+    /// Names in zip order.
+    names: Vec<String>,
+    index: BTreeMap<String, usize>,
+}
+
+impl<R: Read + std::io::Seek> Container<R> {
+    fn new(mut zip: zip::ZipArchive<R>) -> Result<Self> {
+        let mut names = Vec::with_capacity(zip.len());
+        let mut index = BTreeMap::new();
+        for i in 0..zip.len() {
+            let f = zip.by_index_raw(i)?;
+            let name = match std::str::from_utf8(f.name_raw()) {
+                Ok(s) => s.to_string(),
+                Err(_) => f.name().to_string(),
+            };
+            index.entry(name.clone()).or_insert(i);
+            names.push(name);
+        }
+        Ok(Container { zip, names, index })
+    }
+
+    fn read(&mut self, name: &str) -> Result<Vec<u8>> {
+        let i = *self.index.get(name).ok_or_else(|| anyhow!("{name} is not in the EPUB"))?;
+        let mut bytes = Vec::new();
+        self.zip.by_index(i)?.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+}
+
 pub fn import(file: &Path, recipe: &Recipe) -> Result<Staged> {
     let f = std::fs::File::open(file).with_context(|| format!("opening {}", file.display()))?;
-    let mut zip = zip::ZipArchive::new(f).with_context(|| format!("{} is not an EPUB (not a zip)", file.display()))?;
+    let zip = zip::ZipArchive::new(f).with_context(|| format!("{} is not an EPUB (not a zip)", file.display()))?;
+    let mut zip = Container::new(zip)?;
     let mut staged = Staged::new("epub")?;
 
     let container = read_text(&mut zip, "META-INF/container.xml")
@@ -82,13 +122,12 @@ pub fn import(file: &Path, recipe: &Recipe) -> Result<Staged> {
     }
     let spine_pos: BTreeMap<&str, usize> = book.spine.iter().enumerate().map(|(i, p)| (p.as_str(), i)).collect();
 
-    let names: Vec<String> = (0..zip.len()).filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string())).collect();
+    let names = zip.names.clone();
     for name in names {
         if name.ends_with('/') || name == "mimetype" || name.starts_with("META-INF/") {
             continue; // container plumbing, not content
         }
-        let mut bytes = Vec::new();
-        zip.by_name(&name)?.read_to_end(&mut bytes)?;
+        let bytes = zip.read(&name)?;
         let mime = book.media.get(&name).cloned().unwrap_or_else(|| guess_mime(&name));
         if obfuscated.contains(&name) {
             staged.note(
@@ -135,10 +174,8 @@ pub fn import(file: &Path, recipe: &Recipe) -> Result<Staged> {
     Ok(staged)
 }
 
-fn read_text<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>, name: &str) -> Result<String> {
-    let mut s = String::new();
-    zip.by_name(name)?.read_to_string(&mut s)?;
-    Ok(s)
+fn read_text<R: Read + std::io::Seek>(zip: &mut Container<R>, name: &str) -> Result<String> {
+    String::from_utf8(zip.read(name)?).map_err(|_| anyhow!("{name} is not UTF-8 text"))
 }
 
 fn xml(text: &str) -> Result<roxmltree::Document<'_>> {
@@ -156,7 +193,7 @@ fn rootfile(container: &str) -> Result<String> {
 }
 
 /// Refuse DRM; return the paths of merely obfuscated fonts.
-fn check_encryption<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Result<BTreeSet<String>> {
+fn check_encryption<R: Read + std::io::Seek>(zip: &mut Container<R>) -> Result<BTreeSet<String>> {
     let Ok(text) = read_text(zip, "META-INF/encryption.xml") else {
         return Ok(BTreeSet::new());
     };
@@ -184,7 +221,7 @@ fn check_encryption<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Re
     Ok(fonts)
 }
 
-fn parse_opf<R: Read + std::io::Seek>(opf: &str, opf_path: &str, zip: &mut zip::ZipArchive<R>) -> Result<Book> {
+fn parse_opf<R: Read + std::io::Seek>(opf: &str, opf_path: &str, zip: &mut Container<R>) -> Result<Book> {
     let base = opf_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
     let doc = xml(opf).context("the package document")?;
     let mut book = Book::default();
