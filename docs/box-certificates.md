@@ -87,7 +87,7 @@ The kiosk browser ships with the box's CA already trusted (privilege boundary §
 
 | Open | Owner |
 |---|---|
-| The CA key in the box's backup set (losing it means every device enrols again; it is a secret, so the backup must protect it) | the backup work (contract §16) |
+| ~~The CA key in the box's backup set~~ — **done 2026-11-21**: `ca/` and `tls/` are in every backup, encrypted with the admin's passphrase, and a restore brings the same CA back (`docs/box-backup.md` §3–§5) | — |
 | Showing the fingerprint on the kiosk and first-boot screens, and the QR code | WebOS / F2 |
 | Revoking a certificate (no CRL or OCSP is published: the zone is private and server certificates renew yearly) | Track G, if ever needed |
 | Moving the box to a new CA on purpose (a stolen box, say) | F1 admin console |

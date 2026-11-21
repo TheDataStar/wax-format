@@ -118,8 +118,8 @@ Admin and deployment guides, per the master plan — worth one concrete decision
 
 ## 15. Open Decisions Needed Before Implementation
 
-- Decide F10's backup target options concretely (USB-only for v1, or also a network target) — encryption at rest is now a stated requirement (§9), but the specific format/library is not yet chosen.
-- Design a real integrity-verification mechanism for deltos-identityd's own backup/restore beyond the admin confirmation step (§9) — the confirmation is v0.9's stated mitigation, not a claim that this artifact is as protected as a signed WAX pack.
+- Decide F10's backup target options concretely (USB-only for v1, or also a network target) — encryption at rest is now a stated requirement (§9). **The format is chosen (2026-11-21): age v1 with the admin's passphrase, `docs/box-backup.md` §4.** The target options remain open.
+- Design a real integrity-verification mechanism for deltos-identityd's own backup/restore beyond the admin confirmation step (§9) — the confirmation is v0.9's stated mitigation, not a claim that this artifact is as protected as a signed WAX pack. **Answered 2026-11-21 (`docs/box-backup.md` §4): the backup is authenticated encryption under the admin's passphrase, so a substituted or edited file does not open; the staged review stays as well.**
 - Settle F7's key-rotation cadence and operational custody with whoever actually operates B13's publishing pipeline in practice — this document states the mechanism, not how often it's exercised (§8).
 - Confirm, once Track G's G1/G2 exist, that F12's Authelia-in-front-of-G2 design and F1/F6's pre-F12 bootstrapping auth (§5, §7) are actually compatible with G2's real reverse-proxy configuration.
 - Decide whether Track E's E3 should support a second, admin-only SSID/VLAN so F1 can be reached off the classroom network entirely (§5) — E3 doesn't currently describe more than one AP SSID.

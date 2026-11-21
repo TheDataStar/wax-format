@@ -152,7 +152,8 @@ The first version of the closed list. Permission names are contract §4 names; `
 | `restart_service` | Restart one named DeltOS service | service name from the installed app manifests (contract §15) | `service.restart` | No |
 | `pair_box` | Pair with another box (F6) | pairing code | `fleet.manage` | **Yes** |
 | `start_backup` | Write an encrypted backup to a mounted drive (F10) | drive id; passphrase | `backup.manage` | No |
-| `restore_backup` | Restore from a backup, with Track F §9's staged review | drive id, backup id; passphrase | `backup.manage` | **Yes** |
+| `review_backup` | Open a backup with its passphrase, check it and stage it for Track F §9's review; changes nothing live (added 2026-11-21, `docs/box-backup.md` §5) | drive id, backup id; passphrase | `backup.manage` | No |
+| `restore_backup` | Put the reviewed backup in place (`docs/box-backup.md` §5) | review id and review digest from `review_backup` (amended 2026-11-21: the passphrase is given at review) | `backup.manage` | **Yes** |
 | `apply_update` / `roll_back_update` | Apply a system update, or go back to the previous one | update id from the update listing | `system.update` | **Yes** |
 
 - **Listings are reads, and come first.** Drive contents, Wi-Fi scans, uploads and available updates are listed by read calls that hand out the ids the actions above take (rule 6). A listing shows each person only what they could act on or see.

@@ -29,9 +29,9 @@ while [ $# -gt 0 ]; do
 done
 die() { echo "install.sh: $*" >&2; exit 1; }
 [ -n "$BIN" ] || die "--bin-dir is required"
-BINS="deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision"
+BINS="deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision deltos-backup"
 for b in $BINS; do
-    [ -x "$BIN/$b" ] || die "$BIN/$b is missing; build with: cargo build --release -p deltlib -p deltos-net -p deltos-identity -p deltos-tls"
+    [ -x "$BIN/$b" ] || die "$BIN/$b is missing; build with: cargo build --release -p deltlib -p deltos-net -p deltos-identity -p deltos-tls -p deltos-backup"
 done
 
 if [ -z "$DEST" ]; then
