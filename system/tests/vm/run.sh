@@ -10,8 +10,9 @@
 # --debs   arm64 .debs the image lacks: linux-modules-extra-<its kernel>
 #          (mac80211_hwsim), hostapd, dnsmasq-base, iw, wpasupplicant,
 #          libpcsclite1, wireless-regdb
-# --bin-dir  aarch64 builds of deltd, deltos-net-render, deltos-net-provision
-#          and the example configure_ap_standin
+# --bin-dir  aarch64 builds of deltd, deltos-net-render, deltos-net-provision,
+#          deltos-identityd, deltos-identity-provision and the example
+#          configure_ap_standin
 # --pack   any .wax pack holding a page that matches "evaporation"
 #
 # Needs qemu-system-aarch64, AAVMF/QEMU_EFI firmware, qemu-img,
@@ -40,7 +41,7 @@ echo "work dir: $WORK"
 SH=$WORK/share
 rm -rf "$SH"; mkdir -p "$SH/bin" "$SH/debs" "$SH/results" "$SH/system"
 cp -a "$SYSTEM/." "$SH/system/"
-for b in deltd deltos-net-render deltos-net-provision; do cp "$BIN/$b" "$SH/bin/"; done
+for b in deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision; do cp "$BIN/$b" "$SH/bin/"; done
 cp "$BIN/examples/configure_ap_standin" "$SH/bin/" 2>/dev/null || cp "$BIN/configure_ap_standin" "$SH/bin/"
 # The virtual radio's kernel modules come from linux-modules-extra. Only the
 # Wi-Fi ones are copied in: installing the whole package rebuilds the boot
@@ -101,4 +102,5 @@ cat "$WORK/test.txt" 2>/dev/null || echo "no test results; see $WORK/console.log
 grep -q '^unprovisioned_failed_units=0$' "$WORK/setup.txt" 2>/dev/null || { echo "FAIL: an unprovisioned box had failed units"; exit 1; }
 grep -q '^unprovisioned_active=0$' "$WORK/setup.txt" 2>/dev/null || { echo "FAIL: an unprovisioned box started services"; exit 1; }
 grep -q '^reprovision_refused=yes$' "$WORK/setup.txt" 2>/dev/null || { echo "FAIL: provisioning ran twice"; exit 1; }
+grep -q '^admin_reprovision_refused=yes$' "$WORK/setup.txt" 2>/dev/null || { echo "FAIL: a second first admin was made"; exit 1; }
 grep -q '^RESULT PASS$' "$WORK/test.txt" 2>/dev/null

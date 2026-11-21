@@ -10,7 +10,9 @@
 //!   headers, one ETag per encoding, byte ranges, zstd passthrough, and
 //!   box-side decoding of shared-dictionary entries.
 //! * **Step 2, library and search — Library and Search groups and
-//!   `/status`.** Sign-in itself is `identityd`'s ([`identity`]).
+//!   `/status`.** Sign-in itself is `identityd`'s ([`identity`]); `deltd`
+//!   forwards the session group (§6.1) and checks every write ([`signin`]),
+//!   and serves HTTPS itself ([`tls`]); docs/identityd.md.
 //!
 //! Modules: [`hostname`] (pack hostnames), [`identity`] (what `deltd` asks
 //! `identityd`), [`catalog`] (`pack_index`/`pack_generation`), [`library`]
@@ -25,8 +27,11 @@ pub mod library;
 pub mod packzone;
 pub mod search;
 pub mod server;
+pub mod signin;
+pub mod tls;
 
 pub use catalog::Catalog;
-pub use identity::{Identity, Session, StaticIdentity};
+pub use identity::{Identity, IdentitydLink, Session, StaticIdentity};
 pub use library::Library;
 pub use server::{router, AppState};
+pub use signin::ConnInfo;

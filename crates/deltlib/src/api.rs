@@ -30,6 +30,10 @@ pub const OPENAPI: &str = include_str!("openapi.json");
 pub struct Api {
     pub lib: Arc<Library>,
     pub ident: Arc<dyn Identity>,
+    /// The WebOS hostname, for the exact-origin check on writes.
+    pub webos_host: String,
+    /// `deltd` has an HTTPS listener (it has the box's certificates).
+    pub https_available: bool,
 }
 
 /// An error in the RFC 9457 shape with a code from API §7's closed list.
@@ -48,7 +52,7 @@ impl Problem {
         self.detail = Some(d.into());
         self
     }
-    fn response(self) -> Response<Body> {
+    pub fn response(self) -> Response<Body> {
         let mut v = json!({ "status": self.status.as_u16(), "code": self.code, "title": self.title });
         if let Some(d) = self.detail {
             v["detail"] = Value::String(d);
@@ -84,6 +88,28 @@ pub fn api_headers(h: &mut HeaderMap) {
     );
     h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+}
+
+/// Rule 17: over HTTPS, managed devices never fall back to plain HTTP for
+/// the WebOS hostname (not its subdomains).
+pub fn hsts(h: &mut HeaderMap) {
+    h.insert(header::STRICT_TRANSPORT_SECURITY, HeaderValue::from_static("max-age=31536000"));
+}
+
+/// A WebOS cookie (privilege boundary §4.1): host-only (no `Domain`),
+/// `HttpOnly`, `SameSite=Strict`, `Path=/`; over HTTPS the `__Host-` name
+/// and `Secure`. `max_age` `None` lasts until the browser closes; `Some(0)`
+/// deletes it.
+pub fn cookie(names: (&str, &str), https: bool, value: &str, max_age: Option<i64>) -> String {
+    let mut c = if https {
+        format!("{}={value}; Secure; HttpOnly; SameSite=Strict; Path=/", names.1)
+    } else {
+        format!("{}={value}; HttpOnly; SameSite=Strict; Path=/", names.0)
+    };
+    if let Some(a) = max_age {
+        c.push_str(&format!("; Max-Age={a}"));
+    }
+    c
 }
 
 /// The session cookie's value: `__Host-delt_session` over HTTPS,
@@ -209,12 +235,43 @@ fn pack_summary(p: &Pack) -> Value {
 
 impl Api {
     /// Answer one request on the WebOS hostname.
-    pub async fn handle(&self, method: &Method, path: &str, query: Option<&str>, headers: &HeaderMap) -> Response<Body> {
+    pub async fn handle(
+        &self,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        headers: &HeaderMap,
+        body: &[u8],
+        conn: &crate::signin::ConnInfo,
+    ) -> Response<Body> {
+        let mut r = self.handle_inner(method, path, query, headers, body, conn).await;
+        if conn.https {
+            hsts(r.headers_mut());
+        }
+        r
+    }
+
+    async fn handle_inner(
+        &self,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        headers: &HeaderMap,
+        body: &[u8],
+        conn: &crate::signin::ConnInfo,
+    ) -> Response<Body> {
         let Some(rest) = path.strip_prefix("/api/v1/") else {
             return not_found().response();
         };
         if rest == "openapi.json" {
             return self.ok(json_bytes(OPENAPI.as_bytes().to_vec()), None, headers, false);
+        }
+        {
+            let segs: Vec<&str> = rest.split('/').collect();
+            let q = query_map(query);
+            if let Some(r) = self.people(method, &segs, &q, headers, body, conn).await {
+                return r;
+            }
         }
         if method != Method::GET && method != Method::HEAD {
             let mut r = Problem::new(StatusCode::METHOD_NOT_ALLOWED, "invalid_request", "Method not allowed.").response();
@@ -291,7 +348,7 @@ impl Api {
                 "suggest": true,
                 "snippets": false,
                 "zstd_passthrough": true,
-                "https": false
+                "https": self.https_available
             }
         })
     }

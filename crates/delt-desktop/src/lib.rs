@@ -235,13 +235,18 @@ impl Desktop {
     /// one person. `path` is below `/api/v1/` (`/packs`, `/search`, …).
     /// Returns the status and the JSON body.
     pub async fn api_get(&self, path: &str, query: Option<&str>) -> (u16, Value) {
-        let api = deltlib::api::Api { lib: self.library(), ident: self.identity() };
+        let api = deltlib::api::Api {
+            lib: self.library(),
+            ident: self.identity(),
+            webos_host: String::new(),
+            https_available: false,
+        };
         let mut h = HeaderMap::new();
         if let Ok(v) = HeaderValue::from_str(&format!("__Host-delt_session={}", self.ident.token())) {
             h.insert(header::COOKIE, v);
         }
         let full = format!("/api/v1/{}", path.trim_start_matches('/'));
-        let resp = api.handle(&Method::GET, &full, query, &h).await;
+        let resp = api.handle(&Method::GET, &full, query, &h, &[], &deltlib::ConnInfo::default()).await;
         let status = resp.status().as_u16();
         let body = axum::body::to_bytes(resp.into_body(), 16 * 1024 * 1024).await.unwrap_or_default();
         (status, serde_json::from_slice(&body).unwrap_or(Value::Null))

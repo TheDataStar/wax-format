@@ -13,7 +13,7 @@ Plain words used below: **hostapd** is the program that makes a Wi-Fi card act a
 - **The box runs its own Wi-Fi with hostapd**, WPA2 with AES only, on 2.4 GHz. Phones cannot see each other on it, only the box.
 - **Four values, none defaulted:** the network name, its password, the country, and the channel. A default name or password would be the same on every box; the country decides which channels are legal. Whoever sets up the box gives all four (§4), and an admin changes them with the `configure_ap` action, which asks for their password again (privilege boundary §8).
 - **The password is root's alone.** It is stored in the network registry, in a directory only root can read, and the generated `hostapd.conf` is created owner-only before a byte is written. It never appears in a log or a debug print.
-- **Everything starts on its own at boot, in a fixed order** (§2): settings, address, firewall, radio, DNS and DHCP, then `deltd`. A box that has not been set up yet starts nothing and reports nothing as failed.
+- **Everything starts on its own at boot, in a fixed order** (§2): settings, address, firewall, radio, DNS and DHCP, the sign-in service (`deltos-identityd`, `docs/identityd.md`), then `deltd`. A box that has not been set up yet starts nothing and reports nothing as failed.
 - **Each program holds only what it needs** (§3): `deltd` runs as its own user with one power (port 80) and cannot see the network settings; `dnsmasq` runs as its own user with three; hostapd keeps root but only the two radio powers.
 - **A crashed service comes back by itself** within seconds, with a growing delay and a cap so a broken one is not restarted forever. A change made through a checked action takes effect without a reboot, restarting only what it touched.
 
@@ -28,7 +28,8 @@ All of it hangs off one target, `deltos-box.target`, enabled for normal boot.
 | 3 | `deltos-uplink-firewall` | Loads the uplink firewall **before the radio exists**, so a hotspot device is never forwarded anywhere while it is unset | Step 1 wrote it |
 | 4 | `deltos-hostapd` | The radio | The box runs a hotspot and its radio is set |
 | 5 | `deltos-dnsmasq` | DNS for the box's names; DHCP on the hotspot only | Step 1 wrote it |
-| 6 | `deltos-deltd` | The box API and pack server, on `home.deltos.lan` | An identity source is set (§4) |
+| 6a | `deltos-identityd` | The register of people and sign-ins, on a local socket only `deltd` can open (`docs/identityd.md`) | The box has its first admin (§4) |
+| 6b | `deltos-deltd` | The box API and pack server, on `home.deltos.lan`, over HTTP and (once the box has its certificates) HTTPS | Step 6a's register exists |
 | — | `deltos-net-changed.path` | Watches the settings files; when a checked action rewrites one, restarts only the service it belongs to | Always |
 
 - **The generated files live in `/run`, which is empty at every boot.** They are rebuilt from the registry each time, so a crash, an interrupted change or an OS rollback can never leave stale ones. The registry is the only copy that is kept.
@@ -53,7 +54,8 @@ So shelld (not built yet) needs no power to restart anything: writing the regist
 
 | Program | User | Powers held | Can write | Cannot see |
 |---|---|---|---|---|
-| `deltd` | `deltos-deltd` | `CAP_NET_BIND_SERVICE` (port 80) only | `/var/lib/deltos/b4/` | `/var/lib/deltos/network/`, `/run/deltos/network/` |
+| `deltd` | `deltos-deltd` | `CAP_NET_BIND_SERVICE` (ports 80 and 443) only | `/var/lib/deltos/b4/` | `/var/lib/deltos/network/`, `/run/deltos/network/`, `/var/lib/deltos/identity/` |
+| `deltos-identityd` | `deltos-identity` | none, and no network (loopback only) | `/var/lib/deltos/identity/`, its socket | `/var/lib/deltos/network/`, `/run/deltos/network/`, `/var/lib/deltos/tls/` |
 | `dnsmasq` | `deltos-dns` | bind ports 53 and 67, raw sockets, network admin (for DHCP) | its lease file only | `/var/lib/deltos/` |
 | `hostapd` | root | `CAP_NET_ADMIN`, `CAP_NET_RAW` only | nothing | — |
 | `deltos-net-render` | root | none, and no network at all | the registry's directory and the settings directory | — |
@@ -70,7 +72,7 @@ So shelld (not built yet) needs no power to restart anything: writing the regist
 Three things, once per box, all of them choices for whoever sets it up:
 
 1. **Network settings,** with `deltos-net-provision <registry> <settings-file>`. It works **only on a box with no settings yet** and refuses ever after, so it is never a way around the checked actions. The file states every value; there are no defaults (format in `crates/deltos-net/src/bin/provision.rs`). Internet sharing always starts off; only an admin turns it on (contract §16). Where the file comes from on an appliance image (for example written by E7's flashing tool onto the boot partition) is E7's to decide; it holds the Wi-Fi password, so E7 should delete it once read.
-2. **`deltd`'s identity source,** in a systemd drop-in. The WebOS hostname is built in (`home.deltos.lan`, §5). The identity source has no answer yet: `deltos-identityd` is not built, so the only one is `deltd`'s development table, which no real box should run with. Until one is set, `deltd` is skipped with a message saying so.
+2. **The first admin,** with `deltos-identity-provision` (`docs/identityd.md` §6), which works only once. `deltd`'s identity source is built in: `deltos-identityd`'s socket. Until there is an admin, neither starts, and neither shows as failed. Then **the box's two certificates** in `/var/lib/deltos/tls/`; without them `deltd` serves plain HTTP only and teachers and admins cannot sign in.
 3. **Install** with `system/install.sh --bin-dir <built binaries>` on an installable-stack machine (Debian or Ubuntu), or `--destdir <image tree>` when building an appliance image. On a live machine it refuses, and says why, if the distribution's own `dnsmasq` or `hostapd` service is running there: two DNS or DHCP servers on one machine fight, and the person's services are theirs to stop, not ours.
 
 ## 5. Decisions made here

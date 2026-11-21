@@ -1,0 +1,53 @@
+# Step 6a: the register of people, roles and sign-ins (deltos-identityd,
+# docs/identityd.md), as its own user with no powers and no network. It
+# answers only on its local socket, which only deltd (group deltos-identc)
+# can open; the caller's user is checked again on every connection.
+#
+# It starts once the box has its first admin: deltos-identity-provision
+# creates the register (docs/identityd.md §6). Until then it is skipped,
+# and so is deltd, since nobody could sign in.
+[Unit]
+Description=DeltOS people and sign-in (deltos-identityd)
+Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/identityd.md
+ConditionPathExists=/var/lib/deltos/identity/identity.sqlite
+After=systemd-tmpfiles-setup.service systemd-sysusers.service
+Before=deltos-deltd.service
+StartLimitIntervalSec=10min
+StartLimitBurst=10
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=deltos-identity
+Group=deltos-identity
+UMask=0077
+ExecStart=/usr/lib/deltos/bin/deltos-identityd --dir /var/lib/deltos/identity --socket /run/deltos/identity/identityd.sock --webos-host home.deltos.lan
+Restart=on-failure
+RestartSec=2s
+RestartSteps=5
+RestartMaxDelaySec=60s
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/deltos/identity /run/deltos/identity
+InaccessiblePaths=-/var/lib/deltos/network -/run/deltos/network -/var/lib/deltos/tls
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources

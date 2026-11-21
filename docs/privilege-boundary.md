@@ -78,7 +78,7 @@ A **session** is the box's memory that "this browser is signed in as this person
 - **A new id at every sign-in**, never reusing one the browser already presented. This stops a "session fixation" attack, where someone plants a session id in a victim's browser and waits for them to sign in on it.
 - **Ended on:** sign-out (which keeps a remembered device, §10, unless the person chooses "forget this device"); switching person on a shared screen (§7 rule 11); a password change or reset (every session of that person); removal of the profile; and an admin's "sign out everywhere".
 - **Permission changes take effect on the next request.** Permissions are looked up live on each check, not copied into the session, so taking `content.install` away from someone works immediately.
-- **How long a session lasts** before it ends itself, idle and absolute, on a shared screen and on a personal device, is **open** (§14). It is a number to choose with teachers, not to guess here. Whatever the numbers, a secure session's limits are never longer than a plain session's.
+- **How long a session lasts** before it ends itself, idle and absolute, on a shared screen and on a personal device, was chosen on 2026-11-21 (contract §13.2, `docs/identityd.md` §5). Whatever the numbers, a secure session's limits are never longer than a plain session's.
 
 ### 4.3 The anti-forgery token
 
@@ -266,7 +266,7 @@ Smallest useful piece first:
 Not answered here, and not to be filled in by whoever implements first. Each is also in contract §13.2.
 
 - ~~**The WebOS hostname** (Change 4)~~ — answered 2026-11-21: `home.deltos.lan` (contract §8).
-- **How long a session lasts,** idle and absolute, shared screen and personal device (§4.2), together with how long a remembered device lasts and the sign-in card's code length and validity (§10).
+- ~~**How long a session lasts,** idle and absolute, shared screen and personal device (§4.2), together with how long a remembered device lasts and the sign-in card's code length and validity (§10)~~ — answered 2026-11-21 with the sign-in service build (contract §13.2, `docs/identityd.md` §5).
 - **Where the action log lives** under `/var/lib/deltos/` (rule 12). Needs a path in contract §10.
 - **How box-converted and teacher-uploaded packs are trusted** (§8), the same question as the architecture doc's Q2.
 - **How other services on `deltos.lan` sign people in** now that the WebOS cookie is not shared with them (§4.1). Track G's forward-auth (G2) needs its own per-service sign-in that hands over from `identityd`, never a parent-domain cookie. Track G owns the design.

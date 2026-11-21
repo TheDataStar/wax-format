@@ -3,8 +3,9 @@
 #
 #   system/install.sh --bin-dir DIR [--destdir DIR] [--no-enable]
 #
-# --bin-dir   where the built deltd, deltos-net-render and
-#             deltos-net-provision are (e.g. target/release)
+# --bin-dir   where the built deltd, deltos-net-render, deltos-net-provision,
+#             deltos-identityd and deltos-identity-provision are
+#             (e.g. target/release)
 # --destdir   install into an image tree instead of this machine (the
 #             appliance image build); nothing is enabled or started there
 #             beyond the target link
@@ -27,8 +28,9 @@ while [ $# -gt 0 ]; do
 done
 die() { echo "install.sh: $*" >&2; exit 1; }
 [ -n "$BIN" ] || die "--bin-dir is required"
-for b in deltd deltos-net-render deltos-net-provision; do
-    [ -x "$BIN/$b" ] || die "$BIN/$b is missing; build with: cargo build --release -p deltlib -p deltos-net"
+BINS="deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision"
+for b in $BINS; do
+    [ -x "$BIN/$b" ] || die "$BIN/$b is missing; build with: cargo build --release -p deltlib -p deltos-net -p deltos-identity"
 done
 
 if [ -z "$DEST" ]; then
@@ -48,7 +50,7 @@ fi
 
 U=$DEST/usr/lib
 install -d "$U/deltos/bin" "$U/deltos/libexec" "$U/systemd/system" "$U/sysusers.d" "$U/tmpfiles.d"
-for b in deltd deltos-net-render deltos-net-provision; do
+for b in $BINS; do
     install -m 0755 "$BIN/$b" "$U/deltos/bin/$b"
 done
 for f in "$HERE"/libexec/*; do install -m 0755 "$f" "$U/deltos/libexec/"; done
@@ -75,6 +77,10 @@ cat <<MSG
 DeltOS box services installed.
 Next, once per box:
   1. network settings:  /usr/lib/deltos/bin/deltos-net-provision /var/lib/deltos/network/registry.sqlite <settings-file>
-  2. deltd's drop-in:   see /usr/lib/systemd/system/deltos-deltd.service
-  3. start:             systemctl start deltos-box.target   (or reboot)
+  2. the first admin:   runuser -u deltos-identity -- /usr/lib/deltos/bin/deltos-identity-provision \
+                          --display-name 'Your name' --sign-in-name admin
+                        (prints the generated password once; only its hash is kept)
+  3. certificates:      the box's *.deltos.lan and *.deltos-packs.lan certificates in /var/lib/deltos/tls/
+                        (without them deltd serves plain HTTP only, and admins cannot sign in)
+  4. start:             systemctl start deltos-box.target   (or reboot)
 MSG

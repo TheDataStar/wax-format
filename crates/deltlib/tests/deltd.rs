@@ -98,7 +98,7 @@ struct Box_ {
 }
 
 fn session(profile: &str, guest: bool) -> Session {
-    Session { profile_id: profile.into(), browser_id: format!("browser-{profile}"), guest, secure: false, permissions: Default::default() }
+    Session { profile_id: profile.into(), browser_id: format!("browser-{profile}"), guest, secure: false, ..Default::default() }
 }
 
 fn boot(with_ident: impl FnOnce(&mut StaticIdentity)) -> Box_ {

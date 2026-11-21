@@ -38,6 +38,7 @@ impl LocalIdentity {
                 // reading only: the desktop API surface is the Library and
                 // Search groups, which need a session and nothing more
                 permissions: BTreeSet::new(),
+                ..Default::default()
             },
         }
     }
