@@ -44,6 +44,8 @@ rm -rf "$SH"; mkdir -p "$SH/bin" "$SH/debs" "$SH/results" "$SH/system"
 cp -a "$SYSTEM/." "$SH/system/"
 for b in deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision deltos-backup; do cp "$BIN/$b" "$SH/bin/"; done
 cp "$BIN/examples/configure_ap_standin" "$SH/bin/" 2>/dev/null || cp "$BIN/configure_ap_standin" "$SH/bin/"
+# optional: identityd's sign-in burst measurement (deltos-identity example)
+cp "$BIN/examples/signin_burst" "$SH/bin/" 2>/dev/null || true
 # The virtual radio's kernel modules come from linux-modules-extra. Only the
 # Wi-Fi ones are copied in: installing the whole package rebuilds the boot
 # image, which takes most of an hour under emulation.
@@ -93,11 +95,15 @@ timeout 90m qemu-system-aarch64 -M virt $ACCEL -smp 4 -m 2048 \
     -display none -serial file:"$WORK/console.log" 2>"$WORK/qemu.log" \
     || { echo "qemu ended abnormally (see $WORK/qemu.log, $WORK/console.log)"; }
 
-for f in setup.txt setup.log test.txt journal.txt; do
+for f in setup.txt setup.log test.txt journal.txt measure-os.txt measure.txt; do
     debugfs -R "dump /results/$f $WORK/$f" "$WORK/share.img" >/dev/null 2>&1 || true
 done
 echo "--- first boot (install, unprovisioned check, provision) ---"
 cat "$WORK/setup.txt" 2>/dev/null || echo "no setup results; see $WORK/setup.log and $WORK/console.log"
+echo "--- memory: the operating system alone (first boot, nothing provisioned) ---"
+cat "$WORK/measure-os.txt" 2>/dev/null || echo "none"
+echo "--- memory: the running box (second boot) ---"
+cat "$WORK/measure.txt" 2>/dev/null || echo "none"
 echo "--- second boot (the box came up on its own) ---"
 cat "$WORK/test.txt" 2>/dev/null || echo "no test results; see $WORK/console.log"
 grep -q '^unprovisioned_failed_units=0$' "$WORK/setup.txt" 2>/dev/null || { echo "FAIL: an unprovisioned box had failed units"; exit 1; }
