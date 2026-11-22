@@ -241,6 +241,28 @@ The emulated ARM64 VM (`system/tests/vm/`) can measure the memory figures
 early, since memory use does not depend on emulation speed; its CPU and radio
 figures mean nothing.
 
+**First VM memory run, 2026-11-22** (PR #18, `docs/box-radio-and-boot.md`
+§6.1; 2 GB, 4 cores, Ubuntu 24.04 cloud image):
+
+- The operating system alone used 232 MiB. About 140 MiB of that is
+  cloud-image services a box image would drop, so this is not yet a box's
+  `os_ram_bytes`.
+- The whole box used 239 MiB idle and 252 MiB after the full test.
+- Each service's memory:
+
+  | Service | Memory |
+  |---|---|
+  | hostapd | 7.3 MiB |
+  | dnsmasq | 4.3 MiB |
+  | identityd | 4.7 MiB idle, 81 MiB with 40 people signing in at once |
+  | deltd | 8.5 MiB |
+
+The identity floor now uses the ARM64 burst figure. `dns-dhcp` and `hotspot`
+stay `open`: their memory is measured, but their storage is not.
+
+**Memory is not what limits a 2 GB box.** About 1.7 GB is still free with
+everything running.
+
 ## 5. Add-ons and their manifest
 
 ### 5.1 What an add-on is

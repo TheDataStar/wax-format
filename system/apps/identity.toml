@@ -9,13 +9,16 @@ min_profile = "kiosk"
 
 [resources]
 evidence = "provisional"
-# Idle with one admin: VmRSS 5,380 kB.
-min_ram_bytes = 5509120
+# The floor is a class signing in at once: password checks run one per core,
+# 19 MiB each. Measured 2026-11-22 on the emulated 2 GB aarch64 box (4 cores):
+# 40 sign-ins at once peaked at 81.2 MiB; idle 4.7 MiB, 43.1 MiB after the
+# full VM test (docs/box-radio-and-boot.md section 6.1). On x86_64, idle 5.3 MiB.
+min_ram_bytes = 85144371
 # The register with one admin: 151,584 bytes.
 min_storage_bytes = 151584
 install_bytes = 3756008
 arch = "any"
-basis = "deltos-identityd release build, x86_64 dev container, one admin, 2026-11-22. Re-measure on aarch64 2 GB."
+basis = "Memory: deltos-identityd on the emulated 2 GB aarch64 box, 4 cores, 40 sign-ins at once (2026-11-22); scales with cores. Storage: x86_64 dev container, one admin. Emulated, so provisional until real hardware."
 
 [load]
 evidence = "provisional"

@@ -9,6 +9,11 @@ upstream = "hostapd"
 min_profile = "kiosk"
 
 [resources]
+# Still open: memory was measured, storage was not, and a floor needs both.
+# Measured 2026-11-22 on the emulated 2 GB aarch64 box, one phone joined:
+# hostapd resident 7480 kB idle and after the full VM test
+# (docs/box-radio-and-boot.md section 6.1). A full room is still to measure
+# on real radios.
 evidence = "open"
 arch = "any"
 
