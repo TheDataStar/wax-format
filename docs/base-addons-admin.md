@@ -431,30 +431,49 @@ system image, add-on ones copied from their bundles).
 
 An app called **Box settings** in the launcher's Manage group, visible only
 to people holding `admin.console` (shown, not blocked: others never see it).
-Laptop size opens it as a window with a sidebar of sections; phone size
-opens one section at a time with a back button (the UI review's adaptive
-layout). Dark by default, like the rest of DeltOS. Opening it over plain HTTP
-shows one screen: "Box settings needs a secure connection" with the steps to
-install the box's certificate (`box-certificates.md`), instead of a sign-in
-that would be refused.
+Laptop size opens it as a window: a 248 px sidebar with settings search at
+the top (Ctrl K from anywhere), grouped sections, installed add-ons' pages,
+and "About this box and help" pinned at the bottom. The window's title bar
+carries the secure-connection lock, a **jobs tray** (long work with progress,
+time left and cancel) and an **alerts bell** with a count. Phone size opens
+one section at a time with a "Sections" back button, and tables turn into
+stacked rows. Dark by default, like the rest of DeltOS. Opening it over plain
+HTTP shows one screen: "Box settings needs a secure connection" with the
+steps to install the box's certificate (`box-certificates.md`), instead of a
+sign-in that would be refused.
 
-Following Track F §5: **actions that change something are short wizards**
-with the consequential choice confirmed; **views are plain dashboards**.
+Following Track F §5: **actions that change something are short wizards or
+sheets** with the consequential choice confirmed (the admin's password again
+where §8 of the privilege boundary says re-confirm); **views are plain
+dashboards**.
+
+Clickable mock (example data, not real): v2, reviewed 2026-11-22 against
+modern admin dashboards and the Laws of UX, in the "Admin Dashboard review"
+doc. Neither lives in the repo.
 
 ### 8.2 Sections
 
-| Section | Shows | Does | Built on |
-|---|---|---|---|
-| **Overview** (home) | Four plain questions (design language §14): Is everything working? How full is storage? Who is on now? Is anything waiting for me? Plus people at once against the capacity estimate, once measured | Links into each section | F5 health, §4 estimate, F14 counts |
-| **Set up this box** (first run) | A wizard: welcome, the admin's own password (replaces the generated one), box name, Wi-Fi name, password and country, profile (only those the box's measured resources allow), install the certificate on this device, starter content, done | `configure_ap`, profile choice, `identityd` password change | E3 (`deltos-net`), contract §3, `box-certificates.md` |
-| **Library** | Every pack: name, size, languages, who can see it (guest on or off), last used (F14, aggregate), updates waiting | Install from a drive, the store or an upload; update; roll back; remove; convert a ZIM from a drive in the background; choose which packs guests see; arrange collections | `install_pack`, `remove_pack`, `roll_back_pack`, `convert_zim_from_drive`, `stage_upload` |
-| **Add-ons** | Installed add-ons with health and memory use; the store with each add-on's fit verdict in plain words ("Fits", "Fits, estimated", "Not measured yet", "Needs 16 GB, this box has 4 GB"); a memory bar of the whole box made from the declared floors | Install (with its platform), update, roll back, stop/start, remove (keep or delete data) | §6 fit check, §7 actions |
-| **People and classes** | People, classes, roles (as permission bundles), sign-in cards, remembered devices | Add people (one or a whole class from a list), print sign-in cards, reset a password, remove a device, make a new role from permissions | `identityd` (`profile.manage`, role editing under `admin.console`) |
-| **Network and devices** | The box's Wi-Fi, devices joined now (against the measured radio limit), the uplink if any, names on `deltos.lan` | Change the hotspot, join a network for updates, name or reserve a device | `configure_ap`, `join_network`, E10 registry |
-| **Backups** | Last backup, drives present | Make a backup (wizard: drive, passphrase twice), review and restore (staged review, then re-confirm) | `start_backup`, `review_backup`, `restore_backup` |
-| **Updates** | System version, an update waiting, the previous version kept | Apply, roll back (re-confirmed) | `apply_update`, `roll_back_update` |
-| **Other boxes** ("DeltOS instances") | Paired boxes and their health, storage and versions (F6); the box's own screens (kiosks) and which profile each shows | Pair a box (re-confirmed), set a kiosk's default Simple mode or class | `pair_box`, F6 |
-| **Activity** | The action log: who changed what, when, from which device | Filter, export to a drive | privilege boundary action log |
+Sixteen sections in five groups, plus one page per installed add-on.
+
+| Group | Section | Shows | Does | Built on |
+|---|---|---|---|---|
+| — | **Overview** (home) | "Finish setting up, n of 6 done" until done; four plain questions (design language §14): Is everything working? How full is storage? Who is on now? Is anything waiting? "Needs you" alerts with the next step; 24-hour lines for processor, temperature and memory; recent activity | Links into each section | F5 health, §4 estimate, F14 counts |
+| — | **Set up this box** (first run) | A wizard: welcome, the admin's own password (replaces the generated one), box name, Wi-Fi name, password and country, profile (only those the box's measured resources allow), install the certificate on this device, starter content, a second admin, a first backup | `configure_ap`, profile choice, `identityd` password change | E3 (`deltos-net`), contract §3, `box-certificates.md` |
+| Box | **Health and services** | Every service with its contract §7.1 state as a dot and a word, memory use against its declared floor, recent log lines; processor load, temperature and throttling | Restart a service, save its log to a drive | F5, `restart_service` |
+| Box | **Storage** | What uses the space (packs, add-on data, backups kept, system), each drive, free space | Clean up staged and superseded files, eject a drive | `mount_removable` / `eject_removable`, `wax-builder gc` |
+| Box | **Network and devices** | The box's Wi-Fi, devices joined now (against the measured radio limit), the uplink if any, names on `deltos.lan` | Change the hotspot, join a network for updates, name or reserve a device | `configure_ap`, `join_network`, E10 registry |
+| Box | **Power, time and language** | Clock and whether it is trusted (most boxes have no clock battery), time zone, the shell's language | Restart or shut down safely; set the clock from this device; choose time zone and language | proposed actions, §9 |
+| Content | **Library** | Every pack: name, size, languages, who can see it (guest on or off), last used (F14, aggregate), updates waiting; search, filter, sort, select many | Install from a drive, the store or an upload; update; roll back; remove; convert a ZIM from a drive in the background; choose which packs guests see; arrange collections | `install_pack`, `remove_pack`, `roll_back_pack`, `convert_zim_from_drive`, `stage_upload` |
+| Content | **Add-ons** | Installed add-ons with health and memory use; the store by category, with each add-on's fit verdict in plain words ("Fits", "Fits, estimated", "Not measured yet", "Needs 16 GB, this box has 4 GB") and an "Only what fits" switch | Install (with its platform), update, roll back, stop/start, remove (keep or delete data) | §6 fit check, §7 actions |
+| Content | **Home screen and notices** | What visitors see first: featured packs and apps, a notice to everyone, guest access | Edit and preview | proposed, §9 |
+| People | **People and classes** | People, classes, roles (as permission bundles, including permissions add-ons define), sign-in cards, remembered devices | Add people (one or a whole class from a list), print sign-in cards, reset a password, remove a device, make a new role from permissions | `identityd` (`profile.manage`, role editing under `admin.console`) |
+| People | **Sign-in and security** | The box certificate and its fingerprint, admins (a warning while there is only one), secure sessions open now, session lengths | Sign a session out, add an admin, re-offer the certificate | `identityd`, `deltos-tls` |
+| Care | **Backups** | Last backup and its age, drives present | Make a backup (wizard: drive, passphrase twice), review and restore (staged review, then re-confirm) | `start_backup`, `review_backup`, `restore_backup` |
+| Care | **Updates** | System version, an update waiting with its notes, the previous version kept | Apply, roll back (re-confirmed) | `apply_update`, `roll_back_update` |
+| Care | **Activity** | The action log: who changed what, when, from which device; filter by person and time | Save to a drive | privilege boundary action log |
+| Fleet | **Other boxes** ("DeltOS instances") | Paired boxes and their health, storage, version and last seen (F6); the box's own screens (kiosks) and which profile each shows | Pair a box (re-confirmed), set a kiosk's default Simple mode or class | `pair_box`, F6 |
+| — | **About this box and help** | Name, version, profile, address; the capability record (what the box measured at first start); help stored on the box; licences | Save a support file to a drive (health, versions, logs; no names or personal data; nothing is ever sent) | capability record, contract §16 |
+| Apps | **One page per installed add-on** | Overview, Settings, Logs, Versions tabs | The add-on's own settings, stop/start, update, roll back, remove | §8.5 |
 
 "DeltOS instances" is read as **other boxes in the fleet and the box's own
 screens**, since one box runs one DeltOS; if Commander meant something else,
@@ -462,22 +481,76 @@ this is the one row to change.
 
 ### 8.3 Laws of UX, applied
 
-- **Jakob's law:** a sidebar of sections like macOS System Settings and
-  ChromeOS Settings; the same window chrome as every other DeltOS app.
-- **Hick's law and Miller's law:** ten sections, grouped (Box: Overview,
-  Network, Updates, Backups; Content: Library, Add-ons; People: People,
-  Activity; Fleet: Other boxes), so no list a person scans is longer than
-  about seven.
+- **Jakob's law:** a settings window like macOS System Settings and ChromeOS
+  Settings, with the same chrome, colours and type as every other DeltOS app.
+- **Hick's law and Miller's law:** sixteen sections in five named groups, no
+  group longer than four, and search for everything else.
+- **Fitts's law:** every control at least 44 × 44 px, table rows 48 px, the
+  page's main action top-right in the same place on every page.
 - **Tesler's law:** the fit check carries the complexity; the admin sees one
   verdict in words, with the numbers one tap away.
-- **Peak-end rule and goal-gradient:** the setup wizard shows "step 3 of 7"
-  and ends on a screen that says what the box can now do and the address to
-  give people.
+- **Zeigarnik effect and goal-gradient:** "Finish setting up, 4 of 6 done"
+  stays on Overview with a bar until done.
+- **Peak-end rule:** the setup wizard ends on what the box can now do and the
+  address to give people; every risky action ends in a message saying what
+  happened and how to undo it.
 - **Doherty threshold:** every view answers under 400 ms; long work (installs,
-  backups, conversions) becomes a job with a progress bar in the corner, not
-  a frozen screen.
-- **Postel's law:** a class list can be pasted from a spreadsheet in any
-  common shape; the dashboard shows what it understood before adding anyone.
+  backups, conversions) becomes a job in the jobs tray, not a frozen screen.
+- **Von Restorff effect:** one filled orange button per page; alerts carry a
+  severity stripe.
+- **Postel's law:** search accepts everyday words ("wifi", "hotspot", "time");
+  a class list can be pasted from a spreadsheet in any common shape, and the
+  dashboard shows what it understood before adding anyone.
+- **Serial position:** Overview first, help last and pinned.
+
+### 8.4 Visual rules (design language §4, §5)
+
+Measured on the mock by a script that loads every page in a browser, dark
+and light (2026-11-22). The dashboard is built to pass the same check.
+
+| Part | Rule |
+|---|---|
+| Type | Inter for the interface (14 px labels and controls, 16 px card headings, 24 px page titles); Atkinson Hyperlegible 16/24 px for explanations; JetBrains Mono for sizes, versions, addresses and times; 12/16 px small print never carries an action. No other sizes. |
+| Spacing | The 4 px scale only: 8 inside controls, 16 inside cards, 24 between sections, 32 page edge. |
+| Corners | The shell's radius tokens: 8 controls, 10 cards, 14 panels, 20 window, round pills. |
+| Lines | 1 px dividers; a 2 px focus ring in `accent-ink`. |
+| Width | Content up to 1,040 px; paragraphs up to 72 characters. |
+| Targets | 44 × 44 px minimum; checkboxes and switches get a 44 px touch area. |
+| Colour | The DeltOS palettes, dark default; text at 4.5 : 1 or more in both themes. Filled buttons use `accent` in dark and `accent-ink` in light (light `accent` with white text measures 4.16 : 1, a fail). |
+| State | Always a dot and a word, never colour alone; colour-blind mode swaps success to blue. |
+| Phone | Below 720 px: the sidebar becomes a list, pages open full screen, tables become stacked rows; no sideways scrolling at 390 px. |
+
+### 8.5 How add-ons extend the dashboard
+
+Adding a service changes no dashboard code. From an add-on's manifest
+(§5.2) the dashboard already knows its name, icon, health check, logs,
+versions, backup set, address and the permissions it defines. Installed, an
+add-on appears under "Apps on this box" with a page whose tabs are the same
+for every add-on: **Overview** (state, memory against its floor, address),
+**Settings**, **Logs**, **Versions**. Its permissions appear in the roles
+editor.
+
+Its own settings need one more manifest section, **[Proposed 2026-11-22]**,
+optional, schema 1 (contract §15):
+
+```toml
+[[admin.settings]]
+key = "max_upload_mb"           # stored for the app under /var/lib/deltos/apps/<id>/
+label = "Largest upload"        # shown, translatable like the shell
+kind = "number"                 # one of: switch, number, text, choice
+unit = "MB"
+min = 1
+max = 4096
+default = 200
+permission = "media.manage"     # needed to change it; defaults to apps.manage
+```
+
+The dashboard draws every setting with its own standard controls, so every
+add-on looks and behaves alike, and it applies a change through the add-on
+(restart only if the add-on says it must). Settings carry no secrets: a
+password or key an add-on needs stays in its own secure setup. The parser
+(`crates/deltos-apps`) does not accept `[admin]` yet; it is built with the
+dashboard in stage 4, once the contract change is adopted.
 
 ## 9. Contract changes this needs
 
@@ -488,9 +561,24 @@ All marked **[Proposed 2026-11-22]**, to be adopted with this pull request:
 3. **§10:** paths `/var/lib/deltos/apps/<id>/` and `/usr/lib/deltos/apps/` (§7).
 4. **§8:** `admin.deltos.lan` stays reserved; the Admin Dashboard is an app at
    `home.deltos.lan` (§2).
-5. **§15:** the wire format is this document's §5.2 (schema 1).
+5. **§15:** the wire format is this document's §5.2 (schema 1), plus the
+   optional `[admin]` settings section of §8.5.
 
 And `privilege-boundary.md` §8 gains the four add-on actions (§7).
+
+The dashboard's other new sections need these, also **[Proposed
+2026-11-22]**, all secure only, under `admin.console` unless named:
+
+| Action | What it does | Re-confirm |
+|---|---|---|
+| `power_box` | Restart or shut down the box safely (jobs finish or are stopped first) | **Yes** |
+| `set_clock` | Set the time from the admin's device and the time zone; a box with no clock battery marks the time trusted, so `deltos-tls` can reissue provisional certificates | No |
+| `set_language` | The shell's default language | No |
+| `set_home_screen` | Featured packs and apps, the notice to everyone, guest access (`content.install`) | No |
+| `save_support_file` / `export_activity` | Write the support file or the action log to a mounted drive | No |
+
+Where the home screen settings are stored (a `deltd` record or a file under
+`/var/lib/deltos/`) is decided when stage 4 builds them.
 
 ## 10. Open, not filled in here
 

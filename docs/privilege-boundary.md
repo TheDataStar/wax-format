@@ -159,6 +159,11 @@ The first version of the closed list. Permission names are contract §4 names; `
 | `update_addon` / `roll_back_addon` | **[Proposed 2026-11-22]** Move an add-on to a newer version, or back to the retained previous one | add-on id; version from the listing | `apps.manage` | No |
 | `remove_addon` | **[Proposed 2026-11-22]** Stop and remove an add-on | add-on id; keep or delete its data | `apps.manage` | **Yes** |
 | `set_addon_running` | **[Proposed 2026-11-22]** Stop or start an installed add-on without removing it | add-on id; on or off | `service.restart` | No |
+| `power_box` | **[Proposed 2026-11-22]** Restart or shut down the box safely, after running jobs finish or are stopped (`docs/base-addons-admin.md` §8.2, §9) | restart or shut down | `admin.console` | **Yes** |
+| `set_clock` | **[Proposed 2026-11-22]** Set the time from the admin's device, and the time zone; marks the clock trusted on a box with no clock battery | time from the device; time zone from the listing | `admin.console` | No |
+| `set_language` | **[Proposed 2026-11-22]** The shell's default language | language from the listing | `admin.console` | No |
+| `set_home_screen` | **[Proposed 2026-11-22]** Featured packs and apps, the notice to everyone, guest access | ids from the library and app listings; notice text within a fixed length | `content.install` | No |
+| `save_support_file` / `export_activity` | **[Proposed 2026-11-22]** Write the support file (no names or personal data) or the action log to a mounted drive | drive id | `admin.console` | No |
 
 - **Listings are reads, and come first.** Drive contents, Wi-Fi scans, uploads and available updates are listed by read calls that hand out the ids the actions above take (rule 6). A listing shows each person only what they could act on or see.
 - **Long actions return a job.** `install_pack`, `convert_zim_from_drive`, backups and updates report progress through the job states of contract §7.2. The permission is checked when the job starts; a job already running is not stopped if the person signs out.
