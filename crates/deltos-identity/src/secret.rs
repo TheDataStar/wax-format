@@ -93,21 +93,72 @@ pub fn card_mac(key: &[u8], code: &str) -> String {
     hex(&m.finalize().into_bytes())
 }
 
+/// At most this many password hashes run at once, box-wide: one per
+/// processor core. Each holds [`policy::ARGON2_M_KIB`] of memory while it runs,
+/// and more at once than there are cores finishes no sooner, only holds more
+/// memory.
+pub fn password_checks_at_once() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+
+/// Every password hash runs on one of a fixed set of worker threads, never
+/// on the thread that asked. Two reasons, both measured
+/// (`examples/signin_burst.rs`, `docs/identityd.md` §5.1): the number running
+/// at once is the number of workers, and the memory each hash frees stays
+/// with its worker for the next one. Hashing on each connection's own thread
+/// let the allocator keep 19 MiB per thread: 40 sign-ins peaked at 748 MiB.
+fn on_worker<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    use std::sync::{mpsc, Mutex, OnceLock};
+    static POOL: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
+    let pool = POOL.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Job>();
+        let rx = std::sync::Arc::new(Mutex::new(rx));
+        for i in 0..password_checks_at_once() {
+            let rx = std::sync::Arc::clone(&rx);
+            std::thread::Builder::new()
+                .name(format!("password-{i}"))
+                .spawn(move || loop {
+                    let job = match rx.lock().unwrap_or_else(|p| p.into_inner()).recv() {
+                        Ok(j) => j,
+                        Err(_) => return,
+                    };
+                    job();
+                })
+                .expect("start a password worker");
+        }
+        Mutex::new(tx)
+    });
+    let (tx, rx) = mpsc::sync_channel(1);
+    let job: Job = Box::new(move || {
+        let _ = tx.send(f());
+    });
+    pool.lock().unwrap_or_else(|p| p.into_inner()).send(job).expect("password workers are running");
+    rx.recv().expect("a password worker answers")
+}
+
 /// A password for a passworded person: Argon2id with the policy's cost.
 pub fn hash_password(password: &str) -> String {
     use argon2::password_hash::{PasswordHasher, SaltString};
     let salt = SaltString::encode_b64(&random_bytes(16)).expect("16 bytes is a valid salt");
-    argon2().hash_password(password.as_bytes(), &salt).expect("argon2 with valid parameters").to_string()
+    let password = password.to_string();
+    on_worker(move || {
+        argon2().hash_password(password.as_bytes(), &salt).expect("argon2 with valid parameters").to_string()
+    })
 }
 
 /// Check a password against a stored hash. Takes the same time whether or
 /// not the person exists when called with [`DUMMY_HASH`].
 pub fn verify_password(password: &str, stored: &str) -> bool {
     use argon2::password_hash::{PasswordHash, PasswordVerifier};
-    match PasswordHash::new(stored) {
-        Ok(h) => argon2().verify_password(password.as_bytes(), &h).is_ok(),
-        Err(_) => false,
+    if PasswordHash::new(stored).is_err() {
+        return false;
     }
+    let (password, stored) = (password.to_string(), stored.to_string());
+    on_worker(move || {
+        PasswordHash::new(&stored).is_ok_and(|h| argon2().verify_password(password.as_bytes(), &h).is_ok())
+    })
 }
 
 /// Verified against when no such person exists, so a wrong name costs the
@@ -161,5 +212,17 @@ mod tests {
         assert!(is_token(&t));
         assert_ne!(token_hash(&t), t);
         assert!(!is_token("abc"));
+    }
+
+    #[test]
+    fn many_threads_hashing_at_once_all_get_the_right_answer() {
+        let h = hash_password("correct horse battery");
+        let hs: Vec<_> = (0..3 * password_checks_at_once())
+            .map(|i| {
+                let h = h.clone();
+                std::thread::spawn(move || verify_password(if i % 2 == 0 { "correct horse battery" } else { "wrong" }, &h) == (i % 2 == 0))
+            })
+            .collect();
+        assert!(hs.into_iter().all(|t| t.join().unwrap()));
     }
 }

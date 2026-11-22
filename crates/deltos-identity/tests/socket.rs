@@ -76,3 +76,33 @@ fn shelld_s_permission_check_wants_a_secure_session_for_secure_only_permissions(
     assert_eq!(q(&secure, "content.install")["ok"], true);
     assert_eq!(q("0".repeat(64).as_str(), "content.install")["ok"], false);
 }
+
+#[test]
+fn a_burst_of_sign_ins_never_holds_up_session_checks() {
+    let (_d, sock, pw) = start(Callers { deltd: vec![me()], shelld: vec![] });
+    // two connections: one for quick calls, one that every sign-in queues on
+    let c = Arc::new(Client::with_connections(&sock, 2));
+    let ctx = json!({ "https": true, "peer": "10.42.0.9" });
+    let first = c.call(&json!({ "call": "sign_in_password", "ctx": ctx, "sign_in_name": "admin", "password": pw })).unwrap();
+    let token = first["session_token"].as_str().unwrap().to_string();
+    let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let n = 8;
+    let hs: Vec<_> = (0..n)
+        .map(|i| {
+            let (c, pw, done) = (Arc::clone(&c), pw.clone(), Arc::clone(&done));
+            std::thread::spawn(move || {
+                let ctx = json!({ "https": true, "peer": format!("10.42.1.{i}") });
+                c.call(&json!({ "call": "sign_in_password", "ctx": ctx, "sign_in_name": "admin", "password": pw })).unwrap();
+                done.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+        })
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let v = c.call(&json!({ "call": "session", "token": token })).unwrap();
+    assert_eq!(v["secure"], true);
+    let finished = done.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(finished < n, "the session check waited for the whole burst ({finished} of {n} done)");
+    for h in hs {
+        h.join().unwrap();
+    }
+}

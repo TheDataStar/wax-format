@@ -96,6 +96,37 @@ Made 2026-11-21 under Commander's delegation of routine decisions. The first blo
 | Socket and group | `/run/deltos/identity/identityd.sock`, group `deltos-identc` | As `deltos-shellc` does for shelld (privilege boundary rule 1). |
 | The box's certificates | `/var/lib/deltos/tls/`: `deltos.lan.crt`/`.key` and `deltos-packs.lan.crt`/`.key`, `0640 root:deltos-deltd` | Contract §8's two wildcards. **Proposed for contract §10** with the other new paths. Made and renewed by the box's own CA (`docs/box-certificates.md`). |
 
+### 5.1 A class signing in at once (measured 2026-11-22)
+
+`examples/signin_burst.rs` signs in N people at the same moment while
+someone already signed in keeps reading, and records the burst's length, how
+long that reader's session check waits, and identityd's peak memory. x86_64
+development container, 4 cores, not the target; the same run on the minimum
+spec is still owed (deltd API §10 item 9).
+
+| 40 sign-ins at once | Burst | Session check during it | Peak memory |
+|---|---|---|---|
+| Before: `deltd`'s one kept connection | 920 ms | **912 ms** | 25 MiB |
+| Before: any caller with a connection per sign-in | 307 ms | 0.1 ms | **748 MiB** |
+| **After** (as `deltd` calls it) | **225 ms** | **0.4 ms** | **82 MiB** |
+| After, a connection per sign-in | 235 ms | 0.5 ms | 159 MiB |
+| After, 200 at once (as `deltd`) | 1,163 ms | 2.2 ms | 142 MiB |
+
+Two problems, fixed:
+
+1. **Every call waited behind every password.** `deltd` sent all its calls
+   down one connection, so one class signing in held up every session check
+   on the box, and with it every page request whose answer was not cached.
+   The client now keeps one connection more than identityd hashes at once,
+   and keeps the first for quick calls only: no burst of sign-ins can fill
+   it.
+2. **Memory grew with the number of sign-ins.** Hashing on each
+   connection's own thread let the memory allocator keep each thread's
+   19 MiB after the hash finished. Every hash now runs on a fixed set of
+   workers, **one per processor core** (more at once finishes no sooner, it
+   only holds more memory), so the hashing memory is about cores × 19 MiB
+   whatever the burst: 76 MiB on a 4-core board.
+
 ## 6. Setting up a box
 
 Once per box, after the network settings (`docs/box-radio-and-boot.md` §4):
