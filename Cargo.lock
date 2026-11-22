@@ -743,6 +743,7 @@ dependencies = [
  "deltos-identity",
  "deltos-net",
  "deltos-tls",
+ "flate2",
  "http-body-util",
  "hyper",
  "hyper-util",

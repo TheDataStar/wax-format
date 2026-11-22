@@ -22,6 +22,15 @@ use crate::library::{hex, Library, Pack};
 /// a large video never sits whole in memory on a 2 GB box.
 pub const STREAM_CHUNK: usize = 256 * 1024;
 
+/// Smallest decoded entry worth gzipping for a browser. Below this a response
+/// fits in one network packet either way, so compressing only costs CPU.
+pub const GZIP_MIN_BYTES: u64 = 1024;
+
+/// gzip level for pages sent to browsers that cannot take zstd (every
+/// plain-HTTP visitor). Chosen by measurement: see `NOTES.md`, "gzip for
+/// browsers".
+pub const GZIP_LEVEL: u32 = 6;
+
 /// Settings the pack zone needs from the server.
 #[derive(Clone)]
 pub struct ZoneConfig {
@@ -121,6 +130,7 @@ async fn serve_entry(
     let sha = entry.sha256.map(|s| hex(&s));
     let etag_plain = sha.as_ref().map(|h| format!("\"{h}\""));
     let etag_zst = sha.as_ref().map(|h| format!("\"{h}-zst\""));
+    let etag_gz = sha.as_ref().map(|h| format!("\"{h}-gz\""));
     let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok()).map(str::to_string);
     let range = range.filter(|_| if_range_ok(headers, etag_plain.as_deref()));
 
@@ -128,7 +138,23 @@ async fn serve_entry(
     // for zstd, and only without a range (API §4.3). Browsers send zstd only
     // over HTTPS, so plain-HTTP visitors always get the decoded page.
     let passthrough = codec == Compression::Zstd && range.is_none() && accepts_zstd(headers);
-    let etag = if passthrough { etag_zst.clone() } else { etag_plain.clone() };
+    // Otherwise gzip, which every browser takes over plain HTTP too: only an
+    // entry the pack stored compressed (the builder leaves media and other
+    // incompressible bytes verbatim), only text-like types, only whole
+    // entries of GZIP_MIN_BYTES or more.
+    let gzip = !passthrough
+        && codec != Compression::None
+        && range.is_none()
+        && entry.uncompressed_length >= GZIP_MIN_BYTES
+        && compressible(&mime)
+        && accepts(headers, "gzip");
+    let etag = if passthrough {
+        etag_zst.clone()
+    } else if gzip {
+        etag_gz.clone()
+    } else {
+        etag_plain.clone()
+    };
 
     let mut b = Response::builder();
     {
@@ -143,7 +169,7 @@ async fn serve_entry(
         if let Some(t) = &etag {
             h.insert(header::ETAG, hv(t));
         }
-        if !passthrough {
+        if !passthrough && !gzip {
             h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
         }
     }
@@ -220,6 +246,17 @@ async fn serve_entry(
         h.insert(header::CONTENT_LENGTH, hv(&raw.len().to_string()));
         let b = b.status(StatusCode::OK);
         return if head { b.body(Body::empty()) } else { b.body(Body::from(raw)) }.unwrap();
+    }
+    if gzip {
+        let packed = tokio::task::spawn_blocking(move || gzip_bytes(&plain)).await;
+        let Ok(Ok(packed)) = packed else {
+            return page(cfg, StatusCode::INTERNAL_SERVER_ERROR);
+        };
+        let h = b.headers_mut().unwrap();
+        h.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        h.insert(header::CONTENT_LENGTH, hv(&packed.len().to_string()));
+        let b = b.status(StatusCode::OK);
+        return if head { b.body(Body::empty()) } else { b.body(Body::from(packed)) }.unwrap();
     }
     let body = plain[start as usize..(start + len) as usize].to_vec();
     b.headers_mut().unwrap().insert(header::CONTENT_LENGTH, hv(&len.to_string()));
@@ -325,8 +362,43 @@ fn redirect(cfg: &ZoneConfig, status: StatusCode, to: &str) -> Response<Body> {
     r.body(Body::empty()).unwrap()
 }
 
+fn gzip_bytes(plain: &[u8]) -> std::io::Result<Vec<u8>> {
+    use std::io::Write;
+    let mut e = flate2::write::GzEncoder::new(
+        Vec::with_capacity(plain.len() / 3 + 64),
+        flate2::Compression::new(GZIP_LEVEL),
+    );
+    e.write_all(plain)?;
+    e.finish()
+}
+
+/// Types worth gzipping: text and the text-based formats packs carry.
+pub fn compressible(mime: &str) -> bool {
+    let m = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    m.starts_with("text/")
+        || m.ends_with("+xml")
+        || m.ends_with("+json")
+        || matches!(
+            m.as_str(),
+            "application/javascript"
+                | "application/json"
+                | "application/xml"
+                | "application/xhtml+xml"
+                | "image/svg+xml"
+                | "font/ttf"
+                | "font/otf"
+                | "application/vnd.ms-fontobject"
+        )
+}
+
 /// Whether `Accept-Encoding` admits `zstd` with a non-zero q.
 pub fn accepts_zstd(headers: &HeaderMap) -> bool {
+    accepts(headers, "zstd")
+}
+
+/// Whether `Accept-Encoding` admits `coding` with a non-zero q. (`*` is not
+/// taken as consent: a client that wants compression names it.)
+pub fn accepts(headers: &HeaderMap, coding: &str) -> bool {
     headers
         .get_all(header::ACCEPT_ENCODING)
         .iter()
@@ -335,7 +407,7 @@ pub fn accepts_zstd(headers: &HeaderMap) -> bool {
         .any(|item| {
             let mut parts = item.split(';');
             let name = parts.next().unwrap_or("").trim();
-            if !name.eq_ignore_ascii_case("zstd") {
+            if !name.eq_ignore_ascii_case(coding) {
                 return false;
             }
             !parts.any(|p| {
