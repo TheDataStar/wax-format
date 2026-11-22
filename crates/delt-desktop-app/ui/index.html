@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -24,7 +24,8 @@
     </nav>
     <form class="search" role="search" id="search-form" autocomplete="off">
       <label for="q" class="vh">Search every pack</label>
-      <input id="q" type="search" placeholder="Search every pack" aria-autocomplete="list" aria-controls="suggest" aria-expanded="false">
+      <input id="q" type="search" placeholder="Search every pack" aria-autocomplete="list" aria-controls="suggest" aria-expanded="false" aria-keyshortcuts="Control+K /">
+      <kbd class="hint" id="search-hint" aria-hidden="true">Ctrl K</kbd>
       <ul id="suggest" role="listbox" class="suggest" hidden></ul>
     </form>
   </div>
@@ -36,25 +37,29 @@
     <div class="view-head">
       <h1>Library</h1>
       <div class="actions">
+        <button id="find-updates">Find updates…</button>
         <button id="add-pack" class="primary">Add a pack…</button>
-        <button id="find-updates">Find updates in a folder…</button>
       </div>
     </div>
-    <p class="meta">Packs are read from <span class="mono" id="lib-dir"></span> <button class="link" id="change-dir">Change folder…</button></p>
-    <div id="packs" class="mosaic"></div>
+    <section id="continue" class="continue" aria-labelledby="continue-h" hidden>
+      <h2 id="continue-h" class="eyebrow">Continue reading</h2>
+      <ol id="continue-list" class="continue-list"></ol>
+    </section>
+    <h2 class="eyebrow" id="packs-h">Your packs</h2>
+    <div id="packs" class="mosaic" aria-labelledby="packs-h"></div>
     <div id="updates-found"></div>
   </section>
-
   <section id="view-reader" class="view reader" hidden>
     <div class="reader-bar">
-      <button id="back" aria-label="Back">‹ Back</button>
-      <button id="forward" aria-label="Forward">Forward ›</button>
+      <button id="back" aria-label="Back" aria-keyshortcuts="Alt+ArrowLeft" title="Back (Alt ←)">‹ Back</button>
+      <button id="forward" aria-label="Forward" aria-keyshortcuts="Alt+ArrowRight" title="Forward (Alt →)">Forward ›</button>
       <button id="home">Pack home</button>
       <span class="crumbs" id="crumbs"></span>
       <span class="spacer"></span>
-      <button id="bookmark-toggle" aria-pressed="false">Bookmark</button>
+      <button id="bookmark-toggle" aria-pressed="false" aria-keyshortcuts="Control+D" title="Bookmark this page (Ctrl D)">Bookmark</button>
       <button id="notes-toggle" aria-expanded="false" aria-controls="page-notes">Notes</button>
     </div>
+    <div class="loading-bar" id="loading" aria-hidden="true" hidden></div>
     <div class="reader-body">
       <iframe id="page" title="Pack page" sandbox="allow-scripts allow-forms allow-same-origin"></iframe>
       <aside id="page-notes" class="panel side" hidden aria-label="Notes on this page">
@@ -75,6 +80,7 @@
 
   <section id="view-search" class="view" hidden>
     <div class="view-head"><h1>Results for <span id="search-q"></span></h1></div>
+    <p class="meta" id="search-status" role="status"></p>
     <p class="meta" id="search-skipped"></p>
     <ol id="results" class="results"></ol>
     <button id="more-results" hidden>More results</button>
@@ -102,19 +108,38 @@
     <ol id="history-list" class="rows"></ol>
   </section>
 
-  <section id="view-settings" class="view" hidden>
+  <section id="view-settings" class="view">
     <div class="view-head"><h1>Settings</h1></div>
-    <div class="panel">
-      <div class="rule" aria-hidden="true"><i></i><i></i><i></i></div>
-      <fieldset>
-        <legend>Theme</legend>
-        <label><input type="radio" name="theme" value="system"> Match this computer</label>
-        <label><input type="radio" name="theme" value="light"> Light</label>
-        <label><input type="radio" name="theme" value="dark"> Dark</label>
-      </fieldset>
-      <label class="check"><input type="checkbox" id="colorblind"> Colour-blind friendly state colours</label>
-      <p class="meta">Status always shows a word as well as a colour; this mode also changes “working” from green to blue.</p>
-      <p class="meta">Pack pages keep their own look: the theme changes Delt, not the pages inside packs.</p>
+    <div class="settings-grid">
+      <div class="panel">
+        <div class="rule" aria-hidden="true"><i></i><i></i><i></i></div>
+        <fieldset class="choices">
+          <legend>Look</legend>
+          <label class="choice"><input type="radio" name="theme" value="dark"><span><b>Dark</b><small>The standard look. Easier on the eyes in a dim room.</small></span></label>
+          <label class="choice"><input type="radio" name="theme" value="light"><span><b>Light</b><small>Dark text on a light background.</small></span></label>
+          <label class="choice"><input type="radio" name="theme" value="system"><span><b>Match this computer</b><small>Follows the computer’s own light or dark setting.</small></span></label>
+        </fieldset>
+        <label class="choice"><input type="checkbox" id="colorblind"><span><b>Colour-blind friendly</b><small>Status always shows a word as well as a colour; this also changes “working” from green to blue.</small></span></label>
+        <p class="meta">The look changes Delt itself. Pages inside packs keep the look their makers gave them.</p>
+      </div>
+      <div class="panel">
+        <div class="rule" aria-hidden="true"><i></i><i></i><i></i></div>
+        <h2 class="legend">Library folder</h2>
+        <p class="meta">Delt reads packs from this folder. Point it at a USB drive full of packs to read them where they are.</p>
+        <p class="mono path" id="lib-dir"></p>
+        <button id="change-dir">Change folder…</button>
+      </div>
+      <div class="panel">
+        <div class="rule" aria-hidden="true"><i></i><i></i><i></i></div>
+        <h2 class="legend">Keyboard shortcuts</h2>
+        <dl class="keys">
+          <dt><kbd>Ctrl</kbd> <kbd>K</kbd> or <kbd>/</kbd></dt><dd>Search every pack</dd>
+          <dt><kbd>Alt</kbd> <kbd>←</kbd> / <kbd>Alt</kbd> <kbd>→</kbd></dt><dd>Back and forward while reading</dd>
+          <dt><kbd>Ctrl</kbd> <kbd>D</kbd></dt><dd>Bookmark the page you are reading</dd>
+          <dt><kbd>Esc</kbd></dt><dd>Close suggestions or a dialog</dd>
+        </dl>
+        <p class="meta">On a Mac, use <kbd>⌘</kbd> for <kbd>Ctrl</kbd> and <kbd>⌥</kbd> for <kbd>Alt</kbd>. Shortcuts work when Delt has focus, not while you are typing inside a pack page.</p>
+      </div>
     </div>
   </section>
 </main>

@@ -115,3 +115,27 @@ your own computer. Two crates:
 * Text-to-speech, reader mode and the magnifier from design-language §12.
 * Packaging and signing installers (`cargo tauri build`) and auto-update of
   the app itself.
+
+## Dark by default and the Laws of UX pass (2026-11-22)
+
+Commander asked for dark as the standard look and for the window to follow
+the [Laws of UX](https://lawsofux.com/). Dark is now `Settings::default()`;
+a person who already saved a choice keeps it, and the page starts dark so
+nothing flashes light on opening. What changed, by law:
+
+| Law | Change |
+|---|---|
+| Fitts's law | A whole library tile, search result, bookmark or history row opens its page (the title link stretches over the card), so the target is the card, not a short title such as 一. Settings choices are full-width cards, not bare radio dots. |
+| Hick's law | A tile has one obvious action (open); Update, Undo and Remove sit behind its "⋯ More" menu. |
+| Von Restorff effect | One accent button per screen ("Add a pack…"), instead of an orange Open on every tile. A pack is shown large only when it has a description to show. |
+| Zeigarnik effect / serial position | "Continue reading" at the top of the library: the last page read in each of the three most recent packs. |
+| Chunking / Miller's law | Tile facts read "English · 8.9 MB · Edition 2024.06.18", not `en 8.9 MB v 2024.06.18`; history is grouped by day. |
+| Jakob's law | Shortcuts people know from browsers: Ctrl/⌘ K or / to search, Alt ←/→ back and forward, Ctrl/⌘ D bookmark. Listed in Settings. |
+| Doherty threshold | "Searching…" at once, and a thin loading bar if a page takes over 150 ms. |
+| Occam's razor / cognitive load | The library folder path moved from the library screen into Settings. |
+
+Not changed, for a later pass: pack pages stay white in dark mode (they are
+other people's pages; a "dark pages" option would invert them), and search
+ranking (RRF interleaves packs, contract §13 decision 6) is a server matter.
+Shortcuts do not reach the window while focus is inside a pack page (the
+frame is another origin).

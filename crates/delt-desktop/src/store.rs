@@ -86,9 +86,11 @@ pub struct Settings {
     pub library_dir: Option<String>,
 }
 
+/// Dark is the standard look (Commander, 2026-11-22). A person who already
+/// saved a choice keeps it: only an unsaved setting takes this default.
 impl Default for Settings {
     fn default() -> Self {
-        Settings { theme: ThemeChoice::System, colorblind: false, library_dir: None }
+        Settings { theme: ThemeChoice::Dark, colorblind: false, library_dir: None }
     }
 }
 
@@ -406,7 +408,8 @@ mod tests {
     fn settings_default_and_persist() {
         let s = Store::in_memory().unwrap();
         assert_eq!(s.settings().unwrap(), Settings::default());
-        let mine = Settings { theme: ThemeChoice::Dark, colorblind: true, library_dir: Some("/x".into()) };
+        assert_eq!(Settings::default().theme, ThemeChoice::Dark, "dark is the standard look");
+        let mine = Settings { theme: ThemeChoice::Light, colorblind: true, library_dir: Some("/x".into()) };
         s.save_settings(&mine).unwrap();
         assert_eq!(s.settings().unwrap(), mine);
     }
