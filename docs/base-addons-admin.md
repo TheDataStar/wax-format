@@ -552,6 +552,64 @@ password or key an add-on needs stays in its own secure setup. The parser
 (`crates/deltos-apps`) does not accept `[admin]` yet; it is built with the
 dashboard in stage 4, once the contract change is adopted.
 
+### 8.6 Records: adding, viewing, changing, removing
+
+Every record an admin manages is described once, as data: its fields (with
+kind, whether needed, length, pattern, uniqueness, help line), the columns
+its list shows, and for each operation its label, the box call behind it,
+whether it needs the admin's password again, and what removing it does in
+plain words. The list, record, form and remove screens are drawn from that
+description, so a new record type, including an add-on's own records, gets
+the same four screens with no new screen code. The mock implements exactly
+this (example data); stage 4 builds it for real.
+
+| Record | Lives in | Add | Change | Remove | Password again | Backed by |
+|---|---|---|---|---|---|---|
+| Person | People and classes | Add person, or a pasted class list | Name, roles, class, sign-in | Remove (sessions end; notes and progress deleted; log kept). The only admin cannot be removed | Remove | `create_profile`; proposed `update_profile`, `remove_profile`; `issue_card`, `set_password` |
+| Class | People and classes | Add class | Name, teacher, packs shown first, Simple mode | Delete (students stay, without a class) | No | proposed `create_class`, `update_class`, `remove_class` |
+| Role | People and classes | New role, or Duplicate | Name, purpose, permissions (grouped; add-ons add theirs) | Delete. Built-in roles cannot be changed or deleted | Remove | proposed `create_role`, `update_role`, `remove_role` (contract §4: roles are data) |
+| Remembered device | People and classes | By signing in | No | Forget | No | `list_devices`, `remove_device` |
+| Pack | Library | Add packs (drive, store, upload) | Who sees it, collection; update; go back | Remove | Remove | `install_pack`, `roll_back_pack`, `remove_pack`; `set_home_screen` |
+| Collection | Library | New collection | Name, description, packs | Delete, with Undo (packs stay) | No | `set_home_screen` |
+| Notice | Home screen and notices | New notice | Text (200 characters), audience, from, until, pinned | Delete, with Undo | No | `set_home_screen` |
+| Name on `deltos.lan` | Network and devices | Name a device | Name, device, fixed address | Remove name, with Undo | No | `approve_name`, `set_address_reservation` (box-network-plan §7) |
+| Box screen (kiosk) | Other boxes | Add a screen | Name, opens to, class, Simple mode | Remove screen | No | proposed `add_kiosk`, `update_kiosk`, `remove_kiosk` |
+| Paired box | Other boxes | Pair a box (6-digit code) | Rename | Unpair (nothing deleted on either box) | Add, remove | `pair_box`; proposed `rename_box`, `unpair_box` |
+| Add-on | Add-ons | Install | Its own settings (§8.5); update; go back; stop and start | Remove, keeping or deleting its data | Remove; install when not measured | §7 actions |
+| Backup | Backups | Back up now | No | On the drive | Restore | `start_backup`, `review_backup`, `restore_backup` |
+| Secure session | Sign-in and security | By signing in | No | Sign out | No | `sign_out` |
+
+**How sure before removing.** Three levels, chosen per record:
+
+1. *Easy to put back* (a notice, a collection, a device name): removed at
+   once, with Undo in the message for 8 seconds.
+2. *Cannot be put back* (a class, a remembered device, a screen): a sheet says
+   exactly what happens, then asks.
+3. *Changes the box or someone's data* (a person, a pack, a role, an add-on,
+   pairing): as 2, plus the admin's password again (privilege boundary §6).
+
+Something that must stay (the only admin, a built-in role) keeps its button
+visible but off, with the reason beside it.
+
+**Page patterns** (the mock's "Patterns guide" page shows each, live):
+
+- *List:* search first, at most two filters, the main action top right, rows
+  48 px, the whole row opens the record, "Showing x of y", a bar for actions
+  on several selected rows.
+- *Record:* the path back at the top, Edit top right, then details, actions,
+  history (from the action log), and removal last in its own box.
+- *Form:* the same form adds and changes; one column, at most 480 px (640 for
+  long text); labels above, "(optional)" on optional fields, a help line
+  below, a character count where there is a limit. Checked on Save: a summary
+  at the top links to each field, and each field says what to do. Save says
+  what it does ("Add person", "Save changes"); leaving with changes asks.
+- *Empty:* an icon, one sentence on why it is empty, and the first step.
+- *Loading:* grey rows shaped like the real ones, shown only after 0.4 s.
+- *Failed:* what happened, what it means, what to do, and Try again;
+  "Nothing was changed" when true.
+- *Settings rows:* a switch acts at once with no Save; a change that
+  disconnects people asks first.
+
 ## 9. Contract changes this needs
 
 All marked **[Proposed 2026-11-22]**, to be adopted with this pull request:
@@ -576,6 +634,14 @@ The dashboard's other new sections need these, also **[Proposed
 | `set_language` | The shell's default language | No |
 | `set_home_screen` | Featured packs and apps, the notice to everyone, guest access (`content.install`) | No |
 | `save_support_file` / `export_activity` | Write the support file or the action log to a mounted drive | No |
+
+The records of §8.6 also need, **[Proposed 2026-11-22]**: in `identityd`,
+`update_profile`, `remove_profile`, `create_class`, `update_class`,
+`remove_class`, `create_role`, `update_role`, `remove_role` (role editing
+was already planned with F1; `admin.console` for roles, `profile.manage`
+scoped to the class for the rest); in `deltos-shelld`, `add_kiosk`,
+`update_kiosk`, `remove_kiosk` (`admin.console`) and `rename_box`,
+`unpair_box` (`fleet.manage`, unpair re-confirmed).
 
 Where the home screen settings are stored (a `deltd` record or a file under
 `/var/lib/deltos/`) is decided when stage 4 builds them.
