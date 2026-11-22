@@ -1,0 +1,39 @@
+schema = 1
+id = "identity"
+name = "Sign-in and people"
+version = "0.1.0"
+kind = "base"
+summary = "Keeps the box's people, roles, sessions, sign-in cards and remembered devices."
+licence = "MIT"
+min_profile = "kiosk"
+
+[resources]
+evidence = "provisional"
+# Idle with one admin: VmRSS 5,380 kB.
+min_ram_bytes = 5509120
+# The register with one admin: 151,584 bytes.
+min_storage_bytes = 151584
+install_bytes = 3756008
+arch = "any"
+basis = "deltos-identityd release build, x86_64 dev container, one admin, 2026-11-22. Re-measure on aarch64 2 GB."
+
+[load]
+evidence = "provisional"
+# Each password check holds argon2's memory cost: 19 MiB (policy.rs ARGON2_M_KIB),
+# and took 18.3 ms on one x86_64 core.
+ram_bytes_per_active_user = 19922944
+basis = "argon2id m=19456 KiB t=2 p=1 from crates/deltos-identity/src/policy.rs; 10 verifications timed on one core. Counts people signing in with a password at the same moment, not people signed in."
+
+[run]
+form = "systemd"
+entry = "deltos-identityd.service"
+
+[sign_in]
+method = "none"
+
+[health]
+probe = "systemd"
+target = "deltos-identityd.service"
+
+[backup]
+paths = ["/var/lib/deltos/identity/"]

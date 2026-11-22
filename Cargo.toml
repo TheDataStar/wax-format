@@ -11,6 +11,7 @@ members = [
     "crates/deltos-backup",
     "crates/delt-desktop",
     "crates/wss-core",
+    "crates/deltos-apps",
 ]
 exclude = ["fuzz", "crates/delt-desktop-app"]
 resolver = "2"

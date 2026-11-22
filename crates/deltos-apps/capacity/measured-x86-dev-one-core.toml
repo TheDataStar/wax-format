@@ -1,0 +1,12 @@
+# What one x86_64 core of the cloud dev container did, 2026-11-22.
+# NOT the minimum spec: this is a reference point and a check that the
+# arithmetic works. Method and raw figures: docs/base-addons-admin.md §4.3.
+machine = "x86_64 dev container, deltd pinned to 1 core, one 8.9 MB Wikipedia pack (3,821 articles), 2026-11-22"
+cpu_cores = 1.0
+page_cpu_seconds = 0.0001       # 0.092 to 0.118 ms CPU per page across 1 to 250 clients
+search_cpu_seconds = 0.000152   # one or two words, one pack
+page_bytes = 9123.0             # mean bytes a page brings that are its own (HTML 7,633 + its own files)
+first_visit_bytes = 829968.0    # the pack's 26 shared scripts and styles; the WebOS shell is not built yet
+# The container has no radio, so the radio limits stay unmeasured.
+# RAM left for people depends on the box, not on this container.
+sign_in_ram_bytes = 19922944.0  # argon2 m = 19 MiB per password check (identity policy)

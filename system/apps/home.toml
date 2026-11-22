@@ -1,0 +1,52 @@
+schema = 1
+id = "home"
+name = "DeltOS home and library"
+version = "0.1.0"
+kind = "base"
+summary = "Serves the DeltOS screen to every device at home.deltos.lan, the box API, the library of packs and search."
+licence = "MIT"
+min_profile = "kiosk"
+
+[resources]
+evidence = "provisional"
+# Idle, one pack open: VmRSS 13,756 kB after start. x86_64, not the minimum spec.
+min_ram_bytes = 14086144
+# Its own catalogue table under /var/lib/deltos/b4 (12,288 bytes with one pack).
+min_storage_bytes = 12288
+install_bytes = 8235592
+arch = "any"
+basis = "deltd release build, x86_64 dev container (4 cores, 15 GB), one 8.9 MB Wikipedia pack, 2026-11-22; docs/base-addons-admin.md §4.3. Re-measure on aarch64 2 GB."
+
+[load]
+evidence = "provisional"
+# High-water mark with 40 to 250 clients at once: 90,728 to 105,160 kB; it levels off.
+peak_ram_bytes = 107683840
+basis = "oha, 1 to 250 connections for 15 s each, deltd pinned to one core; same machine as [resources]."
+
+[run]
+form = "systemd"
+entry = "deltos-deltd.service"
+capabilities = ["CAP_NET_BIND_SERVICE"]
+listens = [
+  { port = 80, proto = "tcp", bind = "lan" },
+  { port = 443, proto = "tcp", bind = "lan" },
+]
+
+# No [launcher] or [reach]: this is the WebOS itself. Who may read which pack
+# is the pack server's own check (contract §8, issued hostnames), not a
+# permission an app declares.
+
+[sign_in]
+method = "webos"
+
+[health]
+probe = "http"
+target = "/api/v1/status"
+
+[backup]
+paths = ["/var/lib/deltos/b4/"]
+listed = ["/var/lib/deltos/packs/"]
+
+[participates]
+search = true
+progress = true

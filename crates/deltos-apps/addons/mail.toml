@@ -1,0 +1,51 @@
+schema = 1
+id = "mail"
+name = "Email"
+version = "0.1.0"
+kind = "addon"
+summary = "Email between people on this box (and other paired boxes), read in the browser."
+licence = "GPL-3.0-only"
+upstream = "Maddy (mail server) + Roundcube (webmail)"
+min_profile = "community_hub"
+depends = ["platform"]
+
+[resources]
+evidence = "open"
+arch = "any"
+
+[load]
+evidence = "open"
+
+[run]
+form = "compose"
+entry = "compose.yaml"
+listens = [
+  { port = 8025, proto = "tcp", bind = "loopback" },
+  { port = 8080, proto = "tcp", bind = "loopback" },
+]
+
+[launcher]
+group = "talk"
+icon = "icon.svg"
+
+[reach]
+host = "mail"
+requires = ["mail.use"]
+
+[[defines]]
+name = "mail.use"
+summary = "Send and read email on the box"
+seed_bundles = ["teacher", "student"]
+
+[sign_in]
+method = "adapter_api"
+
+[health]
+probe = "compose"
+target = "roundcube"
+
+[backup]
+paths = ["/var/lib/deltos/apps/mail/"]
+
+[participates]
+notifications = true

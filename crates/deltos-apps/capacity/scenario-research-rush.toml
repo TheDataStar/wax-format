@@ -1,0 +1,6 @@
+# A WHAT-IF, not a measurement: a room searching hard, devices already visited once.
+name = "research rush: a page every 5 s, a search every 15 s, nobody new"
+pages_per_minute = 12.0
+searches_per_minute = 4.0
+first_visit_share = 0.0
+ceiling = 0.5

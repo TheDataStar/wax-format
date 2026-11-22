@@ -1,0 +1,28 @@
+schema = 1
+id = "hotspot"
+name = "Box Wi-Fi"
+version = "0.1.0"
+kind = "base"
+summary = "Runs the box's own Wi-Fi network that visitors' devices join."
+licence = "BSD-3-Clause"
+upstream = "hostapd"
+min_profile = "kiosk"
+
+[resources]
+evidence = "open"
+arch = "any"
+
+[run]
+form = "systemd"
+entry = "deltos-hostapd.service"
+devices = ["wifi_radio"]
+
+[sign_in]
+method = "none"
+
+[health]
+probe = "systemd"
+target = "deltos-hostapd.service"
+
+[backup]
+paths = []
