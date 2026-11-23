@@ -2,6 +2,10 @@
 # docs/identityd.md), as its own user with no powers and no network. It
 # answers only on its local socket, which only deltd (group deltos-identc)
 # can open; the caller's user is checked again on every connection.
+# deltos-shelld runs as root, so root is its caller id here: it may make
+# only shelld's three calls (session, has_permission, redeem_ticket), and
+# root could read the register's files directly anyway (privilege boundary
+# rule 2).
 #
 # It starts once the box has its first admin: deltos-identity-provision
 # creates the register (docs/identityd.md §6). Until then it is skipped,
@@ -21,7 +25,7 @@ NotifyAccess=main
 User=deltos-identity
 Group=deltos-identity
 UMask=0077
-ExecStart=/usr/lib/deltos/bin/deltos-identityd --dir /var/lib/deltos/identity --socket /run/deltos/identity/identityd.sock --webos-host home.deltos.lan
+ExecStart=/usr/lib/deltos/bin/deltos-identityd --dir /var/lib/deltos/identity --socket /run/deltos/identity/identityd.sock --webos-host home.deltos.lan --shelld-user root
 Restart=on-failure
 RestartSec=2s
 RestartSteps=5

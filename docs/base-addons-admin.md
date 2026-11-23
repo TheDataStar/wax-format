@@ -696,7 +696,7 @@ Where the home screen settings are stored (a `deltd` record or a file under
 |---|---|---|
 | 1 | This design; the manifest format, fit check and capacity calculator (`crates/deltos-apps`, 29 tests); base manifests; three draft add-on manifests; the capacity measurements on x86_64 | **This pull request** |
 | 2 | `deltd`: gzip for browsers (§4.4 item 3) with its CPU cost measured; `identityd`: cap password checks at once by free RAM; measure the base floors and `os_ram_bytes` in the ARM64 VM | Next |
-| 3 | `deltos-shelld` with the closed list, and `deltos-installd` for packs and add-ons (F4), with the add-on actions and `apps.manage` | After 2 |
+| 3 | `deltos-shelld` with the closed list, and `deltos-installd` for packs and add-ons (F4), with the add-on actions and `apps.manage` | **Add-ons and shelld built 2026-11-23** (`docs/shelld.md`); packs next |
 | 4 | The WebOS shell build from the shell mock, served by `deltd`, with its first-visit size measured; the Admin Dashboard app on it: Overview, Set up, Library, People first, then Add-ons, Network, Backups, Updates, Other boxes, Activity | After 3 |
 | 5 | The platform add-on (G1 + G2), then the first two add-ons (media hub, email), each with its floor measured | After 4 |
 | 6 | The add-on store web app and its signed catalogue | After 5 |

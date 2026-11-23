@@ -8,7 +8,7 @@
 //! **Callers** (privilege boundary rule 2, Track F §3): the socket is
 //! `0660` with group `deltos-identc`, and on every connection the caller's
 //! user id is read from the kernel (`SO_PEERCRED`). `deltd` may make the
-//! calls in [`DELTD_CALLS`]; `deltos-shelld` (not built yet) only the three
+//! calls in [`DELTD_CALLS`]; `deltos-shelld` only the three
 //! in [`SHELLD_CALLS`]. Anyone else is disconnected before a byte is read.
 
 use std::io::{BufRead, BufReader, Write};

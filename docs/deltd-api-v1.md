@@ -267,6 +267,8 @@ Every error has the same JSON shape and a code from one closed list, so the WebO
 | `sign_in_unavailable` | 503 | The sign-in service cannot be reached; nobody is signed in meanwhile (added 2026-11-21) |
 | `certificate_unavailable` | 503 | The box has not made its certificates yet (added 2026-11-21, `docs/box-certificates.md`) |
 | `pack_damaged` | 500 | A hash check failed; a health event is raised |
+| `app_not_found` | 404 | No installed add-on with that id, or no bundle at that source id (added 2026-11-23, `docs/shelld.md`) |
+| `does_not_fit` | 409 | The fit check refused the add-on; `detail` lists each reason (added 2026-11-23, `docs/base-addons-admin.md` §6) |
 | `internal` | 500 | Anything else; logged on the box |
 
 Adding a code is allowed within v1, since callers must treat an unknown code as `internal`. Changing what an existing code means is not.
