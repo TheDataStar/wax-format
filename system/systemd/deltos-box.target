@@ -3,7 +3,7 @@
 Description=DeltOS box services
 Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-radio-and-boot.md
 Wants=deltos-net-render.service deltos-hotspot-address.service deltos-uplink-firewall.service
-Wants=deltos-hostapd.service deltos-dnsmasq.service deltos-identityd.service deltos-tls.service deltos-deltd.service deltos-net-changed.path deltos-tls.timer
+Wants=deltos-hostapd.service deltos-dnsmasq.service deltos-identityd.service deltos-shelld.service deltos-tls.service deltos-deltd.service deltos-net-changed.path deltos-tls.timer
 
 [Install]
 WantedBy=multi-user.target

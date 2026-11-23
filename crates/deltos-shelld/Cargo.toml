@@ -1,0 +1,32 @@
+[package]
+name = "deltos-shelld"
+version = "0.1.0"
+edition = "2021"
+description = "deltos-shelld, the box's key holder: the closed list of box-changing actions behind the privilege boundary, and deltos-installd's add-on installs (docs/shelld.md)"
+license = "MIT"
+
+[[bin]]
+name = "deltos-shelld"
+path = "src/bin/deltos-shelld.rs"
+
+[dependencies]
+deltos-net = { path = "../deltos-net" }
+deltos-backup = { path = "../deltos-backup" }
+deltos-identity = { path = "../deltos-identity" }
+deltos-apps = { path = "../deltos-apps" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "1.0"
+libc = "0.2"
+clap = { version = "4.4", features = ["derive"] }
+tar = "0.4"
+getrandom = "0.2"
+# Verify-only, pure Rust, no dependencies: the key holder checks a bundle's
+# signature itself rather than starting a program on it.
+minisign-verify = "0.2"
+
+[dev-dependencies]
+tempfile = "3.8"
+# Signs test bundles; never linked into the box's program.
+minisign = "0.7"

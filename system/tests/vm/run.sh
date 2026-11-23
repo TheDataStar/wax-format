@@ -12,7 +12,7 @@
 #          libpcsclite1, wireless-regdb
 # --bin-dir  aarch64 builds of deltd, deltos-net-render, deltos-net-provision,
 #          deltos-identityd, deltos-identity-provision, deltos-tls-provision,
-#          deltos-backup and the example
+#          deltos-backup, deltos-shelld and the example
 #          configure_ap_standin
 # --pack   any .wax pack holding a page that matches "evaporation"
 #
@@ -42,7 +42,7 @@ echo "work dir: $WORK"
 SH=$WORK/share
 rm -rf "$SH"; mkdir -p "$SH/bin" "$SH/debs" "$SH/results" "$SH/system"
 cp -a "$SYSTEM/." "$SH/system/"
-for b in deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision deltos-backup; do cp "$BIN/$b" "$SH/bin/"; done
+for b in deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision deltos-backup deltos-shelld; do cp "$BIN/$b" "$SH/bin/"; done
 cp "$BIN/examples/configure_ap_standin" "$SH/bin/" 2>/dev/null || cp "$BIN/configure_ap_standin" "$SH/bin/"
 # optional: identityd's sign-in burst measurement (deltos-identity example)
 cp "$BIN/examples/signin_burst" "$SH/bin/" 2>/dev/null || true

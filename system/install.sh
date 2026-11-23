@@ -5,7 +5,7 @@
 #
 # --bin-dir   where the built deltd, deltos-net-render, deltos-net-provision,
 #             deltos-identityd, deltos-identity-provision and
-#             deltos-tls-provision are
+#             deltos-tls-provision, deltos-backup and deltos-shelld are
 #             (e.g. target/release)
 # --destdir   install into an image tree instead of this machine (the
 #             appliance image build); nothing is enabled or started there
@@ -29,9 +29,9 @@ while [ $# -gt 0 ]; do
 done
 die() { echo "install.sh: $*" >&2; exit 1; }
 [ -n "$BIN" ] || die "--bin-dir is required"
-BINS="deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision deltos-backup"
+BINS="deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision deltos-backup deltos-shelld"
 for b in $BINS; do
-    [ -x "$BIN/$b" ] || die "$BIN/$b is missing; build with: cargo build --release -p deltlib -p deltos-net -p deltos-identity -p deltos-tls -p deltos-backup"
+    [ -x "$BIN/$b" ] || die "$BIN/$b is missing; build with: cargo build --release -p deltlib -p deltos-net -p deltos-identity -p deltos-tls -p deltos-backup -p deltos-shelld"
 done
 
 if [ -z "$DEST" ]; then
@@ -55,6 +55,9 @@ for b in $BINS; do
     install -m 0755 "$BIN/$b" "$U/deltos/bin/$b"
 done
 for f in "$HERE"/libexec/*; do install -m 0755 "$f" "$U/deltos/libexec/"; done
+# The base services' manifests: the fit check counts them (docs/base-addons-admin.md §6)
+install -d "$U/deltos/apps"
+for f in "$HERE"/apps/*.toml; do install -m 0644 "$f" "$U/deltos/apps/"; done
 for f in "$HERE"/systemd/*; do install -m 0644 "$f" "$U/systemd/system/"; done
 install -m 0644 "$HERE/sysusers.d/deltos.conf" "$U/sysusers.d/deltos.conf"
 install -m 0644 "$HERE/tmpfiles.d/deltos.conf" "$U/tmpfiles.d/deltos.conf"

@@ -35,7 +35,7 @@ M=$S/results/measure.txt
 rss() { awk -v k="$2" '$1==k":"{print $2}' "/proc/$(pid "$1")/status"; }
 {
   echo "idle_mem_used_kib=$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{print t-a}' /proc/meminfo)"
-  for u in deltos-hostapd deltos-dnsmasq deltos-identityd deltos-deltd; do echo "idle_${u}_rss_kib=$(rss $u VmRSS)"; done
+  for u in deltos-hostapd deltos-dnsmasq deltos-identityd deltos-shelld deltos-deltd; do echo "idle_${u}_rss_kib=$(rss $u VmRSS)"; done
 } > "$M"
 
 # --- privilege separation ----------------------------------------------------
@@ -71,6 +71,16 @@ printf 'subjectAltName=DNS:bank.example.com\n' > $T/ext
 openssl x509 -req -in $T/csr -CA /var/lib/deltos/ca/ca.crt -CAkey /var/lib/deltos/ca/ca.key -CAserial $T/srl -CAcreateserial -days 5 -extfile $T/ext -out $T/evil.crt 2>/dev/null
 check "the box CA cannot vouch for another website (name constraint)" bash -c "[ -s $T/evil.crt ] && ! openssl verify -CAfile /var/lib/deltos/ca/ca.crt $T/evil.crt && openssl verify -CAfile /var/lib/deltos/ca/ca.crt /var/lib/deltos/tls/deltos.lan.crt"
 rm -rf $T
+# deltos-shelld, the key holder (docs/shelld.md)
+check "shelld runs as root" test "$(ps -o user= -p "$(pid deltos-shelld)")" = root
+check "shelld has no network, only loopback (rule 1)" bash -c "[ \"\$(nsenter -t $(pid deltos-shelld) -n ip -o link | wc -l)\" = 1 ]"
+check "shelld's socket is 0660 root:deltos-shellc" test "$(stat -c '%a %U %G' /run/deltos/shelld/shelld.sock)" = "660 root deltos-shellc"
+check "shelld opens no TCP or UDP port" bash -c "! ss -Htulpn | grep -q deltos-shelld"
+check "shelld started after identityd and before deltd" bash -c "[ \$(systemctl show -p ActiveEnterTimestampMonotonic --value deltos-identityd) -lt \$(systemctl show -p ActiveEnterTimestampMonotonic --value deltos-shelld) ] && [ \$(systemctl show -p ActiveEnterTimestampMonotonic --value deltos-shelld) -lt \$(systemctl show -p ActiveEnterTimestampMonotonic --value deltos-deltd) ]"
+SC=/mnt/share/system/tests/vm/shelld-call.py
+check "deltd's user reaches shelld" bash -c "runuser -u deltos-deltd -- python3 $SC '{\"call\":\"list\",\"listing\":\"actions\"}' | grep -q install_addon"
+check "another user cannot open shelld's socket" bash -c "! runuser -u nobody -- python3 $SC '{\"call\":\"list\",\"listing\":\"actions\"}'"
+check "a user in the socket's group but not deltd is disconnected unanswered" bash -c "runuser -u deltos-identity -g deltos-shellc -- python3 $SC '{\"call\":\"list\",\"listing\":\"actions\"}'; [ \$? = 3 ]"
 check "hostapd has no control socket" bash -c '! ls /var/run/hostapd 2>/dev/null | grep -q .'
 
 # --- a phone joins ----------------------------------------------------------
@@ -172,6 +182,38 @@ CARD=$(jf $J/admin.out "['code']")
 check "the admin issues the student a sign-in card" bash -c "[ $code = 201 ] && [[ '$CARD' =~ ^[0-9A-Z]{5}-[0-9A-Z]{5}$ ]]"
 ADMIN_COOKIE=$(awk '$6=="__Host-delt_session"{print $7}' $J/admin)
 check "a card cannot be issued over plain HTTP, even with the admin's cookie replayed (403)" bash -c "[ \"\$($P curl -s -o /dev/null -w %{http_code} --max-time 10 -X POST -H 'Origin: http://home.deltos.lan' -H \"X-Delt-CSRF: \$(cat $J/admin.csrf)\" -H 'Cookie: delt_session=$ADMIN_COOKIE' http://home.deltos.lan/api/v1/classes/5a/members/$STUDENT/sign-in-card)\" = 403 ]"
+# deltd's side of the boundary, by hand: the admin's live HTTPS session
+# taken to shelld the way deltd will take it. shelld asks identityd itself.
+SA() { runuser -u deltos-deltd -- python3 $SC "$1" 2>/dev/null; }
+ACT() { SA "{\"call\":\"act\",\"action\":\"$1\",\"args\":$2,\"session\":\"$3\",\"over_https\":$4}"; }
+JOB() { local id i=0 j; id=$(echo "$1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ok"]["job"])') || return 1
+  while [ $i -lt 120 ]; do j=$(SA "{\"call\":\"job\",\"job\":\"$id\",\"session\":\"$ADMIN_COOKIE\",\"over_https\":true}")
+    echo "$j" | grep -q finished_at && { echo "$j"; return 0; }; i=$((i+1)); sleep 1; done; return 1; }
+NAME='{"name":"printer.deltos.lan","target":"10.42.0.20","requested_by":"vm"}'
+ZERO=$(printf '0%.0s' $(seq 64))
+r=$(ACT approve_name "$NAME" "$ZERO" true); echo "# $r" >> "$OUT"
+check "shelld refuses a made-up session (not_signed_in)" bash -c "echo '$r' | grep -q not_signed_in"
+r=$(ACT approve_name "$NAME" "$ADMIN_COOKIE" false)
+check "shelld refuses the admin's session said to be plain HTTP" bash -c "echo '$r' | grep -q secure_connection_required"
+r=$(ACT approve_name "$NAME" "$ADMIN_COOKIE" true); echo "# $r" >> "$OUT"
+check "shelld approves a name with the admin's HTTPS session" bash -c "echo '$r' | grep -q '\"ok\"'"
+if until_t 20 bash -c "[ \"\$($P dig +short +time=2 +tries=1 @10.42.0.1 printer.deltos.lan | head -1)\" = 10.42.0.20 ]"; then ok "the phone resolves the name shelld approved, with no restart by hand"; else bad "the phone resolves the name shelld approved"; fi
+# a drive, as mount_removable will make one (not built yet: docs/shelld.md §6)
+mkdir -p /run/deltos/drives/usb1 && mount -t tmpfs -o size=256m tmpfs /run/deltos/drives/usb1
+r=$(SA "{\"call\":\"list\",\"listing\":\"drives\",\"session\":\"$ADMIN_COOKIE\",\"over_https\":true}")
+check "shelld lists the drive by id" bash -c "echo '$r' | grep -q '\"id\":\"usb1\"'"
+t0=$(date +%s)
+j=$(JOB "$(ACT start_backup '{"drive":"usb1","passphrase":"vm shelld backup passphrase"}' "$ADMIN_COOKIE" true)"); echo "# $j" >> "$OUT"
+info "backup through shelld took $(( $(date +%s) - t0 )) s"
+check "the admin backs up to the drive through shelld (a job)" bash -c "echo '$j' | grep -q '\"state\":\"done\"' && [ \"\$(ls /run/deltos/drives/usb1 | wc -l)\" = 1 ]"
+: > /run/deltos/drives/usb1/notes-0.1.0.deltos-addon; echo x > /run/deltos/drives/usb1/notes-0.1.0.deltos-addon.minisig
+r=$(SA "{\"call\":\"list\",\"listing\":\"addon_sources\",\"session\":\"$ADMIN_COOKIE\",\"over_https\":true}")
+check "shelld lists the add-on bundle on the drive" bash -c "echo '$r' | grep -q 'drive-usb1/notes-0.1.0.deltos-addon'"
+j=$(JOB "$(ACT install_addon '{"source":"drive-usb1/notes-0.1.0.deltos-addon","id":"notes","version":"0.1.0"}' "$ADMIN_COOKIE" true)"); echo "# $j" >> "$OUT"
+check "an add-on is refused while the box has no add-on key (failed_signature)" bash -c "echo '$j' | grep -q failed_signature && [ ! -e /usr/lib/deltos/apps/notes ]"
+umount /run/deltos/drives/usb1
+L=/var/lib/deltos/shelld/actions.log
+check "the action log names the admin, with every result, and holds no secret" bash -c "grep -q '\"action\":\"approve_name\".*\"result\":\"ok\"' $L && grep -q '\"result\":\"not_signed_in\"' $L && grep -q '\"action\":\"start_backup\".*\"result\":\"ok\"' $L && ! grep -q -e '$ADMIN_PW' -e 'vm shelld backup passphrase' $L && [ \"\$(stat -c '%a %U' $L)\" = '640 root' ]"
 code=$(W $J/phone http POST /session "{\"sign_in_code\":\"$CARD\"}")
 check "the student signs in on the phone with the card, over plain HTTP" bash -c "[ $code = 200 ] && [ \"\$(jf $J/phone.out \"['secure']\")\" = False ]"
 check "the phone is remembered (delt_device)" grep -q 'delt_device' $J/phone
@@ -258,8 +300,8 @@ FP_OLD=$(SSL_FP)
 # nothing, with a different Wi-Fi name, a new first admin and (at start) a
 # new certificate authority. The pack file stays, as on a box whose SD card
 # kept its packs; the review must notice it is there.
-systemctl stop deltos-deltd deltos-identityd deltos-hostapd deltos-dnsmasq deltos-uplink-firewall deltos-hotspot-address deltos-net-render deltos-net-changed.path
-rm -rf /var/lib/deltos/identity /var/lib/deltos/ca /var/lib/deltos/tls /var/lib/deltos/network /var/lib/deltos/b4
+systemctl stop deltos-deltd deltos-shelld deltos-identityd deltos-hostapd deltos-dnsmasq deltos-uplink-firewall deltos-hotspot-address deltos-net-render deltos-net-changed.path
+rm -rf /var/lib/deltos/identity /var/lib/deltos/ca /var/lib/deltos/tls /var/lib/deltos/network /var/lib/deltos/b4 /var/lib/deltos/shelld /var/lib/deltos/apps
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/deltos.conf
 cat > /root/fresh.conf <<'CONF'
 mode=hotspot
@@ -315,7 +357,7 @@ rm -f /root/fresh-admin.txt
 # --- memory after every test, and a class signing in at once ---------------
 {
   echo "after_mem_used_kib=$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{print t-a}' /proc/meminfo)"
-  for u in deltos-hostapd deltos-dnsmasq deltos-identityd deltos-deltd; do echo "after_${u}_rss_kib=$(rss $u VmRSS) peak_kib=$(rss $u VmHWM)"; done
+  for u in deltos-hostapd deltos-dnsmasq deltos-identityd deltos-shelld deltos-deltd; do echo "after_${u}_rss_kib=$(rss $u VmRSS) peak_kib=$(rss $u VmHWM)"; done
   # identityd's own code, in a separate process: 40 sign-ins at once on this
   # machine's cores. Memory only; times under emulation mean nothing.
   [ -x $S/bin/signin_burst ] && $S/bin/signin_burst 40 shared

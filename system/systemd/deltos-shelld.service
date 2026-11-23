@@ -1,0 +1,49 @@
+# Step 6c: the key holder (deltos-shelld, docs/shelld.md). The only program
+# that changes the box, and only through its closed list of actions, each
+# checked again against identityd. Root (privilege boundary §3: "privileged"):
+# it writes the network registry, the add-on folders and the whole state tree
+# on a restore. No network door: PrivateNetwork, and only a Unix socket in
+# /run/deltos/shelld (group deltos-shellc, whose only member is deltd).
+#
+# It waits for the first admin like identityd: before that nobody could
+# ask it anything.
+[Unit]
+Description=DeltOS key holder (deltos-shelld)
+Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/shelld.md
+ConditionPathExists=/var/lib/deltos/identity/identity.sqlite
+Wants=deltos-identityd.service
+After=systemd-tmpfiles-setup.service systemd-sysusers.service deltos-identityd.service deltos-net-render.service
+Before=deltos-deltd.service
+StartLimitIntervalSec=10min
+StartLimitBurst=10
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=root
+Group=root
+UMask=0027
+# The add-on signing key: the project's public key, shipped in the image.
+# Until the image carries one, every add-on install is refused (docs/shelld.md §4.3).
+Environment=DELTOS_SHELLD_KEY_ARGS=
+EnvironmentFile=-/usr/lib/deltos/shelld.env
+ExecStart=/usr/lib/deltos/bin/deltos-shelld --socket /run/deltos/shelld/shelld.sock --identityd /run/deltos/identity/identityd.sock --action-log /var/lib/deltos/shelld/actions.log $DELTOS_SHELLD_KEY_ARGS
+Restart=on-failure
+RestartSec=2s
+RestartSteps=5
+RestartMaxDelaySec=60s
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=deltos-box.target

@@ -71,6 +71,8 @@ pub const TOUCH_EVERY: Secs = MIN;
 /// makes a person's password HTTPS-only (contract §5.1).
 pub const SECURE_ONLY: &[&str] = &[
     "content.install",
+    // installing software that runs on the box (contract §4.2, 2026-11-22)
+    "apps.manage",
     "network.configure",
     "service.restart",
     "fleet.manage",

@@ -247,7 +247,7 @@ The contract owns these values (contract §14), so each change is made there, in
 
 Smallest useful piece first:
 
-1. `deltos-shelld` with its socket, the group and peer checks, the `identityd` re-check, the log, and **one** action (`mount_removable`, with its helper). This is Track C's P0 proof, updated to this design.
+1. `deltos-shelld` with its socket, the group and peer checks, the `identityd` re-check, the log, and **one** action (`mount_removable`, with its helper). This is Track C's P0 proof, updated to this design. **Built 2026-11-23** (`docs/shelld.md`) with the network, backup and add-on actions instead of `mount_removable`, whose filesystem types (rule 19) Track E has not named.
 2. Sessions in `identityd` (§4): both kinds, the anti-forgery token, browser ids, partitions, and tickets (§6).
 3. The box API's front-desk checks (§5 step 3).
 4. The rest of the action list, one at a time, each with its argument shape and listing.
@@ -277,7 +277,7 @@ Not answered here, and not to be filled in by whoever implements first. Each is 
 
 - ~~**The WebOS hostname** (Change 4)~~ — answered 2026-11-21: `home.deltos.lan` (contract §8).
 - ~~**How long a session lasts,** idle and absolute, shared screen and personal device (§4.2), together with how long a remembered device lasts and the sign-in card's code length and validity (§10)~~ — answered 2026-11-21 with the sign-in service build (contract §13.2, `docs/identityd.md` §5).
-- **Where the action log lives** under `/var/lib/deltos/` (rule 12). Needs a path in contract §10.
+- ~~**Where the action log lives** under `/var/lib/deltos/` (rule 12)~~ — answered 2026-11-23 with the `deltos-shelld` build: `/var/lib/deltos/shelld/actions.log` (contract §10, `docs/shelld.md` §5).
 - **How box-converted and teacher-uploaded packs are trusted** (§8), the same question as the architecture doc's Q2.
 - **How other services on `deltos.lan` sign people in** now that the WebOS cookie is not shared with them (§4.1). Track G's forward-auth (G2) needs its own per-service sign-in that hands over from `identityd`, never a parent-domain cookie. Track G owns the design.
 
