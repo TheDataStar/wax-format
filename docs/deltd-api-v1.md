@@ -269,6 +269,7 @@ Every error has the same JSON shape and a code from one closed list, so the WebO
 | `pack_damaged` | 500 | A hash check failed; a health event is raised |
 | `app_not_found` | 404 | No installed add-on with that id, or no bundle at that source id (added 2026-11-23, `docs/shelld.md`) |
 | `does_not_fit` | 409 | The fit check refused the add-on; `detail` lists each reason (added 2026-11-23, `docs/base-addons-admin.md` §6) |
+| `edition_older` | 409 | An older edition of a pack than this box has already had; refused as a rollback, the job ends `failed_rollback` (added 2026-11-23, Track A §6, `docs/shelld.md` §7.4) |
 | `internal` | 500 | Anything else; logged on the box |
 
 Adding a code is allowed within v1, since callers must treat an unknown code as `internal`. Changing what an existing code means is not.

@@ -1,9 +1,11 @@
 # deltos-shelld — the Key Holder, and Add-on Installs
 
-_First build 2026-11-23 (stage 3 of `docs/base-addons-admin.md` §11)._
+_First build 2026-11-23 (stage 3 of `docs/base-addons-admin.md` §11); pack
+installs added 2026-11-23 (§7)._
 Implements `docs/privilege-boundary.md` §3, §5 steps 6–7, §6 step 3, rules
-1–6, 10 and 12, and the add-on half of `deltos-installd` (F4,
-`docs/base-addons-admin.md` §7). Code: `crates/deltos-shelld`.
+1–6, 10, 12 and 18, the add-on half of `deltos-installd` (F4,
+`docs/base-addons-admin.md` §7) and its pack half (Track F §4, §7 here).
+Code: `crates/deltos-shelld`.
 
 ## 1. In plain words
 
@@ -45,7 +47,7 @@ One JSON object per line each way, the same wire format as `identityd`
 | `describe` | `action`, `args` | The permission, whether it asks again, the argument digest a ticket is bound to, and whether it is long. Changes nothing, needs no session. |
 | `act` | `action`, `args`, `session`, `over_https`, `ticket` (if it asks again) | A short action: its result. A long one: `{"job": id}` at once. |
 | `job` | `job`, `session`, `over_https` | The job's state. Only the person who started it can read it; to anyone else it does not exist. |
-| `list` | `listing`, `session`, `over_https` | `addons`, `addon_sources` (`apps.manage`), `drives` (`backup.manage`), `leases` (`network.configure`), `action_log` (`admin.console`, the newest 200 entries), `actions` (the list itself, no session). |
+| `list` | `listing`, `session`, `over_https` | `addons`, `addon_sources` (`apps.manage`), `packs`, `pack_sources` (`content.install`), `drives` (`backup.manage`), `leases` (`network.configure`), `action_log` (`admin.console`, the newest 200 entries), `actions` (the list itself, no session). |
 
 **How `deltd` will use a re-confirmed action** (privilege boundary §6): it
 calls `describe` with the person's exact arguments, has `identityd` issue a
@@ -64,17 +66,18 @@ holds the permission (privilege boundary §11).
 
 **Jobs** (contract §7.2): `queued`, then the action's own states (`fetching`,
 `verifying`, `installing`, `installed` for add-ons; `running` for backups),
-ending in `done`, `failed_signature` (terminal, never retried) or `failed`
-with the error. Kept in memory, the newest 64 finished ones; a restart of
+ending in `done`, `failed_signature` or `failed_rollback` (both terminal,
+never retried: contract §7.2) or `failed` with the error. Kept in memory, the newest 64 finished ones; a restart of
 shelld forgets them (the log keeps the outcome).
 
 ### 3.1 The list as built
 
 | Built | Not built yet (refused by name: "on the list but not built yet") |
 |---|---|
-| `approve_name`, `remove_name`, `set_address_reservation`, `remove_address_reservation`, `set_uplink_sharing`, `configure_ap` (network, `deltos_net::actions`) | `install_pack`, `remove_pack`, `roll_back_pack` (next: §6) |
+| `approve_name`, `remove_name`, `set_address_reservation`, `remove_address_reservation`, `set_uplink_sharing`, `configure_ap` (network, `deltos_net::actions`) | |
 | `start_backup`, `review_backup`, `restore_backup` (`deltos_backup::actions`) | `mount_removable`, `eject_removable`, `convert_zim_from_drive`, `stage_upload`, `join_network`, `restart_service`, `pair_box`, `apply_update`, `roll_back_update` |
 | `install_addon`, `update_addon`, `roll_back_addon`, `remove_addon`, `set_addon_running` (§4) | `power_box`, `set_clock`, `set_language`, `set_home_screen`, `save_support_file`, `export_activity` (stage 4, with the dashboard) |
+| `install_pack`, `remove_pack`, `roll_back_pack` (§7) | |
 
 Each family keeps its own type, checks and `Authorized` in the crate that
 owns what it changes: nothing in those crates changes the box except through
@@ -186,9 +189,10 @@ a drive on an admin's request.
 
 ## 6. What waits, and why
 
-- **Packs** (`install_pack`, `remove_pack`, `roll_back_pack`): next. They
-  need `deltd`'s catalogue (`retire_pack_hostnames`, the internal list §9)
-  to learn about a pack shelld placed, which is a change to `deltd`.
+- **Packs from the catalog, a peer or an upload.** `install_pack` is built
+  for packs on a drive (§7); the catalog's download folder (B4/B13), peers
+  (D8) and uploads (`stage_upload`, whose trust is open) add origins to the
+  same listing when they exist.
 - **`mount_removable`**: rule 19 allows only "the filesystem types Track E
   names", and Track E names none. Until it does, shelld lists any mount point
   under `/run/deltos/drives/` as a drive (root at the console can mount one
@@ -204,7 +208,190 @@ a drive on an admin's request.
   §6, privilege boundary §5 step 5) come with the dashboard (stage 4);
   `deltos_shelld::client::Client` is what `deltd` will hold.
 
-## 7. Tests
+## 7. Packs
+
+### 7.1 In plain words
+
+A **pack** is one `.wax` file (SPEC §1): a library of pages. Installing one
+means checking that the project signed it, that it is not an older copy of a
+pack the box already had, and that the box can run it, and then putting it
+where `deltd` serves packs from. `deltd` notices the new file within a few
+seconds (it looks every 5 seconds), gives it its own web address and starts
+serving it; nothing restarts.
+
+The risky part is **reading** the pack. Its index is made of SQLite
+databases written by somebody else, and a database crafted to break SQLite
+could take over whatever program opens it. So the key holder never opens
+one. It starts a small helper, `deltos-pack-check`, as its own user
+(`deltos-packcheck`) with no network and no powers, and the helper says
+where the databases lie in the file and what the manifest says. Shelld then
+checks what it was told: it reads the 128-byte header itself, hashes the
+header and those byte ranges itself, and checks the publisher's signature
+over that hash itself. Ranges that are not the ones the publisher signed
+give a hash the signature does not cover, and the pack is refused.
+
+### 7.2 The pipeline
+
+`install_pack` takes a **source id** from the `pack_sources` listing
+(`<origin>/<file>.wax`; a path is refused, rule 6) and the `archive_uuid`
+the admin chose, in its canonical form only (contract §11). It is a job:
+
+1. **Fetching.** At least the pack's size must be free. The pack and its
+   `.minisig` are **copied** into the install's own folder under
+   `/var/lib/deltos/packs/.staging/<random>/` before anything reads them.
+   `.staging` is `0711` (the helper can pass through, not list); the
+   install's folder is `0750 root:deltos-packcheck`, so the helper can read
+   that one pack and nothing else of root's.
+2. **Verifying.** Shelld reads the header and refuses a file that is not
+   the pack chosen. The helper (§7.1) answers with the segment ranges and
+   the manifest. Shelld checks the ranges are in order, apart, inside the
+   file, after the header, at most 64 (SPEC §5.1), and that the last is
+   where the header points; computes the SPEC §8.1 digest; and checks the
+   minisign signature over it with the pack key (§7.3), prehashed only
+   (SPEC §8.2's `-H`), and that its trusted comment names this archive
+   (SPEC §8.3). Any failure ends the job `failed_signature`. Then the
+   **older-edition check** (§7.4): an older edition ends it `failed_rollback`.
+3. **Installing.** The **fit check** is contract §2.3's comparison rule
+   against the capability record (§9): `min_ram_bytes` against `ram_bytes`,
+   `arch` (`any` or the box's own), `gpu: required` against a box with none,
+   and storage. A retired `min_hw_tier` maps to its own floor (contract §11)
+   and one that cannot be mapped is refused. **Storage, decided
+   2026-11-23:** what is free with the staged copy already counted must
+   cover the larger of `min_storage_bytes` and `runtime_storage_bytes`, not
+   their sum: both are defined as "beyond the archive itself", so adding
+   them would count the same need twice; the larger is the one that must
+   fit. Every pack in `depends_on` must be installed. A box already holding
+   512 packs refuses a new one (contract §8: `pack_index` 0–511). Each
+   reason is named; the code is `not_enough_resources`, or
+   `not_enough_storage` when storage is all that is short.
+4. **Placed.** The new signature is renamed beside the pack's place first,
+   then the pack: `/var/lib/deltos/packs/<archive_uuid>.wax` (`0644`, root),
+   or, for an update, the file name the installed edition already has, so
+   `deltd` sees an updated pack and keeps its hostname and its readers'
+   in-pack storage (contract §8). For an update the old edition's signature
+   is kept first as `<file>.minisig.previous` (§7.5). Its writable storage
+   `/var/lib/deltos/packs-data/<archive_uuid>/` (contract §10) is made
+   `0750`, owned by `deltd`'s user, if new.
+5. **Registered** in `/var/lib/deltos/shelld/packs.json` (§7.4).
+
+An install of the edition already installed is refused; an update must be
+newer than the installed edition, by version or, at the same version, by
+the header's `created_at`.
+
+`remove_pack` always asks for the password again (privilege boundary §8),
+refuses while another pack shelld installed lists it in `depends_on`,
+removes the file, both signatures and the pack's storage, and keeps the
+newest edition seen. `deltd`'s next scan stops serving it and frees its
+`pack_index` for a later install at a higher generation: that is
+`retire_pack_hostnames` (privilege boundary §9), which `deltd`'s catalog
+already performs on every scan, so nothing calls it from shelld.
+
+### 7.3 The pack key
+
+Packs must be signed with the project's pack key (`--pack-key`, a minisign
+public key file; Track F §8, "the project key"). **No such key exists yet**,
+for the same reason as the add-on key (§4.3): its custody is the project's
+to decide. Until the system image ships one in `/usr/lib/deltos/shelld.env`,
+**every pack install is refused** with `failed_signature`, never let through
+unsigned. Track F §8 describes one project keypair; the box takes the two
+keys separately so either custody can be chosen, and the image may point
+both flags at the same file. Packs baked into the image (Track F §4,
+"starter packs") are in place before the first boot and need no install.
+
+### 7.4 An older edition is refused (Track A §6)
+
+A validly signed older edition of a pack still verifies (SPEC §8.4), so a
+box that accepted any signed pack could be walked back to old content.
+Track A §6 asks each box to remember the highest edition it has seen and
+refuse anything older for the same `archive_uuid`. **Decided 2026-11-23:**
+shelld remembers both the manifest's `version` (CalVer, contract §11) and
+the header's `created_at` (raised by every append, SPEC §2), and refuses an
+edition older in either. The `created_at` half is read by shelld itself, so
+a helper that misreports the version still cannot slip an old edition in.
+The record is `newest_seen` in **`/var/lib/deltos/shelld/packs.json`
+(decided 2026-11-23**, beside the action log, contract §10), kept after a
+pack is removed, carried by a backup like the rest of the state tree, and
+never lowered by `roll_back_pack`: the admin chose that, and the newer
+edition may come back.
+
+### 7.5 Rolling back an update
+
+`roll_back_pack` undoes a pack's last update in place (SPEC §7.5): the
+result is byte for byte the earlier edition, so that edition's own kept
+signature verifies again. Shelld does not open the pack for this either.
+The helper works out the plan (`wax_core::rollback_plan`: the earlier
+header, where the file ends, the earlier segments' ranges, checked against
+the newest segment's `prev_state_digest`); shelld hashes the earlier header
+and ranges itself and checks them against the **kept** signature
+`<file>.minisig.previous` before writing a byte, then applies the plan
+(`wax_core::apply_rollback`, which touches only bytes: the header, then the
+cut, then the v0.13 mirror) and puts that signature back in place. One step
+is kept: a second rollback has no earlier signature to check and is refused
+`edition_mismatch`, as is a pack whose last update was not an appended
+edition. `deltd` sees the header change on its next scan; a page request in
+flight during those few seconds can fail once, as during any update.
+
+### 7.6 What the helper can and cannot do
+
+The helper reads one file and prints one answer of at most 1 MiB. It runs
+as `deltos-packcheck`, its uid and group are checked after the switch and
+before it starts (any other group left and it does not run), it inherits
+shelld's lack of network, and it can read only its install's folder. What
+a helper taken over by a crafted pack could still do, recorded rather than
+hidden:
+
+- **Misreport the manifest** (name, version, floors, `depends_on`). The
+  version half of §7.4 is backed by `created_at`, which shelld reads
+  itself; the fit check could be fooled into installing a pack the box
+  cannot run, which harms only that pack's readers.
+- **Misreport where earlier segments lie** in a multi-segment pack whose
+  signed bytes it rearranged. Shelld checks every range against the file
+  and the newest one against the header, and the signature covers what is
+  hashed, but where the newest segment says its predecessor is cannot be
+  checked without opening it. The result would be a pack whose earlier
+  segment `deltd` reads is not the signed one. `deltd` runs unprivileged
+  and serves pack content as untrusted anyway (contract §8), so nothing
+  gains a power; closing it fully needs a pack format whose segment
+  pointers live outside SQLite, a SPEC question.
+
+### 7.7 Decided under delegation, 2026-11-23
+
+- the register path `/var/lib/deltos/shelld/packs.json` (§7.4);
+- the helper's user `deltos-packcheck`, and its binary
+  `/usr/lib/deltos/bin/deltos-pack-check` (privilege boundary §3 names a
+  user per helper and no names);
+- an older edition is judged by version **and** `created_at` (§7.4);
+- storage is the larger of the two "beyond the archive" floors (§7.2);
+- `roll_back_pack` is short, not a job: it writes a header and cuts the
+  file, whatever the pack's size;
+- new API code `edition_older` (409, deltd API §7): an older edition than
+  the box has had; the job ends `failed_rollback`.
+
+## 8. Tests
+
+`crates/deltos-shelld/tests/packs.rs`, six tests, against the same real
+`identityd` and the real `deltos-pack-check`:
+
+- a pack installed from a source listing, byte for byte, with its storage
+  made and staging left empty; the same edition refused; an appended newer
+  edition installed as an update, rolled back byte for byte with its own
+  signature back, a second rollback refused, the newer edition installed
+  again; removal refused without the password, then the pack and its
+  storage removed; the older edition then refused `failed_rollback`;
+- signed by another key, a box with no key, a byte changed after signing,
+  no signature, another pack's genuine signature: each `failed_signature`,
+  nothing placed;
+- a lying helper (no ranges, not where the header points, the header
+  counted twice, past the end, overlapping): each refused, nothing placed;
+- a pack built for another architecture, one needing more memory than the
+  box has, a file that is not the pack chosen, a path as a source, a bare
+  uuid, a pack whose `depends_on` is not installed: each refused with its
+  reason; a pack with no kept earlier edition cannot be rolled back;
+- plain HTTP, and a teacher (no `content.install`), refused for actions and
+  listings; an extra argument refused;
+- as root: the helper run as another user cannot read another install's
+  folder and can read its own, and the pack's storage belongs to `deltd`'s
+  user.
 
 `crates/deltos-shelld/tests/shelld.rs`, ten tests, each against a real
 `identityd` register on its own socket and shelld on another, called the way

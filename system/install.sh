@@ -5,7 +5,7 @@
 #
 # --bin-dir   where the built deltd, deltos-net-render, deltos-net-provision,
 #             deltos-identityd, deltos-identity-provision and
-#             deltos-tls-provision, deltos-backup and deltos-shelld are
+#             deltos-tls-provision, deltos-backup, deltos-shelld and deltos-pack-check are
 #             (e.g. target/release)
 # --destdir   install into an image tree instead of this machine (the
 #             appliance image build); nothing is enabled or started there
@@ -29,7 +29,7 @@ while [ $# -gt 0 ]; do
 done
 die() { echo "install.sh: $*" >&2; exit 1; }
 [ -n "$BIN" ] || die "--bin-dir is required"
-BINS="deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision deltos-backup deltos-shelld"
+BINS="deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision deltos-backup deltos-shelld deltos-pack-check"
 for b in $BINS; do
     [ -x "$BIN/$b" ] || die "$BIN/$b is missing; build with: cargo build --release -p deltlib -p deltos-net -p deltos-identity -p deltos-tls -p deltos-backup -p deltos-shelld"
 done

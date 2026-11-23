@@ -9,6 +9,7 @@ pub mod check;
 pub mod client;
 pub mod drives;
 pub mod log;
+pub mod packs;
 pub mod server;
 
 pub use action::Action;

@@ -510,6 +510,14 @@ impl WaxReader {
         self.file_size
     }
 
+    /// Where each index segment's database lies in the file, `(offset,
+    /// length)`, oldest first: exactly the byte ranges the SPEC §8.1 digest
+    /// hashes after the header. A key holder that must not parse a pack can
+    /// be handed these by an unprivileged checker and hash them itself.
+    pub fn segment_ranges(&self) -> Vec<(u64, u64)> {
+        self.segments.iter().map(|s| (s.disk_offset, s.db_len)).collect()
+    }
+
     pub fn segment_count(&self) -> usize {
         self.segments.len()
     }

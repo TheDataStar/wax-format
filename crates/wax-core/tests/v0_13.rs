@@ -646,3 +646,33 @@ fn a_malformed_manifest_update_is_refused() {
     let err = WaxReader::open(&copy).unwrap_err();
     assert!(matches!(err, WaxError::BadManifestUpdate { segment: 1, .. }), "{err}");
 }
+
+#[test]
+fn a_rollback_planned_then_applied_matches_rollback_and_a_bad_plan_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let pack = edition_one(dir.path(), WAX_BIGRAM);
+    let ed1 = std::fs::read(&pack).unwrap();
+    let ranges_one = wax_core::WaxReader::open(&pack).unwrap().segment_ranges();
+    edition_two(&pack);
+    let ed2 = std::fs::read(&pack).unwrap();
+
+    let plan = wax_core::rollback_plan(&pack).unwrap();
+    assert_eq!(plan.prev_ranges, ranges_one, "the earlier edition's segments, as it would read them");
+    assert_eq!(&plan.prev_header[..], &ed1[..128]);
+    assert_eq!(std::fs::read(&pack).unwrap(), ed2, "planning writes nothing");
+
+    // a plan whose header does not point at its last segment is refused untouched
+    let mut bad = plan.clone();
+    bad.prev_ranges.pop();
+    assert!(wax_core::apply_rollback(&pack, &bad).is_err());
+    let mut bad = plan.clone();
+    bad.prev_end += 1;
+    assert!(wax_core::apply_rollback(&pack, &bad).is_err());
+    assert_eq!(std::fs::read(&pack).unwrap(), ed2);
+
+    wax_core::apply_rollback(&pack, &plan).unwrap();
+    assert_eq!(std::fs::read(&pack).unwrap(), ed1, "byte for byte edition one");
+    // applying it again (a crash before the caller noted it) changes nothing
+    let _ = wax_core::apply_rollback(&pack, &plan);
+    assert_eq!(std::fs::read(&pack).unwrap(), ed1);
+}

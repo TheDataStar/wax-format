@@ -1690,43 +1690,90 @@ pub struct RollbackStats {
 /// removed segment is just an orphaned tail (§7.2).
 pub fn rollback_last_update(archive: impl AsRef<Path>) -> Result<RollbackStats> {
     let archive = archive.as_ref();
-    let (prev_raw, prev_end, upto) = {
-        let r = crate::reader::WaxReader::open_with(
-            archive,
-            crate::reader::ReadOptions {
-                verify_checksums: false,
-                lookup_cache_entries: 0,
-            },
-        )?;
-        let n = r.segment_count();
-        if n < 2 {
-            return Err(WaxError::Schema {
-                detail: "nothing to roll back: the archive has a single segment".into(),
-            });
-        }
-        let newest = r.segment_meta(n - 1);
-        let (Some(raw), Some(digest), Some((po, pl))) =
-            (newest.prev_header, newest.prev_state_digest, newest.prev_segment)
-        else {
-            return Err(WaxError::Schema {
-                detail: format!(
-                    "segment {} records no prev_header/prev_state_digest; it predates \
-                     verifiable rollback (SPEC v0.12 §7.5)",
-                    n - 1
-                ),
-            });
-        };
-        let old = WaxHeader::parse(&raw)?;
-        if (old.index_offset, old.index_length) != (po, pl) {
-            return Err(WaxError::BadPrevStateDigest { segment: (n - 1) as u64 });
-        }
-        if r.digest_of_state(&old, n - 1)? != digest {
-            return Err(WaxError::BadPrevStateDigest { segment: (n - 1) as u64 });
-        }
-        old.validate(po + pl)?;
-        (raw, po + pl, n - 1)
+    let plan = rollback_plan(archive)?;
+    apply_rollback(archive, &plan)
+}
+
+/// What undoing the newest append would write (SPEC v0.12 §7.5), worked out
+/// and checked without writing anything: [`rollback_last_update`]'s first half.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollbackPlan {
+    /// The header the newest append overwrote (`segment_meta.prev_header`).
+    pub prev_header: [u8; HEADER_LEN],
+    /// Where the file ends once the newest segment is cut off.
+    pub prev_end: u64,
+    /// The earlier edition's segment ranges, `(offset, length)`, oldest
+    /// first: with `prev_header`, what its SPEC §8.1 digest hashes.
+    pub prev_ranges: Vec<(u64, u64)>,
+}
+
+/// Plan a rollback: steps 1 and 2 of SPEC v0.12 §7.5. Reads the archive
+/// (its segments are SQLite) and writes nothing.
+pub fn rollback_plan(archive: impl AsRef<Path>) -> Result<RollbackPlan> {
+    let r = crate::reader::WaxReader::open_with(
+        archive.as_ref(),
+        crate::reader::ReadOptions {
+            verify_checksums: false,
+            lookup_cache_entries: 0,
+        },
+    )?;
+    let n = r.segment_count();
+    if n < 2 {
+        return Err(WaxError::Schema {
+            detail: "nothing to roll back: the archive has a single segment".into(),
+        });
+    }
+    let newest = r.segment_meta(n - 1);
+    let (Some(raw), Some(digest), Some((po, pl))) =
+        (newest.prev_header, newest.prev_state_digest, newest.prev_segment)
+    else {
+        return Err(WaxError::Schema {
+            detail: format!(
+                "segment {} records no prev_header/prev_state_digest; it predates \
+                 verifiable rollback (SPEC v0.12 §7.5)",
+                n - 1
+            ),
+        });
     };
-    let mut file = OpenOptions::new().read(true).write(true).open(archive)?;
+    let old = WaxHeader::parse(&raw)?;
+    if (old.index_offset, old.index_length) != (po, pl) {
+        return Err(WaxError::BadPrevStateDigest { segment: (n - 1) as u64 });
+    }
+    if r.digest_of_state(&old, n - 1)? != digest {
+        return Err(WaxError::BadPrevStateDigest { segment: (n - 1) as u64 });
+    }
+    old.validate(po + pl)?;
+    let mut prev_ranges = r.segment_ranges();
+    prev_ranges.truncate(n - 1);
+    Ok(RollbackPlan { prev_header: raw, prev_end: po + pl, prev_ranges })
+}
+
+/// Carry out a plan: step 3 of SPEC v0.12 §7.5. Touches only bytes: it
+/// parses the plan's 128-byte header and never opens a segment, so a
+/// caller can apply a plan it checked itself (for instance against the
+/// earlier edition's signature) without reading the pack's databases.
+///
+/// Crash-safe in the same way as an append: the header is written first,
+/// and until the truncation lands the removed segment is just an orphaned
+/// tail (§7.2).
+pub fn apply_rollback(archive: impl AsRef<Path>, plan: &RollbackPlan) -> Result<RollbackStats> {
+    let old = WaxHeader::parse(&plan.prev_header)?;
+    if old.index_offset.checked_add(old.index_length) != Some(plan.prev_end)
+        || plan.prev_ranges.last() != Some(&(old.index_offset, old.index_length))
+    {
+        return Err(WaxError::Schema {
+            detail: "the rollback plan's header does not point at its last segment".into(),
+        });
+    }
+    old.validate(plan.prev_end)?;
+    let mut file = OpenOptions::new().read(true).write(true).open(archive.as_ref())?;
+    if file.metadata()?.len() <= plan.prev_end {
+        return Err(WaxError::Schema {
+            detail: "the archive is no longer than the edition the plan goes back to".into(),
+        });
+    }
+    let prev_raw = plan.prev_header;
+    let prev_end = plan.prev_end;
     file.seek(SeekFrom::Start(0))?;
     file.write_all(&prev_raw)?;
     file.sync_all()?;
@@ -1742,7 +1789,7 @@ pub fn rollback_last_update(archive: impl AsRef<Path>) -> Result<RollbackStats> 
         file_length += HEADER_LEN as u64;
     }
     Ok(RollbackStats {
-        segments: upto,
+        segments: plan.prev_ranges.len(),
         file_length,
     })
 }

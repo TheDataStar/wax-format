@@ -201,6 +201,11 @@ fn start_with(deltd_uids: Vec<u32>, trust: Option<bool>) -> Box_ {
         addon_folders: vec![("incoming".into(), root.join("incoming"))],
         drives: DrivesDir(root.join("drives")),
         trust,
+        packs: deltos_shelld::packs::Layout::under(root),
+        pack_trust: deltos_shelld::packs::Trust::none(),
+        pack_check: deltos_shelld::packs::Helper { program: env!("CARGO_BIN_EXE_deltos-pack-check").into(), user: None },
+        pack_data_owner: None,
+        pack_folders: vec![],
     };
     let shell = Shell::new(cfg, Box::new(deltos_backup::restore::NoServices));
     let sock = root.join("shelld.sock");
@@ -268,7 +273,7 @@ fn every_check_refuses_on_its_own() {
     assert_eq!(code(b.act(&teacher, "remove_addon", json!({ "id": "notes", "keep_data": true }))), "permission_denied");
     // not on the list; on the list but not built; an argument outside the shape
     assert_eq!(code(b.act(&b.admin, "run_command", json!({ "cmd": "id" }))), "invalid_request");
-    let e = b.act(&b.admin, "install_pack", json!({})).unwrap_err();
+    let e = b.act(&b.admin, "mount_removable", json!({})).unwrap_err();
     assert!(e["detail"].as_str().unwrap().contains("not built yet"), "{e}");
     let mut extra = args.clone();
     extra["also"] = json!(1);
@@ -286,7 +291,7 @@ fn every_check_refuses_on_its_own() {
         assert!(approve.iter().any(|l| l.contains(&format!("\"result\":\"{r}\""))), "{r} not logged:\n{log}");
     }
     assert!(approve[2].contains("\"by\":\"") && !approve[2].contains("\"by\":\"unknown\""), "the teacher is named: {}", approve[2]);
-    assert!(log.contains("\"action\":\"run_command\"") && log.contains("\"action\":\"install_pack\""));
+    assert!(log.contains("\"action\":\"run_command\"") && log.contains("\"action\":\"mount_removable\""));
 }
 
 #[test]
