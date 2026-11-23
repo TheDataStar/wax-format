@@ -1,0 +1,33 @@
+schema = 1
+id = "hotspot"
+name = "Box Wi-Fi"
+version = "0.1.0"
+kind = "base"
+summary = "Runs the box's own Wi-Fi network that visitors' devices join."
+licence = "BSD-3-Clause"
+upstream = "hostapd"
+min_profile = "kiosk"
+
+[resources]
+# Still open: memory was measured, storage was not, and a floor needs both.
+# Measured 2026-11-22 on the emulated 2 GB aarch64 box, one phone joined:
+# hostapd resident 7480 kB idle and after the full VM test
+# (docs/box-radio-and-boot.md section 6.1). A full room is still to measure
+# on real radios.
+evidence = "open"
+arch = "any"
+
+[run]
+form = "systemd"
+entry = "deltos-hostapd.service"
+devices = ["wifi_radio"]
+
+[sign_in]
+method = "none"
+
+[health]
+probe = "systemd"
+target = "deltos-hostapd.service"
+
+[backup]
+paths = []

@@ -1,0 +1,7 @@
+# A WHAT-IF, not a measurement: a class reading quietly. A box replaces this
+# with its own aggregate counts (F14) once it has run for a while.
+name = "reading class: a page every 20 s, a search every 2 min, everyone arriving at once"
+pages_per_minute = 3.0
+searches_per_minute = 0.5
+first_visit_share = 1.0
+ceiling = 0.5

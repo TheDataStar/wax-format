@@ -1,0 +1,42 @@
+schema = 1
+id = "identity"
+name = "Sign-in and people"
+version = "0.1.0"
+kind = "base"
+summary = "Keeps the box's people, roles, sessions, sign-in cards and remembered devices."
+licence = "MIT"
+min_profile = "kiosk"
+
+[resources]
+evidence = "provisional"
+# The floor is a class signing in at once: password checks run one per core,
+# 19 MiB each. Measured 2026-11-22 on the emulated 2 GB aarch64 box (4 cores):
+# 40 sign-ins at once peaked at 81.2 MiB; idle 4.7 MiB, 43.1 MiB after the
+# full VM test (docs/box-radio-and-boot.md section 6.1). On x86_64, idle 5.3 MiB.
+min_ram_bytes = 85144371
+# The register with one admin: 151,584 bytes.
+min_storage_bytes = 151584
+install_bytes = 3756008
+arch = "any"
+basis = "Memory: deltos-identityd on the emulated 2 GB aarch64 box, 4 cores, 40 sign-ins at once (2026-11-22); scales with cores. Storage: x86_64 dev container, one admin. Emulated, so provisional until real hardware."
+
+[load]
+evidence = "provisional"
+# Each password check holds argon2's memory cost: 19 MiB (policy.rs ARGON2_M_KIB),
+# and took 18.3 ms on one x86_64 core.
+ram_bytes_per_active_user = 19922944
+basis = "argon2id m=19456 KiB t=2 p=1 from crates/deltos-identity/src/policy.rs; 10 verifications timed on one core. Counts people signing in with a password at the same moment, not people signed in."
+
+[run]
+form = "systemd"
+entry = "deltos-identityd.service"
+
+[sign_in]
+method = "none"
+
+[health]
+probe = "systemd"
+target = "deltos-identityd.service"
+
+[backup]
+paths = ["/var/lib/deltos/identity/"]

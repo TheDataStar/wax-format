@@ -121,13 +121,15 @@ What the four built-ins hold on a fresh box. **These are seed values, not a sche
 | `fleet.manage` (F6 pairing) · `vault.access` (F13) | ✓ | | | |
 | `backup.manage` (F10: start and restore backups) | ✓ | | | |
 | `system.update` (apply or roll back a system update) | ✓ | | | |
+| `apps.manage` (install, update, roll back and remove add-ons) **[Proposed 2026-11-22]** | ✓ | | | |
 | Content browsing | ✓ | ✓ | ✓ | ✓ (manifest-permitted packs only) |
 
 - **`admin` holds every permission in the catalogue**, including permissions contributed by apps installed later. That is a property of the bundle, not a list to maintain.
 - **This table replaces the fixed operations matrix Track F previously held.** The operations are unchanged; what changed is that they are now permissions in a catalogue rather than columns against a closed enum, so adding a ninth capability no longer requires a new row in a central table that two other tracks gate on.
 - **The teacher surface stays in-shell.** `profile.manage` and `progress.view` are class-scoped and reached through the shell, never through F1's console — which is why `admin.console` is a separate permission rather than something implied by holding the others.
 - **[New decision, 2026-11-20] `backup.manage` and `system.update` are named.** Both actions existed with no permission naming them, so under §4.3 nobody but `admin` could ever hold them, and an admin could not delegate backups without handing over the whole box. Admin only by default. Their actions are in `docs/privilege-boundary.md` §8.
-- **Changing the box needs a secure connection (decided 2026-11-20).** Every permission that changes the box — `content.install`, `network.configure`, `service.restart`, `fleet.manage`, `backup.manage`, `system.update` — plus `progress.view` across a class and `admin.console` is usable only over HTTPS **with a session made over HTTPS**. Everything else, sign-in and learning included, works over plain HTTP (§16). The mechanism is `docs/privilege-boundary.md` §4.
+- **[Proposed 2026-11-22] `apps.manage` is named.** Installing software that runs on the box is a bigger trust step than installing a reading pack, so it is kept apart from `content.install`: an admin can let a librarian manage packs without letting them add running services. Admin only by default, secure only. Its actions are in `docs/privilege-boundary.md` §8; design in `docs/base-addons-admin.md` §7.
+- **Changing the box needs a secure connection (decided 2026-11-20).** Every permission that changes the box — `content.install`, `apps.manage` (proposed 2026-11-22), `network.configure`, `service.restart`, `fleet.manage`, `backup.manage`, `system.update` — plus `progress.view` across a class and `admin.console` is usable only over HTTPS **with a session made over HTTPS**. Everything else, sign-in and learning included, works over plain HTTP (§16). The mechanism is `docs/privilege-boundary.md` §4.
 - **`none` is not a role.** It remains the sentinel meaning no profile matched. It is never stored and never appears among a profile's roles.
 
 ### 4.3 Default-deny, now general
@@ -250,6 +252,7 @@ The sweep's most consequential security finding sits here, and it is a cross-tra
 
 The scheme is `http` for visitors and `https` where the box's certificate is installed (§16), on every row. A surface is never reached through a loopback port.
 
+- **[Proposed 2026-11-22] The Admin Dashboard is an app at `home.deltos.lan`, not a site at `admin.deltos.lan`.** Every box-changing action already goes through the box API on the WebOS origin (`docs/privilege-boundary.md` §2), and a separate origin would need the open service sign-in hand-off (§13.2). `admin` stays reserved in the service row above and unused. `docs/base-addons-admin.md` §2.
 - **Variable ranges:** `pack_index` is an integer 0–511, allocated by the on-device catalog at install time. `pack_generation` is an integer from 1 upward, written without leading zeros, kept per `pack_index` by the catalog and raised each time that index is given to a new install. `pack_partition` is 16 lowercase hex characters (64 random bits) that `identityd` issues per (browser, person) the first time that person signs in on that browser; it carries nothing about the person.
 - **[Amended decision, 2026-11-20, approved by Commander] The per-profile slot is retired; people are not capped per box.** `profile_slot` (0–31, assigned at profile creation) capped a box at 32 people in total, so a school with two classes of 25 could not be enrolled. The slot only ever existed to keep two people's in-pack browser storage apart **in the same browser**; people on different devices never collide. It is replaced by `pack_partition`, per browser and per person. A random value rather than a number 0–31 was chosen in review because a numbered slot reused on one browser can hand the next person the previous person's stored data (for example after only the WebOS site's cookies were cleared), while a fresh random partition never collides and needs no clear to be safe.
 - **[New decision, 2026-11-20] The pack server serves only issued hostnames.** A pack hostname is served only while its `pack_generation` is current, its `pack_partition` belongs to a person with a live session on the browser it was issued for, and that person may see that pack. So a device that never signed in reads no pack, `guest_accessible` is enforced rather than merely a launcher filter, and signing out shuts that person's pack hostnames on that browser. Mechanism: `docs/deltd-api-v1.md` §4.4.
@@ -275,6 +278,7 @@ Four tracks need to ask what a box actually is, and no document defined where th
   "has_wifi": true, "can_ap": true, "has_rtc": false }
 ```
 
+- **[Proposed 2026-11-22] `os_ram_bytes`:** the RAM in use after first boot with no DeltOS service running, measured by the same provisioning step. The RAM budget is the sum of declared floors (§6), and the operating system declares none, so without this field no RAM sum on a box can be complete. Absent until measured; the fit check then answers "cannot tell". `docs/base-addons-admin.md` §6.
 - **`tier` is gone.** Earlier revisions carried a `"tier": "pi_5"` field alongside the measurements. It is removed, not deprecated: a name that summarised the numbers beside it could only ever disagree with them, and gating on it is what produced the sweep's "D5 on a 2 GB Pi 4" finding. Components compare the measured fields (§2.3).
 - **`gpu`** is `none` or the class of accelerator measured. A feature declaring `gpu: preferred` reads this to choose an execution path; a feature declaring `gpu: required` will not start against `none`.
 - **Path:** `/var/lib/deltos/capability.json` — see §10.
@@ -297,6 +301,8 @@ Track E confines DeltOS state to one tree so that OS rollback has a defined boun
 | /var/lib/deltos/health/ | Health snapshots. |
 | /var/lib/deltos/.restore-staging/ | **[Proposed 2026-11-21]** F10's working folder: a backup being made or reviewed, root's alone (`0700`), on the state's own filesystem so a restore is a rename (`docs/box-backup.md` §5). Never itself backed up. |
 | /var/lib/deltos/.restore-previous/ | **[Proposed 2026-11-21]** What the last restore replaced, root's alone (`0700`), kept until the next restore. Never itself backed up. |
+| /var/lib/deltos/apps/<id>/ | **[Proposed 2026-11-22]** Each add-on's own data (its volumes and its manifest's `backup.paths`). Created at install; kept or deleted at removal, as the admin chooses (`docs/base-addons-admin.md` §7). |
+| /usr/lib/deltos/apps/ | **[Proposed 2026-11-22]** The installed app manifests: base ones from the system image, add-on ones from their bundles. Outside the state tree because the system image owns the base ones; an add-on's copy is rewritten from its bundle on install. |
 | /var/lib/deltos/<service>-adapter/ | Each Track H adapter's profile-to-account mapping (§5.1). |
 
 - **[New decision]** State written under this tree carries a schema version that its owner refuses to open if newer than it understands. This is the missing half of Track E's rollback design: /var is shared and never rolled back, so a rollback hands old code data that new code already migrated. Track E presents this as the guarantee without noticing it is also the hazard.
@@ -539,6 +545,8 @@ Five platform components read this one manifest and nothing else: **the launcher
 - **It closes the resource-budget circularity at its cause** (§6): the consolidated budget is the sum of declared floors over the installed set, computed on the box, not a figure blocked on every track reporting at once.
 - **Participation is opt-in per capability.** An app that contributes to search but not to progress tracking says exactly that. A service that appears in no launcher still declares its health check, so nothing runs unwatched.
 - **[New decision] An app declares permissions, never roles.** It states the permissions it *requires* to be reached and the permissions it *defines*. The reverse proxy and forward-auth enforce against the identity's **effective permissions** (§4.3). This is what lets a new app introduce its own authority without an edit to any central role list — the same property, applied to authorization, that §15.2 gives the rest of the platform.
+
+- **[Proposed 2026-11-22] Wire format settled:** `deltos-app.toml`, schema 1, in `docs/base-addons-admin.md` §5.2; read and checked by `crates/deltos-apps`. The §2.3 fields are used unchanged, with an `evidence` field (`measured`, `provisional`, `open`) so an unmeasured floor is written as open rather than as a number.
 
 *The manifest's wire format, field names beyond the §2.3 group, and its schema version are the implementing track's to settle. This document owns what must be declared and who reads it; it does not invent the serialization.*
 

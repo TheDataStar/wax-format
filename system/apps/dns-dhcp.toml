@@ -1,0 +1,38 @@
+schema = 1
+id = "dns-dhcp"
+name = "Box names and addresses"
+version = "0.1.0"
+kind = "base"
+summary = "Answers the box's own names (deltos.lan, deltos-packs.lan) and hands out addresses on its Wi-Fi."
+licence = "GPL-2.0-only"
+upstream = "dnsmasq"
+min_profile = "kiosk"
+
+[resources]
+# Still open: memory was measured, storage was not, and a floor needs both.
+# Measured 2026-11-22 on the emulated 2 GB aarch64 box, one phone joined:
+# dnsmasq resident 4360 kB idle and after the full VM test
+# (docs/box-radio-and-boot.md section 6.1). A full room is still to measure
+# on real radios.
+evidence = "open"
+arch = "any"
+
+[run]
+form = "systemd"
+entry = "deltos-dnsmasq.service"
+capabilities = ["CAP_NET_BIND_SERVICE", "CAP_NET_RAW", "CAP_NET_ADMIN"]
+listens = [
+  { port = 53, proto = "udp", bind = "lan" },
+  { port = 53, proto = "tcp", bind = "lan" },
+  { port = 67, proto = "udp", bind = "lan" },
+]
+
+[sign_in]
+method = "none"
+
+[health]
+probe = "systemd"
+target = "deltos-dnsmasq.service"
+
+[backup]
+paths = ["/var/lib/deltos/network/"]

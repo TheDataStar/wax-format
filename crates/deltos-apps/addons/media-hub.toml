@@ -1,0 +1,60 @@
+schema = 1
+id = "media-hub"
+name = "Video and music"
+version = "0.1.0"
+kind = "addon"
+summary = "Watch the box's films and lessons and listen to its music and podcasts, from any device."
+licence = "GPL-2.0-only"
+upstream = "Jellyfin"
+min_profile = "classroom"
+depends = ["platform"]
+
+[resources]
+evidence = "open"
+arch = "any"
+gpu = "preferred"   # transcoding uses a GPU where the box measured one (contract §2.3)
+
+[load]
+evidence = "open"
+
+[run]
+form = "compose"
+entry = "compose.yaml"
+listens = [{ port = 8096, proto = "tcp", bind = "loopback" }]
+devices = ["gpu", "removable_storage"]
+
+[launcher]
+group = "watch_and_listen"
+icon = "icon.svg"
+
+[reach]
+host = "media"
+requires = ["media.watch"]
+
+[[defines]]
+name = "media.watch"
+summary = "Watch and listen to the box's video and music"
+seed_bundles = ["teacher", "student"]
+
+[[defines]]
+name = "media.curate"
+summary = "Add, remove and arrange the box's video and music"
+secure_only = true
+seed_bundles = ["teacher"]
+
+[sign_in]
+method = "adapter_api"
+
+[health]
+probe = "compose"
+target = "jellyfin"
+
+[backup]
+paths = ["/var/lib/deltos/apps/media-hub/config/"]
+listed = ["/var/lib/deltos/apps/media-hub/media/"]
+exclude = ["/var/lib/deltos/apps/media-hub/cache/", "/var/lib/deltos/apps/media-hub/transcodes/"]
+
+[participates]
+search = true
+notifications = false
+progress = false

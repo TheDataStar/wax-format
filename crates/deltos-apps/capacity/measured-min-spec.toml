@@ -1,0 +1,6 @@
+# The minimum spec (aarch64, 2 GB, contract §2.1). Nothing here has been
+# measured yet: real-Pi testing is on hold (Commander, 2026-11-20). Every
+# field left out is reported as "not measured" by `deltos-apps capacity`.
+# How to fill it: docs/base-addons-admin.md §4.4.
+machine = "minimum spec, aarch64 2 GB (not yet measured)"
+sign_in_ram_bytes = 19922944.0  # a parameter of the identity policy, the same on every box

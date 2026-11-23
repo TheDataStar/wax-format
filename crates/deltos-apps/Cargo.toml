@@ -1,0 +1,22 @@
+[package]
+name = "deltos-apps"
+version = "0.1.0"
+edition = "2021"
+description = "The DeltOS app manifest (contract §15): reading and checking a base service's or add-on's manifest, the fit check against the box capability record, and the capacity estimate for the fed WebOS (docs/base-addons-admin.md)"
+license = "MIT"
+
+[[bin]]
+name = "deltos-apps"
+path = "src/bin/deltos-apps.rs"
+
+[dependencies]
+# The one licence check for everything DeltOS distributes (contract §16).
+wax-builder = { path = "../wax-builder" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+clap = { version = "4.4", features = ["derive"] }
+thiserror = "1.0"
+
+[dev-dependencies]
+tempfile = "3.8"
