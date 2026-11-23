@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Delt",
+  "productName": "DeltOS",
   "version": "0.1.0",
   "identifier": "lan.deltos.delt",
   "build": {
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Delt",
+        "title": "DeltOS",
         "width": 1200,
         "height": 800,
         "minWidth": 720,
@@ -28,6 +28,6 @@
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.png", "icons/icon.ico", "icons/icon.icns"],
     "category": "Education",
     "shortDescription": "Read offline .wax libraries",
-    "longDescription": "Delt reads .wax packs on your own computer: search across them, keep bookmarks and private notes, and apply new editions."
+    "longDescription": "DeltOS reads .wax packs on your own computer: search across them, keep bookmarks and private notes, and apply new editions."
   }
 }

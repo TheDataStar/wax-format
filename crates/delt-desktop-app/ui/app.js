@@ -1,4 +1,4 @@
-// Delt desktop window. No framework and no build step: the page calls the
+// DeltOS desktop window. No framework and no build step: the page calls the
 // commands in src/main.rs and shows what comes back. Pack pages load in the
 // sandboxed #page frame from deltpack: and can reach nothing here.
 "use strict";
@@ -200,7 +200,7 @@ $("#add-pack").addEventListener("click", async () => {
   if (!path) return;
   const copy = await confirmBox("Add this pack?",
     [el("p", { class: "mono" }, path),
-     el("p", {}, "Delt copies the pack into your library folder and leaves the original where it is. A large pack can take a few minutes to copy.")],
+     el("p", {}, "DeltOS copies the pack into your library folder and leaves the original where it is. A large pack can take a few minutes to copy.")],
     "Copy into library");
   if (!copy) return;
   toast("Adding the pack…");
@@ -227,10 +227,10 @@ function describe(plan) {
   const from = plan.installed_version || "the installed edition";
   const to = plan.candidate_version || "a newer edition";
   const how = plan.kind.kind === "append"
-    ? `Delt adds the ${bytes(plan.kind.bytes)} that changed to your copy. You can undo it afterwards.`
-    : `This edition was rebuilt, so Delt replaces the whole file (${bytes(plan.kind.bytes)}). This cannot be undone.`;
+    ? `DeltOS adds the ${bytes(plan.kind.bytes)} that changed to your copy. You can undo it afterwards.`
+    : `This edition was rebuilt, so DeltOS replaces the whole file (${bytes(plan.kind.bytes)}). This cannot be undone.`;
   const sig = plan.signature_sidecar
-    ? "It comes with a signature file. Delt keeps it, but does not check it yet."
+    ? "It comes with a signature file. DeltOS keeps it, but does not check it yet."
     : "It has no signature file.";
   return [el("p", {}, `${plan.name}: ${from} → ${to}.`), el("p", {}, how), el("p", { class: "meta" }, sig)];
 }
@@ -306,7 +306,7 @@ T.event.listen("delt-navigated", (ev) => {
   state.current = ev.payload;
   const p = state.byId.get(ev.payload.pack);
   $("#crumbs").replaceChildren(p ? p.name : "", " › ", el("b", {}, ev.payload.title));
-  document.title = `${ev.payload.title} — Delt`;
+  document.title = `${ev.payload.title} — DeltOS`;
   refreshPageChrome();
 });
 
@@ -448,7 +448,7 @@ $("#search-form").addEventListener("submit", (e) => {
 
 const SKIP = {
   no_index: "has no search index",
-  unknown_tokenizer: "was indexed in a way this Delt does not know",
+  unknown_tokenizer: "was indexed in a way this version of DeltOS does not know",
   tokenizer_mismatch: "has an index that does not match its declared kind",
   query_too_short: "needs a longer search for its language",
   query_not_supported: "cannot answer this search",
