@@ -55,6 +55,9 @@ for b in $BINS; do
     install -m 0755 "$BIN/$b" "$U/deltos/bin/$b"
 done
 for f in "$HERE"/libexec/*; do install -m 0755 "$f" "$U/deltos/libexec/"; done
+# The base services' manifests: the fit check counts them (docs/base-addons-admin.md §6)
+install -d "$U/deltos/apps"
+for f in "$HERE"/apps/*.toml; do install -m 0644 "$f" "$U/deltos/apps/"; done
 for f in "$HERE"/systemd/*; do install -m 0644 "$f" "$U/systemd/system/"; done
 install -m 0644 "$HERE/sysusers.d/deltos.conf" "$U/sysusers.d/deltos.conf"
 install -m 0644 "$HERE/tmpfiles.d/deltos.conf" "$U/tmpfiles.d/deltos.conf"

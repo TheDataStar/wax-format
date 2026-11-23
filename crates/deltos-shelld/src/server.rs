@@ -231,7 +231,13 @@ impl Shell {
                 return Err(f);
             }
         };
-        let (session, over_https, ticket) = Self::caller(req)?;
+        let (session, over_https, ticket) = match Self::caller(req) {
+            Ok(c) => c,
+            Err(f) => {
+                self.log("unknown", a.name(), &a.summary(), &f.code, Some(f.detail.clone()), None)?;
+                return Err(f);
+            }
+        };
         let caller = Caller { session_ref: &session, over_https, confirmation_ticket: ticket.as_deref() };
         let ask = Ask::new(&self.cfg.identityd);
         let (name, summary, long) = (a.name(), a.summary(), a.is_long());

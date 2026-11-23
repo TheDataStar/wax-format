@@ -238,3 +238,10 @@ refused, and then with the admin's real HTTPS session: a made-up session
 and a plain-HTTP claim refused, a name approved and resolved by the phone
 with no restart by hand, a backup to a drive as a job, a bundle on the drive
 listed and refused for want of a key, and the log as rule 12 says.
+
+**Result, 2026-11-23:** 136 of 136 checks pass on the emulated 2 GB ARM64 box
+(results in the project files, `vm-results-2026-11-23/`). The backup through
+shelld took 25 s under emulation. Shelld itself used **3.3 MiB** of memory
+(resident) idle and **3.3 MiB** after every check, peak 3.3 MiB.
+A base manifest for shelld (`system/apps/`) waits for its storage figure,
+since the action log's growth has not been measured.
