@@ -30,6 +30,14 @@ for u in deltos-net-render deltos-hostapd deltos-dnsmasq deltos-identityd deltos
   info "$u became active $(systemctl show -p ActiveEnterTimestampMonotonic --value $u.service | awk '{printf "%.1f", $1/1e6}') s after boot"
 done
 
+# --- memory, idle, before any test touches the box --------------------------
+M=$S/results/measure.txt
+rss() { awk -v k="$2" '$1==k":"{print $2}' "/proc/$(pid "$1")/status"; }
+{
+  echo "idle_mem_used_kib=$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{print t-a}' /proc/meminfo)"
+  for u in deltos-hostapd deltos-dnsmasq deltos-identityd deltos-deltd; do echo "idle_${u}_rss_kib=$(rss $u VmRSS)"; done
+} > "$M"
+
 # --- privilege separation ----------------------------------------------------
 check "deltd runs as deltos-deltd" test "$(ps -o user= -p "$(pid deltos-deltd)")" = deltos-deltd
 check "dnsmasq runs as deltos-dns" test "$(ps -o user= -p "$(pid deltos-dnsmasq)")" = deltos-dns
@@ -303,6 +311,15 @@ check "the student's remembered phone signs in again without the card" test "$(W
 check "search still finds the page after the restore" bash -c "[ \"\$(G $J/phone http '/search?q=evaporation')\" = 200 ] && grep -q 'Water cycle' $J/phone.out"
 check "the replaced state is kept once, root-only" test "$(stat -c '%a %U' /var/lib/deltos/.restore-previous)" = "700 root"
 rm -f /root/fresh-admin.txt
+
+# --- memory after every test, and a class signing in at once ---------------
+{
+  echo "after_mem_used_kib=$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{print t-a}' /proc/meminfo)"
+  for u in deltos-hostapd deltos-dnsmasq deltos-identityd deltos-deltd; do echo "after_${u}_rss_kib=$(rss $u VmRSS) peak_kib=$(rss $u VmHWM)"; done
+  # identityd's own code, in a separate process: 40 sign-ins at once on this
+  # machine's cores. Memory only; times under emulation mean nothing.
+  [ -x $S/bin/signin_burst ] && $S/bin/signin_burst 40 shared
+} >> "$M" 2>&1
 
 # --- outcome -----------------------------------------------------------------
 info "memory in use: $(free -m | awk '/Mem:/{print $3}') MB of $(free -m | awk '/Mem:/{print $2}') MB"

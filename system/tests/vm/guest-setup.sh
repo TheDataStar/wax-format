@@ -21,6 +21,18 @@ modprobe mac80211_hwsim radios=2
 
 $S/system/install.sh --bin-dir $S/bin
 
+# The operating system's own memory, with no DeltOS service running: the
+# capability record's os_ram_bytes (docs/base-addons-admin.md section 6).
+# Taken after the install, before anything is provisioned. Note: this is the
+# Ubuntu cloud image, with cloud-init itself still running this script.
+sync; echo 3 > /proc/sys/vm/drop_caches; sleep 10
+{
+  echo "os_mem_total_kib=$(awk '/MemTotal/{print $2}' /proc/meminfo)"
+  echo "os_mem_available_kib=$(awk '/MemAvailable/{print $2}' /proc/meminfo)"
+  echo "os_mem_used_kib=$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{print t-a}' /proc/meminfo)"
+  echo "os_top_processes_rss_kib:"; ps -eo rss=,comm= --sort=-rss | head -12
+} > $S/results/measure-os.txt
+
 # An unprovisioned box: nothing starts, nothing fails.
 systemctl start deltos-box.target
 sleep 5

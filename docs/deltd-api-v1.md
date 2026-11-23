@@ -81,6 +81,7 @@ The draft promised "compressed bytes passed straight to the browser". That holds
 - Browsers advertise `zstd` in `Accept-Encoding` **only over HTTPS**. Visitors use plain HTTP (contract §16), so for them `deltd` always decompresses on the box. **To be confirmed on the target phone browsers during testing.**
 - Entries stored with the shared dictionary (ADR-0001, SPEC §3) are always decompressed on the box, since a browser cannot use the pack's dictionary.
 - So passthrough applies only to plain-zstd entries sent to HTTPS clients. Read-speed measurements for `deltd` must include box-side decompression per request on the minimum spec, since that is the common visitor path.
+- **Everyone else gets gzip** (added 2026-11-22): a text-like entry the pack stored compressed, asked for whole, of at least 1,024 bytes, is gzipped (level 6) for a browser that accepts gzip, with ETag `"<sha256>-gz"`. Measured: 3.1× fewer bytes per page for 2.5× the CPU (`crates/deltlib/NOTES.md`, "gzip for browsers"). No range on a gzipped response; a range request gets the decoded bytes as before.
 
 ### 4.4 Which pack hostnames are served
 
@@ -350,7 +351,7 @@ What the review changed from the 2026-11-16 draft, and why. Findings that belong
 | 4 | The API and the WebOS were on different proposed hostnames, which forces cross-origin requests. | High | One origin for both (§2). |
 | 5 | Forgery protection was a fixed header, while the privilege boundary used a per-session token. | Medium | One mechanism (§3 rule 6). |
 | 6 | The same ETag was used for the plain and zstd-encoded bytes, which breaks HTTP caching. | Medium | One ETag per encoding, with `Vary` (§4.2). |
-| 7 | "Compressed bytes passed straight through" does not happen for plain-HTTP visitors, whose browsers do not accept zstd. | Medium | §4.3; flagged to the compression measurement. |
+| 7 | "Compressed bytes passed straight through" does not happen for plain-HTTP visitors, whose browsers do not accept zstd. | Medium | §4.3. **Addressed 2026-11-22:** those visitors now get gzip. |
 | 8 | Teachers could see a student's whole reading history through progress events. | Medium | Class progress shows only assigned items (§6.6). |
 | 9 | Private notes could stay in a shared browser's cache. | Medium | `no-store` on private responses (§3 rule 10). |
 | 10 | Pack pages could be framed by any site, and post forms to the API. | Medium | `frame-ancestors` and `form-action` in the pack policy (§4.2). |

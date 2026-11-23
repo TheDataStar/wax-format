@@ -46,6 +46,15 @@ fn html(sw: &mut wax_core::StreamingWriter, path: &str, title: &str, body: &str,
     }
 }
 
+/// A page well over `GZIP_MIN_BYTES`, as real articles are.
+fn long_text() -> String {
+    (0..60).map(|i| format!("Oxygen fact {i}: it makes up about a fifth of the air. ")).collect()
+}
+
+fn long_css() -> String {
+    (0..60).map(|i| format!(".c{i} {{ color: #333; margin: 0 0 8px; }}\n")).collect()
+}
+
 /// A video-sized media entry: 1 MiB, stored verbatim.
 fn media() -> Vec<u8> {
     (0..1024 * 1024u32).map(|i| (i % 251) as u8).collect()
@@ -59,6 +68,9 @@ fn science(dir: &Path) -> PathBuf {
     html(&mut sw, "Helium.html", "Helium", "Helium is a noble gas, lighter than air.", Compression::Zstd, true);
     html(&mut sw, "Carbon.html", "Carbon", "Carbon forms more compounds than any element.", Compression::Zstd, true);
     html(&mut sw, "Cafe.html", "Café chemistry", "Caffeine and the café.", Compression::Zstd, true);
+    html(&mut sw, "Oxygen.html", "Oxygen", &long_text(), Compression::Zstd, false);
+    sw.add_entry(EntryMeta::new("style.css").mime("text/css").compression(Compression::Zstd), &mut long_css().as_bytes())
+        .unwrap();
     sw.add_redirect("H.html", "Hydrogen.html", None).unwrap();
     sw.add_entry(EntryMeta::new("media/clip.webm").mime("video/webm").compression(Compression::None), &mut &media()[..])
         .unwrap();
@@ -285,6 +297,67 @@ async fn one_etag_per_encoding_and_zstd_passthrough() {
     assert_eq!(r.status(), StatusCode::OK, "the zstd tag does not validate the plain bytes");
     let r = b.get(&h, "/Hydrogen.html", &[("if-none-match", &ztag), ("accept-encoding", "zstd")]).await;
     assert_eq!(r.status(), StatusCode::NOT_MODIFIED);
+}
+
+#[tokio::test]
+async fn gzip_for_browsers_that_cannot_take_zstd() {
+    use std::io::Read;
+    let gunzip = |b: &[u8]| {
+        let mut out = Vec::new();
+        flate2::read::GzDecoder::new(b).read_to_end(&mut out).unwrap();
+        out
+    };
+    let b = boot(|_| {});
+    let h = b.host(SCIENCE_ID, ALICE);
+    let plain = b.get(&h, "/Oxygen.html", &[]).await;
+    assert!(hdr(&plain, "content-encoding").is_none(), "nothing asked for, nothing encoded");
+    let tag = hdr(&plain, "etag").unwrap().to_string();
+    let plain_bytes = body(plain).await;
+    assert!(plain_bytes.len() as u64 >= deltlib::packzone::GZIP_MIN_BYTES);
+
+    // what a phone on plain HTTP sends
+    let g = b.get(&h, "/Oxygen.html", &[("accept-encoding", "gzip, deflate")]).await;
+    assert_eq!(hdr(&g, "content-encoding"), Some("gzip"));
+    assert_eq!(hdr(&g, "vary"), Some("Accept-Encoding"));
+    assert!(hdr(&g, "accept-ranges").is_none());
+    let gtag = hdr(&g, "etag").unwrap().to_string();
+    assert_eq!(gtag, format!("{}-gz\"", tag.trim_end_matches('"')), "same hash, distinct tag");
+    let len: usize = hdr(&g, "content-length").unwrap().parse().unwrap();
+    let packed = body(g).await;
+    assert_eq!(packed.len(), len);
+    assert!(packed.len() * 3 < plain_bytes.len(), "{} vs {}", packed.len(), plain_bytes.len());
+    assert_eq!(gunzip(&packed), plain_bytes);
+
+    // tags never cross encodings
+    let r = b.get(&h, "/Oxygen.html", &[("if-none-match", &gtag), ("accept-encoding", "gzip")]).await;
+    assert_eq!(r.status(), StatusCode::NOT_MODIFIED);
+    let r = b.get(&h, "/Oxygen.html", &[("if-none-match", &gtag)]).await;
+    assert_eq!(r.status(), StatusCode::OK, "the gzip tag does not validate the plain bytes");
+    let r = b.get(&h, "/Oxygen.html", &[("if-none-match", &tag), ("accept-encoding", "gzip")]).await;
+    assert_eq!(r.status(), StatusCode::OK, "nor the plain tag the gzip bytes");
+
+    // zstd still wins where the browser takes it (HTTPS); q=0 refuses gzip
+    let z = b.get(&h, "/Oxygen.html", &[("accept-encoding", "gzip, zstd")]).await;
+    assert_eq!(hdr(&z, "content-encoding"), Some("zstd"));
+    let r = b.get(&h, "/Oxygen.html", &[("accept-encoding", "gzip;q=0")]).await;
+    assert!(hdr(&r, "content-encoding").is_none());
+
+    // stylesheets too; HEAD gives the same length and no body
+    let c = b.get(&h, "/style.css", &[("accept-encoding", "gzip")]).await;
+    assert_eq!(hdr(&c, "content-encoding"), Some("gzip"));
+    let clen = hdr(&c, "content-length").unwrap().to_string();
+    assert!(String::from_utf8(gunzip(&body(c).await)).unwrap().starts_with(".c0 {"));
+    let r = b.send(Request::builder().method("HEAD").uri("/style.css").header("host", &h).header("accept-encoding", "gzip").body(Body::empty()).unwrap()).await;
+    assert_eq!((hdr(&r, "content-encoding"), hdr(&r, "content-length")), (Some("gzip"), Some(clen.as_str())));
+    assert!(body(r).await.is_empty());
+
+    // not: small pages, ranges, media stored verbatim
+    let r = b.get(&h, "/Hydrogen.html", &[("accept-encoding", "gzip")]).await;
+    assert!(hdr(&r, "content-encoding").is_none(), "under GZIP_MIN_BYTES");
+    let r = b.get(&h, "/Oxygen.html", &[("accept-encoding", "gzip"), ("range", "bytes=0-14")]).await;
+    assert_eq!((r.status(), hdr(&r, "content-encoding")), (StatusCode::PARTIAL_CONTENT, None));
+    let r = b.get(&h, "/media/clip.webm", &[("accept-encoding", "gzip")]).await;
+    assert!(hdr(&r, "content-encoding").is_none());
 }
 
 fn zstd_decode(b: &[u8]) -> Vec<u8> {
