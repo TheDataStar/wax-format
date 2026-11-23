@@ -37,6 +37,34 @@ On `wikipedia_en_climate_change_mini_2024-06` (8.98 MB ZIM, 3,821 articles):
 
 None of this is the 2 GB ARM64 floor; the API doc requires those numbers before release.
 
+### gzip for browsers (2026-11-22)
+
+Every plain-HTTP visitor's browser takes gzip but not zstd, so until now
+they got every page uncompressed. `deltd` now gzips a page when the browser
+asks for gzip and not zstd, the pack stored the entry compressed (media
+stays verbatim), the type is text-like, the whole entry is asked for (no
+range), and it is at least `GZIP_MIN_BYTES` (1,024: below one packet
+compressing gains nothing). Tag `"<sha256>-gz"`, `Vary: Accept-Encoding`.
+zstd passthrough still wins where offered.
+
+Measured on the climate mini pack, all 3,821 article pages in turn, 10
+clients, `deltd` pinned to one x86_64 core, 15 s per row:
+
+| Encoding to the browser | Mean bytes per page | CPU per page | Pages/s on one core |
+|---|---|---|---|
+| None (before) | 7,546 | 0.085 ms | 11,750 |
+| gzip level 1, miniz_oxide | 2,792 | 0.179 ms | 5,525 |
+| gzip level 6, miniz_oxide | 2,476 | 0.226 ms | 4,409 |
+| gzip level 1, zlib-rs | 3,278 | 0.162 ms | 6,132 |
+| **gzip level 6, zlib-rs (chosen)** | **2,448** | **0.211 ms** | **4,713** |
+
+Chosen: level 6 on the pure-Rust `zlib-rs` backend. It sends **3.1× fewer
+bytes** for 2.5× the CPU. The box's limit is the radio, not the processor
+(`docs/base-addons-admin.md` §4): 4,700 pages a second on one core is far
+beyond what any Wi-Fi radio carries, while every byte saved is airtime. No
+cache of gzipped bytes: not needed at these figures; revisit if the ARM64
+measurement shows CPU becoming the limit.
+
 ## Findings for the format-gaps work
 
 1. *(Closed by SPEC v0.13 §5.7.2: `wax-bigram-16`; zim2wax now indexes CJK packs and deltd queries them through `wax_core::tokenize`.)* **CJK search cannot work as SPEC §5.7 stands.** With `detail=none`, SQLite's `trigram` tokenizer refuses any term longer than three characters ("phrase queries are not supported"), and a two-character word, which is most Chinese words, can never match. Because every later edition must keep the base's tokenizer, `zim2wax` withholds the index for `zh`/`ja`/`ko` packs rather than lock them into it. `deltd` still queries any `trigram` pack by splitting long words into three-character windows. Needs a format decision (for example `detail=full` for CJK only, or a bigram tokenizer).

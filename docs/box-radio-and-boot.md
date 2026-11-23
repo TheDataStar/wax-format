@@ -103,6 +103,39 @@ The unit tests (`crates/deltos-net/tests/radio.rs`) cover the values, the passwo
 
 **Not tested, and why:** real Pi radios (the Broadcom chip's quirks, and running the hotspot beside a Wi-Fi uplink), real Android and iPhone handsets, and 5 GHz. All wait on Commander's hardware hold.
 
+### 6.1 Memory on the emulated minimum spec (2026-11-22)
+
+The VM recipe now also records memory (`measure-os.txt`, `measure.txt`).
+Emulated `aarch64`, 2 GB, 4 cores, Ubuntu 24.04 cloud image, kernel
+6.8.0-147, virtual radio, one virtual phone. The run passed 119/119. Memory
+only: times under emulation mean nothing.
+
+| What | Measured |
+|---|---|
+| The operating system alone: first boot, nothing provisioned, caches dropped | **232 MiB** in use of 1,955 MiB (MemTotal − MemAvailable) |
+| Its largest parts | cloud-init 41 MiB (still running the setup), fwupd 30, multipathd 26, unattended-upgrades 22, udisksd 12, ModemManager 12 |
+| The whole box idle, second boot | 239 MiB |
+| The whole box after every test (sign-ins, search, backup, restore) | 252 MiB |
+| `hostapd`, idle / after (resident) | 7.1 / 7.3 MiB |
+| `dnsmasq`, idle / after | 4.3 / 4.3 MiB |
+| `deltos-identityd`, idle / after | 4.7 / 43.1 MiB (password workers keep their memory for the next sign-in) |
+| `deltd`, idle / after | 7.4 / 8.5 MiB |
+| 40 sign-ins at once (`signin_burst`, separate process) | peak 81 MiB |
+
+What this means:
+
+- The operating system's own share on this image is about 232 MiB, and a
+  box image built for DeltOS would be smaller. The cloud image carries
+  services a box does not need: cloud-init, fwupd, multipathd,
+  unattended-upgrades, udisks and ModemManager, together about 140 MiB.
+  So 232 MiB is a figure *for this image*, not the box's `os_ram_bytes`.
+  Each box measures its own at first boot (`docs/base-addons-admin.md` §6).
+- The base services together use under 30 MiB idle. Even 40 sign-ins at
+  once stay near 80 MiB. Memory is not what limits a 2 GB box serving a
+  classroom.
+- `hostapd` and `dnsmasq` were measured with one phone joined. Their memory
+  with a full room is still to measure on real radios.
+
 ## 7. Not built yet, and who it belongs to
 
 | Item | Owner |

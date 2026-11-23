@@ -246,9 +246,16 @@ fn serve_conn(conn: UnixStream, reg: &Register, caller: Caller) -> std::io::Resu
 use std::io::Read as _;
 
 /// A blocking client for one caller: one connection, reopened on failure.
+/// One kept connection to identityd: its reader and writer halves.
+type Conn = Option<(BufReader<UnixStream>, UnixStream)>;
+
 pub struct Client {
     path: std::path::PathBuf,
-    conn: std::sync::Mutex<Option<(BufReader<UnixStream>, UnixStream)>>,
+    /// Kept connections, one call at a time each. identityd answers each
+    /// connection on its own thread, so a slow password check on one does
+    /// not hold up session checks on the others.
+    conns: Vec<std::sync::Mutex<Conn>>,
+    next: std::sync::atomic::AtomicUsize,
 }
 
 /// What a call can fail with on the client side.
@@ -261,8 +268,39 @@ pub enum CallError {
 }
 
 impl Client {
+    /// One connection more than identityd runs password checks at once
+    /// ([`crate::secret::password_checks_at_once`]), so even with every core
+    /// hashing, a session check still finds a free connection.
     pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
-        Client { path: path.into(), conn: std::sync::Mutex::new(None) }
+        Self::with_connections(path, crate::secret::password_checks_at_once() + 1)
+    }
+
+    pub fn with_connections(path: impl Into<std::path::PathBuf>, n: usize) -> Self {
+        Client {
+            path: path.into(),
+            conns: (0..n.max(1)).map(|_| std::sync::Mutex::new(None)).collect(),
+            next: Default::default(),
+        }
+    }
+
+    /// Calls that hash a password: slow (tens of milliseconds) and queued
+    /// in identityd behind each other when many arrive together.
+    const SLOW: &'static [&'static str] = &["sign_in_password", "set_password", "change_password", "create_profile"];
+
+    /// Take a free connection if there is one, else wait for the next in turn.
+    /// Slow calls never use the first connection, so quick calls (session
+    /// checks above all) always have one that no sign-in burst can fill.
+    fn conn(&self, slow: bool) -> std::sync::MutexGuard<'_, Conn> {
+        let n = self.conns.len();
+        let skip = usize::from(slow && n > 1);
+        let pool = &self.conns[skip..];
+        let start = if slow { self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) } else { 0 };
+        for i in 0..pool.len() {
+            if let Ok(g) = pool[(start + i) % pool.len()].try_lock() {
+                return g;
+            }
+        }
+        pool[start % pool.len()].lock().unwrap_or_else(|p| p.into_inner())
     }
 
     /// Make one call. Retries once on a fresh connection if the kept one
@@ -270,7 +308,8 @@ impl Client {
     pub fn call(&self, req: &Value) -> Result<Value, CallError> {
         let mut line = req.to_string();
         line.push('\n');
-        let mut g = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let slow = req.get("call").and_then(Value::as_str).is_some_and(|c| Self::SLOW.contains(&c));
+        let mut g = self.conn(slow);
         for attempt in 0..2 {
             if g.is_none() {
                 let s = UnixStream::connect(&self.path)
