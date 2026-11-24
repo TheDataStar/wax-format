@@ -10,7 +10,7 @@
 # --debs   arm64 .debs the image lacks: linux-modules-extra-<its kernel>
 #          (mac80211_hwsim), hostapd, dnsmasq-base, iw, wpasupplicant,
 #          libpcsclite1, wireless-regdb
-# --bin-dir  aarch64 builds of deltd, deltos-net-render, deltos-net-provision,
+# --bin-dir  aarch64 builds of deltd, deltos-capability, deltos-net-render, deltos-net-provision,
 #          deltos-identityd, deltos-identity-provision, deltos-tls-provision,
 #          deltos-backup, deltos-shelld, deltos-pack-check and the examples
 #          configure_ap_standin and vm_test_pack
@@ -42,7 +42,7 @@ echo "work dir: $WORK"
 SH=$WORK/share
 rm -rf "$SH"; mkdir -p "$SH/bin" "$SH/debs" "$SH/results" "$SH/system"
 cp -a "$SYSTEM/." "$SH/system/"
-for b in deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision deltos-backup deltos-shelld deltos-pack-check; do cp "$BIN/$b" "$SH/bin/"; done
+for b in deltd deltos-capability deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision deltos-backup deltos-shelld deltos-pack-check; do cp "$BIN/$b" "$SH/bin/"; done
 cp "$BIN/examples/configure_ap_standin" "$SH/bin/" 2>/dev/null || cp "$BIN/configure_ap_standin" "$SH/bin/"
 # the throwaway signed test packs (deltos-shelld example; docs/shelld.md §7)
 cp "$BIN/examples/vm_test_pack" "$SH/bin/" 2>/dev/null || cp "$BIN/vm_test_pack" "$SH/bin/"
@@ -110,6 +110,8 @@ echo "--- second boot (the box came up on its own) ---"
 cat "$WORK/test.txt" 2>/dev/null || echo "no test results; see $WORK/console.log"
 grep -q '^unprovisioned_failed_units=0$' "$WORK/setup.txt" 2>/dev/null || { echo "FAIL: an unprovisioned box had failed units"; exit 1; }
 grep -q '^unprovisioned_active=0$' "$WORK/setup.txt" 2>/dev/null || { echo "FAIL: an unprovisioned box started services"; exit 1; }
+grep -q '^capability_floor_refused=yes$' "$WORK/setup.txt" 2>/dev/null || { echo "FAIL: a profile above this box's floor was accepted"; exit 1; }
+grep -q '^capability_reprovision_refused=yes$' "$WORK/setup.txt" 2>/dev/null || { echo "FAIL: the profile was chosen twice"; exit 1; }
 grep -q '^reprovision_refused=yes$' "$WORK/setup.txt" 2>/dev/null || { echo "FAIL: provisioning ran twice"; exit 1; }
 grep -q '^admin_reprovision_refused=yes$' "$WORK/setup.txt" 2>/dev/null || { echo "FAIL: a second first admin was made"; exit 1; }
 grep -q '^RESULT PASS$' "$WORK/test.txt" 2>/dev/null

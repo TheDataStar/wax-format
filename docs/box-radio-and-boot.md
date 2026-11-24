@@ -23,6 +23,7 @@ All of it hangs off one target, `deltos-box.target`, enabled for normal boot.
 
 | Step | Unit | Does | Runs only when |
 |---|---|---|---|
+| 0 | `deltos-capability` | Measures the box again and rewrites `/var/lib/deltos/capability.json` if anything changed, before any DeltOS service (`docs/box-capability.md`) | The box was set up (the record exists) |
 | 1 | `deltos-net-render` | Writes the settings files (`dnsmasq.conf`, names, reservations, `uplink.nft`, `hostapd.conf`, `hotspot.env`, `deltd.env`) from the registry into `/run/deltos/network/` | The registry exists |
 | 2 | `deltos-hotspot-address` | Gives the hotspot interface the box's address; keeps NetworkManager off it; unblocks Wi-Fi where the image blocks it | A hotspot is set |
 | 3 | `deltos-uplink-firewall` | Loads the uplink firewall **before the radio exists**, so a hotspot device is never forwarded anywhere while it is unset | Step 1 wrote it |

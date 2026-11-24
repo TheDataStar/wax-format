@@ -3,7 +3,7 @@
 #
 #   system/install.sh --bin-dir DIR [--destdir DIR] [--no-enable]
 #
-# --bin-dir   where the built deltd, deltos-net-render, deltos-net-provision,
+# --bin-dir   where the built deltd, deltos-capability, deltos-net-render, deltos-net-provision,
 #             deltos-identityd, deltos-identity-provision and
 #             deltos-tls-provision, deltos-backup, deltos-shelld and deltos-pack-check are
 #             (e.g. target/release)
@@ -29,7 +29,7 @@ while [ $# -gt 0 ]; do
 done
 die() { echo "install.sh: $*" >&2; exit 1; }
 [ -n "$BIN" ] || die "--bin-dir is required"
-BINS="deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision deltos-backup deltos-shelld deltos-pack-check"
+BINS="deltd deltos-capability deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision deltos-backup deltos-shelld deltos-pack-check"
 for b in $BINS; do
     [ -x "$BIN/$b" ] || die "$BIN/$b is missing; build with: cargo build --release -p deltlib -p deltos-net -p deltos-identity -p deltos-tls -p deltos-backup -p deltos-shelld"
 done
@@ -80,6 +80,8 @@ fi
 cat <<MSG
 DeltOS box services installed.
 Next, once per box:
+  0. what it runs:      /usr/lib/deltos/bin/deltos-capability provision --profile <kiosk|classroom|community_hub|field_ops>
+                        (measures the box and refuses a profile it is below; docs/box-capability.md)
   1. network settings:  /usr/lib/deltos/bin/deltos-net-provision /var/lib/deltos/network/registry.sqlite <settings-file>
   2. the first admin:   runuser -u deltos-identity -- /usr/lib/deltos/bin/deltos-identity-provision \
                           --display-name 'Your name' --sign-in-name admin
