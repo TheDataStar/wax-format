@@ -26,11 +26,11 @@ check "deltos-tls ran at boot and succeeded" bash -c "[ \"\$(systemctl show -p R
 check "the certificates were made before deltd started" bash -c "[ \$(systemctl show -p ExecMainExitTimestampMonotonic --value deltos-tls) -lt \$(systemctl show -p ActiveEnterTimestampMonotonic --value deltos-deltd) ]"
 check "the daily certificate check is scheduled" systemctl is-active --quiet deltos-tls.timer
 # --- the box measured itself (docs/box-capability.md) ----------------------
-C=/var/lib/deltos/capability.json
-info "capability record: $(tr -d ' \n' < $C)"
-cf() { python3 -c "import json,sys; print(json.load(open('$C'))[sys.argv[1]])" "$1"; }
+CAPREC=/var/lib/deltos/capability.json
+info "capability record: $(tr -d ' \n' < $CAPREC)"
+cf() { python3 -c "import json,sys; print(json.load(open('$CAPREC'))[sys.argv[1]])" "$1"; }
 check "the box measured itself at boot, before every DeltOS service" bash -c "[ \"\$(systemctl show -p Result --value deltos-capability)\" = success ] && for u in deltos-hostapd deltos-dnsmasq deltos-identityd deltos-shelld deltos-deltd; do [ \$(systemctl show -p ExecMainExitTimestampMonotonic --value deltos-capability) -lt \$(systemctl show -p ActiveEnterTimestampMonotonic --value \$u) ] || exit 1; done"
-check "the record keeps the profile chosen at setup (classroom), schema 1, readable by all (0644 root)" bash -c "[ \"$(cf profile)\" = classroom ] && [ \"$(cf schema)\" = 1 ] && [ \"\$(stat -c '%a %U' $C)\" = '644 root' ]"
+check "the record keeps the profile chosen at setup (classroom), schema 1, readable by all (0644 root)" bash -c "[ \"$(cf profile)\" = classroom ] && [ \"$(cf schema)\" = 1 ] && [ \"\$(stat -c '%a %U' $CAPREC)\" = '644 root' ]"
 check "memory: installed size from MemTotal, rounded up to a whole GiB" test "$(cf ram_bytes)" = "$(awk '/MemTotal/{t=$2*1024; g=1073741824; print int((t+g-1)/g)*g}' /proc/meminfo)"
 check "storage: the whole drive the state tree is on" test "$(cf storage_bytes)" = "$(( $(cat /sys/block/$(lsblk -no pkname "$(findmnt -no source -T /var/lib/deltos)")/size) * 512 ))"
 check "architecture aarch64, no graphics device, a radio that can be a hotspot" bash -c "[ \"$(cf arch)\" = aarch64 ] && [ \"$(cf gpu)\" = none ] && [ \"$(cf has_wifi)\" = True ] && [ \"$(cf can_ap)\" = True ]"
@@ -350,7 +350,7 @@ check "a non-root user cannot make a backup" bash -c "! echo '$BPASS' | runuser 
 SSL_FP() { openssl x509 -in /var/lib/deltos/ca/ca.crt -noout -fingerprint -sha256 | sed 's/.*=//'; }
 FP_OLD=$(SSL_FP)
 
-cp $C /tmp/capability-before-restore.json
+cp $CAPREC /tmp/capability-before-restore.json
 # A fresh box: every piece of state thrown away and set up again from
 # nothing, with a different Wi-Fi name, a new first admin and (at start) a
 # new certificate authority. The pack file stays, as on a box whose SD card
@@ -403,7 +403,7 @@ $P busybox udhcpc -i wlan1 -n -q -f -t 10 -T 2 -s /tmp/udhcpc.sh >/dev/null 2>&1
 rm -f $J/admin $J/admin.csrf
 if until_t 30 bash -c "[ \"\$(W $J/admin https POST /session '{\"sign_in_name\":\"admin\",\"password\":\"$ADMIN_PW\"}')\" = 200 ]"; then ok "the backed-up admin signs in over HTTPS from the phone with their old password"; else bad "the backed-up admin signs in over HTTPS with their old password ($(cat $J/admin.out 2>/dev/null))"; fi
 check "the fresh box's throwaway admin is gone" bash -c "[ \"\$(W $J/fresh https POST /session '{\"sign_in_name\":\"fresh\",\"password\":\"$FRESH_PW\"}')\" != 200 ]"
-check "the restore left this hardware's own capability record in place" cmp -s $C /tmp/capability-before-restore.json
+check "the restore left this hardware's own capability record in place" cmp -s $CAPREC /tmp/capability-before-restore.json
 rm -f $J/phone.csrf
 check "the student's remembered phone signs in again without the card" test "$(W $J/phone http POST /session '')" = 200
 check "search still finds the page after the restore" bash -c "[ \"\$(G $J/phone http '/search?q=evaporation')\" = 200 ] && grep -q 'Water cycle' $J/phone.out"

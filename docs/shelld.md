@@ -450,7 +450,7 @@ serving it, and the older edition is then refused `failed_rollback`.
 **149 of 149 checks pass** (results in the project files,
 `vm-results-2026-11-24/`). The first run found that nothing wrote the
 capability record (§6); the test wrote a stand-in until `deltos-capability`
-was built (`docs/box-capability.md`), and now provisions the real one. `install_pack`
+was built (`docs/box-capability.md`), and now provisions the real one (158 of 158 with it, 2026-11-24). `install_pack`
 of a 29 kB pack took 10 s under emulation, the job's one-second polling
 included. Shelld's memory: 3.4 MiB idle, 3.4 MiB after every check.
 

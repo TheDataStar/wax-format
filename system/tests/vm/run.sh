@@ -79,7 +79,10 @@ UD
 printf 'instance-id: deltos-vm-test\nlocal-hostname: deltos-box\n' > "$WORK/meta-data"
 cloud-localds "$WORK/seed.img" "$WORK/user-data" "$WORK/meta-data"
 
-qemu-img create -q -f qcow2 -F qcow2 -b "$(realpath "$IMG")" "$WORK/disk.qcow2" 8G
+# 32 GB: the minimum spec's drive (contract §2.1), which the capability
+# record measures and the classroom profile requires (docs/box-capability.md).
+# Sparse, so it costs only what the guest writes.
+qemu-img create -q -f qcow2 -F qcow2 -b "$(realpath "$IMG")" "$WORK/disk.qcow2" 32G
 FW=/usr/share/AAVMF/AAVMF_CODE.fd
 [ -e "$FW" ] || FW=/usr/share/qemu-efi-aarch64/QEMU_EFI.fd
 cp /usr/share/AAVMF/AAVMF_VARS.fd "$WORK/vars.fd" 2>/dev/null || truncate -s 64M "$WORK/vars.fd"
