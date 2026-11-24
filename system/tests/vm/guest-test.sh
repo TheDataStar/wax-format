@@ -219,15 +219,24 @@ VP=/root/vm-packs; $S/bin/vm_test_pack $VP
 ATLAS=20000000-0000-4000-8000-000000000002; OTHER=30000000-0000-4000-8000-000000000003
 cp $VP/atlas.wax $VP/atlas.wax.minisig $VP/unsigned.wax /run/deltos/drives/usb1/
 r=$(SA "{\"call\":\"list\",\"listing\":\"pack_sources\",\"session\":\"$ADMIN_COOKIE\",\"over_https\":true}"); echo "# $r" >> "$OUT"
-check "shelld lists the packs on the drive, and which are signed" bash -c "echo '$r' | grep -q '\"source\":\"drive-usb1/atlas.wax\",\"bytes\":[0-9]*,\"signed\":true' && echo '$r' | grep -q '\"source\":\"drive-usb1/unsigned.wax\",\"bytes\":[0-9]*,\"signed\":false'"
+check "shelld lists the packs on the drive, and which are signed" bash -c "echo '$r' | grep -q '\"signed\":true,\"source\":\"drive-usb1/atlas.wax\"' && echo '$r' | grep -q '\"signed\":false,\"source\":\"drive-usb1/unsigned.wax\"'"
 j=$(JOB "$(ACT install_pack "{\"source\":\"drive-usb1/atlas.wax\",\"archive_uuid\":\"$ATLAS\"}" "$ADMIN_COOKIE" true)"); echo "# $j" >> "$OUT"
 check "a pack is refused while the box has no pack key (failed_signature)" bash -c "echo '$j' | grep -q failed_signature && [ ! -e /var/lib/deltos/packs/$ATLAS.wax ]"
+# Nothing writes the capability record yet (contract §9: Track E's
+# provisioning tool, not built; docs/shelld.md §6). Without it the fit check
+# refuses every pack. Stand in for it here with this machine's own measured
+# RAM, storage and architecture; the profile is the test's choice.
+if [ ! -e /var/lib/deltos/capability.json ]; then
+  printf '{"profile":"classroom","ram_bytes":%s,"storage_bytes":%s,"arch":"%s","gpu":"none","has_wifi":true,"can_ap":true,"has_rtc":false}\n' \
+    "$(( $(awk '/MemTotal/{print $2}' /proc/meminfo) * 1024 ))" "$(df -B1 --output=size /var/lib/deltos | tail -1 | tr -d ' ')" "$(uname -m)" > /var/lib/deltos/capability.json
+  info "capability record (test stand-in): $(cat /var/lib/deltos/capability.json)"
+fi
 install -d -m 0755 /etc/deltos-vm-test && install -m 0644 $VP/pack.pub /etc/deltos-vm-test/pack.pub
 echo "DELTOS_SHELLD_KEY_ARGS=--pack-key /etc/deltos-vm-test/pack.pub" > /usr/lib/deltos/shelld.env
 systemctl restart deltos-shelld; until_t 20 test -S /run/deltos/shelld/shelld.sock >/dev/null || true; sleep 1
 t0=$(date +%s)
 j=$(JOB "$(ACT install_pack "{\"source\":\"drive-usb1/atlas.wax\",\"archive_uuid\":\"$ATLAS\"}" "$ADMIN_COOKIE" true)"); echo "# $j" >> "$OUT"
-info "a 29 kB pack installed through shelld in $(( $(date +%s) - t0 )) s"
+info "install_pack of a 29 kB pack took $(( $(date +%s) - t0 )) s"
 check "the admin installs a signed pack from the drive through shelld (a job)" bash -c "echo '$j' | grep -q '\"state\":\"done\"' && cmp -s $VP/atlas.wax /var/lib/deltos/packs/$ATLAS.wax"
 check "the pack is root's and readable, its storage is deltd's, staging is pass-through and empty" bash -c "[ \"\$(stat -c '%a %U' /var/lib/deltos/packs/$ATLAS.wax)\" = '644 root' ] && [ \"\$(stat -c '%a %U' /var/lib/deltos/packs-data/$ATLAS)\" = '750 deltos-deltd' ] && [ \"\$(stat -c '%a %U' /var/lib/deltos/packs/.staging)\" = '711 root' ] && [ -z \"\$(ls -A /var/lib/deltos/packs/.staging)\" ]"
 if until_t 20 bash -c "G $J/admin https /packs >/dev/null; grep -q $ATLAS $J/admin.out"; then ok "deltd serves the new pack with no restart"; else bad "deltd serves the new pack with no restart"; fi

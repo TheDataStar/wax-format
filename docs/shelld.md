@@ -193,6 +193,16 @@ a drive on an admin's request.
   for packs on a drive (§7); the catalog's download folder (B4/B13), peers
   (D8) and uploads (`stage_upload`, whose trust is open) add origins to the
   same listing when they exist.
+- **The capability record.** The fit checks (§4.1 step 4, §7.2 step 3)
+  read `/var/lib/deltos/capability.json` (contract §9), which Track E's
+  provisioning tool is to write at first boot. That tool is not built, so
+  on a box set up today nothing writes the record and every add-on and
+  pack install ends `not_enough_resources` ("the box has not measured
+  itself yet"), never guessed. Found by the emulated box run of
+  2026-11-24; its test writes a stand-in from the machine's own measured
+  RAM, storage and architecture. The profile in it is a provisioning
+  choice, not a measurement, which is why shelld does not write the record
+  itself.
 - **`mount_removable`**: rule 19 allows only "the filesystem types Track E
   names", and Track E names none. Until it does, shelld lists any mount point
   under `/run/deltos/drives/` as a drive (root at the console can mount one
@@ -430,5 +440,20 @@ listed and refused for want of a key, and the log as rule 12 says.
 (results in the project files, `vm-results-2026-11-23/`). The backup through
 shelld took 25 s under emulation. Shelld itself used **3.3 MiB** of memory
 (resident) idle and **3.3 MiB** after every check, peak 3.3 MiB.
+**Packs on the emulated box, 2026-11-24:** with a throwaway test key
+(`examples/vm_test_pack`, never in an image) the box lists the packs on a
+drive and which are signed, refuses one while it has no pack key, installs
+the signed one as a job (the file byte for byte, `0644 root`, its storage
+`0750 deltos-deltd`, staging `0711` and empty), `deltd` serves it with no
+restart, an appended edition installs as an update and is rolled back byte
+for byte with its own signature, an unsigned pack is refused, removal needs
+the password again and then takes the pack and its storage, `deltd` stops
+serving it, and the older edition is then refused `failed_rollback`.
+**149 of 149 checks pass** (results in the project files,
+`vm-results-2026-11-24/`). The first run found that nothing writes the
+capability record yet (§6); the test now writes a stand-in. `install_pack`
+of a 29 kB pack took 10 s under emulation, the job's one-second polling
+included. Shelld's memory: 3.4 MiB idle, 3.4 MiB after every check.
+
 A base manifest for shelld (`system/apps/`) waits for its storage figure,
 since the action log's growth has not been measured.
