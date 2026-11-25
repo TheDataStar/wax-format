@@ -12,6 +12,7 @@ use clap::Parser;
 use deltos_identity::protocol::uid_of;
 use deltos_shelld::addons::{self, Trust};
 use deltos_shelld::drives::DrivesDir;
+use deltos_shelld::packs::{self, Trust as PackTrust};
 use deltos_shelld::log::ActionLog;
 use deltos_shelld::{Config, NetPaths, Shell};
 
@@ -53,6 +54,33 @@ struct Args {
     /// Another folder add-on bundles are listed from, as NAME=DIR.
     #[arg(long)]
     addon_source: Vec<String>,
+    /// The minisign public key packs must be signed with (Track F §8, "the
+    /// project key"). Without it, every pack install is refused.
+    #[arg(long)]
+    pack_key: Option<PathBuf>,
+    /// Another folder packs are listed from, as NAME=DIR.
+    #[arg(long)]
+    pack_source: Vec<String>,
+    /// The helper that reads untrusted packs (rule 18).
+    #[arg(long, default_value = "/usr/lib/deltos/bin/deltos-pack-check")]
+    pack_check: PathBuf,
+    /// The helper's own user (and group of the same name). Required when
+    /// shelld runs as root: the helper never runs as root.
+    #[arg(long, default_value = "deltos-packcheck")]
+    pack_check_user: String,
+}
+
+/// The uid and primary gid of a user.
+fn ids_of(name: &str) -> Option<(u32, u32)> {
+    let c = std::ffi::CString::new(name).ok()?;
+    // SAFETY: getpwnam returns null or a pointer to a static passwd record,
+    // read immediately and not kept.
+    let p = unsafe { libc::getpwnam(c.as_ptr()) };
+    if p.is_null() {
+        None
+    } else {
+        Some(unsafe { ((*p).pw_uid, (*p).pw_gid) })
+    }
 }
 
 /// What a restore stops and starts (the same as `deltos-backup` at the console).
@@ -113,6 +141,26 @@ fn run(a: Args) -> Result<(), String> {
             Trust::none()
         }
     };
+    let mut pack_folders = Vec::new();
+    for s in &a.pack_source {
+        let (n, d) = s.split_once('=').ok_or_else(|| format!("--pack-source {s:?}: NAME=DIR"))?;
+        pack_folders.push((n.to_string(), PathBuf::from(d)));
+    }
+    let pack_trust = match &a.pack_key {
+        Some(p) => PackTrust::from_file(p).map_err(|e| e.to_string())?,
+        None => {
+            eprintln!("deltos-shelld: no --pack-key: pack installs will be refused");
+            PackTrust::none()
+        }
+    };
+    let am_root = unsafe { libc::geteuid() } == 0;
+    let helper_user = match ids_of(&a.pack_check_user) {
+        Some((0, _)) => return Err(format!("--pack-check-user {:?} is root; the pack checker never runs as root", a.pack_check_user)),
+        Some(ids) => Some(ids),
+        None if am_root => return Err(format!("no user {:?}: the pack checker would run as root", a.pack_check_user)),
+        None => None,
+    };
+    let data_owner = if am_root { ids_of(&a.deltd_user) } else { None };
     let log = ActionLog::open(&a.action_log).map_err(|e| format!("{}: {e}", a.action_log.display()))?;
     let backup = if system {
         deltos_backup::Layout::system()
@@ -129,6 +177,11 @@ fn run(a: Args) -> Result<(), String> {
         addon_folders: folders,
         drives: DrivesDir(a.drives),
         trust,
+        packs: packs::Layout::under(&a.root),
+        pack_trust,
+        pack_check: packs::Helper { program: a.pack_check, user: if am_root { helper_user } else { None } },
+        pack_data_owner: data_owner,
+        pack_folders,
     };
     let services: Box<dyn deltos_backup::Services + Send> =
         if system { Box::new(Systemd) } else { Box::new(deltos_backup::restore::NoServices) };

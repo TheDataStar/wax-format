@@ -9,11 +9,20 @@ license = "MIT"
 name = "deltos-shelld"
 path = "src/bin/deltos-shelld.rs"
 
+# The helper that reads untrusted packs for shelld, as its own user
+# (privilege boundary rule 18; docs/shelld.md section 7.1).
+[[bin]]
+name = "deltos-pack-check"
+path = "src/bin/deltos-pack-check.rs"
+
 [dependencies]
 deltos-net = { path = "../deltos-net" }
 deltos-backup = { path = "../deltos-backup" }
 deltos-identity = { path = "../deltos-identity" }
 deltos-apps = { path = "../deltos-apps" }
+wax-core = { path = "../wax-core" }
+# Pure helpers only: CalVer and the retired-tier floors (contract §11).
+wax-builder = { path = "../wax-builder" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

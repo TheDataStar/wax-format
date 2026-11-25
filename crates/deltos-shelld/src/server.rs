@@ -12,7 +12,7 @@
 //!   `{"job": id}` at once.
 //! * `job` `{job, session, over_https}`: a job's state, for the person who started it.
 //! * `list` `{listing, session, over_https}`: `addons`, `addon_sources`,
-//!   `drives`, `leases`, `action_log`, each behind its permission.
+//!   `packs`, `pack_sources`, `drives`, `leases`, `action_log`, each behind its permission.
 //!
 //! **Callers** (rules 1 and 2): the socket is `0660` in a folder whose group
 //! is `deltos-shellc`, and on every connection the caller's user id is read
@@ -38,6 +38,7 @@ use serde_json::{json, Value};
 
 use crate::action::{Action, BUILT, NOT_BUILT};
 use crate::addons::{self, Folders, Sources};
+use crate::packs::{self, Sources as _};
 use crate::check::Ask;
 use crate::drives::DrivesDir;
 use crate::log::{now, ActionLog, Entry};
@@ -66,6 +67,15 @@ pub struct Config {
     pub addon_folders: Vec<(String, PathBuf)>,
     pub drives: DrivesDir,
     pub trust: addons::Trust,
+    pub packs: packs::Layout,
+    /// The key packs must be signed with (Track F §8).
+    pub pack_trust: packs::Trust,
+    /// `deltos-pack-check`, run as its own user (rule 18).
+    pub pack_check: packs::Helper,
+    /// Owner of each pack's writable storage: deltd's user and group.
+    pub pack_data_owner: Option<(u32, u32)>,
+    /// Extra folders packs are listed from, by name (`--pack-source`).
+    pub pack_folders: Vec<(String, PathBuf)>,
 }
 
 impl Config {
@@ -73,6 +83,12 @@ impl Config {
         let mut o = self.addon_folders.clone();
         o.extend(self.drives.origins());
         Folders(o)
+    }
+    /// Packs are listed from each drive's top folder (later: catalog, peers, uploads).
+    fn pack_sources(&self) -> packs::Folders {
+        let mut o = self.pack_folders.clone();
+        o.extend(self.drives.origins());
+        packs::Folders(o)
     }
 }
 
@@ -99,6 +115,7 @@ enum Authz {
     Net(deltos_net::Authorized),
     Backup(deltos_backup::Authorized),
     Addon(addons::Authorized),
+    Pack(packs::Authorized),
 }
 
 struct Work {
@@ -245,6 +262,7 @@ impl Shell {
             Action::Net(n) => deltos_net::actions::authorize(n, &caller, &ask).map(Authz::Net),
             Action::Backup(b) => deltos_backup::actions::authorize(b, &caller, &ask).map(Authz::Backup),
             Action::Addon(x) => addons::authorize(x, &caller, &ask).map(Authz::Addon),
+            Action::Pack(x) => packs::authorize(x, &caller, &ask).map(Authz::Pack),
         };
         let authz = match authz {
             Ok(z) => z,
@@ -259,6 +277,7 @@ impl Shell {
             Authz::Net(z) => z.profile_id().to_string(),
             Authz::Backup(z) => z.by().to_string(),
             Authz::Addon(z) => z.by().to_string(),
+            Authz::Pack(z) => z.by().to_string(),
         };
         if long {
             let id = random_id();
@@ -334,6 +353,30 @@ impl Shell {
                 self.reader(req, addons::MANAGE)?;
                 Ok(json!({ "bundles": self.cfg.sources().list() }))
             }
+            "packs" => {
+                self.reader(req, packs::PERMISSION)?;
+                let pk = &self.cfg.packs;
+                let reg = packs::Register::load(pk).map_err(|e| Failure::new(e.code(), e.to_string()))?;
+                let files = packs::installed_files(pk).map_err(|e| Failure::new(e.code(), e.to_string()))?;
+                let items: Vec<Value> = files
+                    .iter()
+                    .map(|f| {
+                        let r = reg.packs.get(&f.archive_uuid);
+                        json!({
+                            "archive_uuid": f.archive_uuid, "file": f.file, "bytes": f.bytes,
+                            "name": r.map(|r| r.name.clone()),
+                            "version": r.map(|r| r.edition.version.clone()),
+                            "can_roll_back": pk.packs.join(format!("{}{}", f.file, packs::PREVIOUS_SIG_SUFFIX)).is_file(),
+                            "installed_by_shelld": r.is_some(),
+                        })
+                    })
+                    .collect();
+                Ok(json!({ "packs": items }))
+            }
+            "pack_sources" => {
+                self.reader(req, packs::PERMISSION)?;
+                Ok(json!({ "packs": self.cfg.pack_sources().list() }))
+            }
             "drives" => {
                 self.reader(req, deltos_backup::actions::PERMISSION)?;
                 Ok(json!({ "drives": self.cfg.drives.list() }))
@@ -380,6 +423,20 @@ fn run(cfg: &Config, jobs: &Mutex<BTreeMap<String, Job>>, finished: &Mutex<VecDe
                 deltos_backup::actions::Outcome::Restored(a) => json!({ "restored": a }),
             })
             .map_err(|e| Failure::new(e.code(), e.to_string())),
+        Authz::Pack(z) => {
+            let mut progress = |s: &str| set_job(jobs, &w.job, |j| j.state = s.into());
+            let env = packs::Env {
+                layout: &cfg.packs,
+                sources: &cfg.pack_sources(),
+                trust: &cfg.pack_trust,
+                checker: &cfg.pack_check,
+                measure: &packs::Measured(&cfg.packs),
+                data_owner: cfg.pack_data_owner,
+            };
+            packs::perform(&env, z, &mut progress)
+                .map(|o| serde_json::to_value(o).unwrap())
+                .map_err(|e| Failure::new(e.code(), e.to_string()))
+        }
         Authz::Addon(z) => {
             let mut progress = |s: &str| set_job(jobs, &w.job, |j| j.state = s.into());
             addons::perform(&cfg.addons, z, &cfg.sources(), &cfg.trust, &addons::Measured(&cfg.addons), &mut progress)
@@ -405,7 +462,12 @@ fn run(cfg: &Config, jobs: &Mutex<BTreeMap<String, Job>>, finished: &Mutex<VecDe
                     j.result = Some(v.clone());
                 }
                 Err(f) => {
-                    j.state = if f.code == "signature_invalid" { "failed_signature".into() } else { "failed".into() };
+                    // contract §7.2: verification failures are terminal states of their own
+                    j.state = match f.code.as_str() {
+                        "signature_invalid" => "failed_signature".into(),
+                        "edition_older" => "failed_rollback".into(),
+                        _ => "failed".into(),
+                    };
                     j.error = Some(json!({ "code": f.code, "detail": f.detail }));
                 }
             }

@@ -37,7 +37,7 @@ pub use header::WaxHeader;
 pub use model::{Compression, Entry, EntryContent, EntryInput, PassageHit, Resolved, SearchHit, Suggestion};
 pub use passage::Passage;
 pub use reader::{Entries, HeaderSource, ReadOptions, WaxReader};
-pub use writer::{rollback_last_update, EntryMeta, EntryStats, FinishStats, RollbackStats, StreamingWriter, WaxWriter};
+pub use writer::{apply_rollback, rollback_last_update, rollback_plan, RollbackPlan, EntryMeta, EntryStats, FinishStats, RollbackStats, StreamingWriter, WaxWriter};
 
 /// Magic bytes at offset 0: ASCII `"WAX1"`.
 pub const WAX_MAGIC: [u8; 4] = *b"WAX1";

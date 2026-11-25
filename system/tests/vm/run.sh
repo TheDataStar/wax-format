@@ -12,8 +12,8 @@
 #          libpcsclite1, wireless-regdb
 # --bin-dir  aarch64 builds of deltd, deltos-net-render, deltos-net-provision,
 #          deltos-identityd, deltos-identity-provision, deltos-tls-provision,
-#          deltos-backup, deltos-shelld and the example
-#          configure_ap_standin
+#          deltos-backup, deltos-shelld, deltos-pack-check and the examples
+#          configure_ap_standin and vm_test_pack
 # --pack   any .wax pack holding a page that matches "evaporation"
 #
 # Needs qemu-system-aarch64, AAVMF/QEMU_EFI firmware, qemu-img,
@@ -42,8 +42,10 @@ echo "work dir: $WORK"
 SH=$WORK/share
 rm -rf "$SH"; mkdir -p "$SH/bin" "$SH/debs" "$SH/results" "$SH/system"
 cp -a "$SYSTEM/." "$SH/system/"
-for b in deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision deltos-backup deltos-shelld; do cp "$BIN/$b" "$SH/bin/"; done
+for b in deltd deltos-net-render deltos-net-provision deltos-identityd deltos-identity-provision deltos-tls-provision deltos-backup deltos-shelld deltos-pack-check; do cp "$BIN/$b" "$SH/bin/"; done
 cp "$BIN/examples/configure_ap_standin" "$SH/bin/" 2>/dev/null || cp "$BIN/configure_ap_standin" "$SH/bin/"
+# the throwaway signed test packs (deltos-shelld example; docs/shelld.md §7)
+cp "$BIN/examples/vm_test_pack" "$SH/bin/" 2>/dev/null || cp "$BIN/vm_test_pack" "$SH/bin/"
 # optional: identityd's sign-in burst measurement (deltos-identity example)
 cp "$BIN/examples/signin_burst" "$SH/bin/" 2>/dev/null || true
 # The virtual radio's kernel modules come from linux-modules-extra. Only the

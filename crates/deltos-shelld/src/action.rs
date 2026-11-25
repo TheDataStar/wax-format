@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::addons;
+use crate::packs;
 use deltos_backup::Passphrase;
 use deltos_net::{Secret, Target};
 
@@ -19,6 +20,7 @@ pub enum Action {
     Net(deltos_net::Action),
     Backup(deltos_backup::Action),
     Addon(addons::Action),
+    Pack(packs::Action),
 }
 
 /// Built and dispatched by this shelld (privilege boundary §8). The rest of
@@ -39,13 +41,13 @@ pub const BUILT: &[&str] = &[
     "roll_back_addon",
     "remove_addon",
     "set_addon_running",
+    "install_pack",
+    "remove_pack",
+    "roll_back_pack",
 ];
 
 /// On privilege boundary §8, not built yet (`docs/shelld.md` §6 says why each waits).
 pub const NOT_BUILT: &[&str] = &[
-    "install_pack",
-    "remove_pack",
-    "roll_back_pack",
     "mount_removable",
     "eject_removable",
     "convert_zim_from_drive",
@@ -154,6 +156,18 @@ struct Running {
     on: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstallPack {
+    source: String,
+    archive_uuid: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackId {
+    archive_uuid: String,
+}
+
 fn pass(s: String) -> Result<Passphrase, String> {
     Passphrase::new(s).map_err(|e| e.to_string())
 }
@@ -217,6 +231,12 @@ impl Action {
                 let x: Running = args(a)?;
                 Action::Addon(addons::Action::SetAddonRunning { id: x.id, on: x.on })
             }
+            "install_pack" => {
+                let x: InstallPack = args(a)?;
+                Action::Pack(packs::Action::InstallPack { source: x.source, archive_uuid: x.archive_uuid })
+            }
+            "remove_pack" => Action::Pack(packs::Action::RemovePack { archive_uuid: args::<PackId>(a)?.archive_uuid }),
+            "roll_back_pack" => Action::Pack(packs::Action::RollBackPack { archive_uuid: args::<PackId>(a)?.archive_uuid }),
             n if NOT_BUILT.contains(&n) => return Err(format!("{n} is on the action list but not built yet")),
             n => return Err(format!("{n:?} is not an action")),
         })
@@ -227,6 +247,7 @@ impl Action {
             Action::Net(a) => a.name(),
             Action::Backup(a) => a.name(),
             Action::Addon(a) => a.name(),
+            Action::Pack(a) => a.name(),
         }
     }
 
@@ -235,6 +256,7 @@ impl Action {
             Action::Net(_) => deltos_net::actions::PERMISSION,
             Action::Backup(_) => deltos_backup::actions::PERMISSION,
             Action::Addon(a) => a.permission(),
+            Action::Pack(a) => a.permission(),
         }
     }
 
@@ -243,6 +265,7 @@ impl Action {
             Action::Net(a) => a.needs_reconfirm(),
             Action::Backup(a) => a.needs_reconfirm(),
             Action::Addon(a) => a.needs_reconfirm(),
+            Action::Pack(a) => a.needs_reconfirm(),
         }
     }
 
@@ -254,6 +277,7 @@ impl Action {
             Action::Net(a) => a.args_digest(),
             Action::Backup(a) => a.args_digest(),
             Action::Addon(a) => a.args_digest(),
+            Action::Pack(a) => a.args_digest(),
         }
     }
 
@@ -263,6 +287,7 @@ impl Action {
             Action::Net(_) => false,
             Action::Backup(_) => true,
             Action::Addon(a) => a.is_long(),
+            Action::Pack(a) => a.is_long(),
         }
     }
 
@@ -277,6 +302,7 @@ impl Action {
             Action::Net(a) => format!("{} {}", a.name(), a.canonical_args().replace('\n', " ")),
             Action::Backup(a) => a.summary(),
             Action::Addon(a) => a.summary(),
+            Action::Pack(a) => a.summary(),
         }
     }
 }

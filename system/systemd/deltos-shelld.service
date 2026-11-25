@@ -23,8 +23,11 @@ NotifyAccess=main
 User=root
 Group=root
 UMask=0027
-# The add-on signing key: the project's public key, shipped in the image.
-# Until the image carries one, every add-on install is refused (docs/shelld.md §4.3).
+# The signing keys: the project's public keys, shipped in the image as
+# "--addon-key FILE --pack-key FILE" in /usr/lib/deltos/shelld.env. Until the
+# image carries them, every add-on and pack install is refused
+# (docs/shelld.md §4.3, §7.3). Packs are read by deltos-pack-check, which
+# shelld starts as deltos-packcheck; it inherits this unit's lack of network.
 Environment=DELTOS_SHELLD_KEY_ARGS=
 EnvironmentFile=-/usr/lib/deltos/shelld.env
 ExecStart=/usr/lib/deltos/bin/deltos-shelld --socket /run/deltos/shelld/shelld.sock --identityd /run/deltos/identity/identityd.sock --action-log /var/lib/deltos/shelld/actions.log $DELTOS_SHELLD_KEY_ARGS
