@@ -7,6 +7,7 @@
 pub mod capacity;
 pub mod fit;
 pub mod manifest;
+pub mod measure;
 
 pub use manifest::{parse, AppManifest, ReadError};
 

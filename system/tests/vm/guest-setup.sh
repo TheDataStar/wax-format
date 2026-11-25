@@ -42,6 +42,21 @@ sleep 5
 } > $OUT
 systemctl stop deltos-box.target
 
+# What the box runs (contract §3), chosen once; the box measures itself
+# (docs/box-capability.md). A 2 GB machine is below Community Hub's floor.
+if /usr/lib/deltos/bin/deltos-capability provision --profile community_hub 2>> $OUT; then
+  echo "capability_floor_refused=no" >> $OUT
+else
+  echo "capability_floor_refused=yes" >> $OUT
+fi
+/usr/lib/deltos/bin/deltos-capability provision --profile classroom >> $OUT
+if /usr/lib/deltos/bin/deltos-capability provision --profile kiosk 2>/dev/null; then
+  echo "capability_reprovision_refused=no" >> $OUT
+else
+  echo "capability_reprovision_refused=yes" >> $OUT
+fi
+cp /var/lib/deltos/capability.json /root/capability-at-setup.json
+
 # Provision: the settings file a person setting up the box writes. Test values.
 cat > /root/network.conf <<'CONF'
 mode=hotspot

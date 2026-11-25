@@ -1,0 +1,47 @@
+# Step 0: the box measures itself (contract §2.2, §9; docs/box-capability.md).
+# Reads the memory, the drive, the architecture, the graphics device, the
+# radio and the clock again at every boot and rewrites
+# /var/lib/deltos/capability.json if anything changed, keeping the profile
+# chosen at setup. Runs before every DeltOS service, so the memory the
+# operating system itself uses (os_ram_bytes) is read with none running.
+#
+# Root, to see every process (to know none of ours is running) and to ask the
+# radio what it can do. No network: netlink only, to talk to the radio.
+# Skipped, not failed, on a box nobody has set up yet.
+[Unit]
+Description=DeltOS box measures itself (capability record)
+Documentation=https://github.com/TheDataStar/wax-format/blob/main/docs/box-capability.md
+ConditionPathExists=/var/lib/deltos/capability.json
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=deltos-hostapd.service deltos-dnsmasq.service deltos-identityd.service deltos-shelld.service deltos-deltd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+UMask=0022
+ExecStart=/usr/lib/deltos/bin/deltos-capability measure
+CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_NET_ADMIN
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/deltos
+InaccessiblePaths=-/var/lib/deltos/network -/var/lib/deltos/identity -/var/lib/deltos/ca -/var/lib/deltos/tls -/run/deltos/network
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=deltos-box.target

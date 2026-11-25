@@ -193,16 +193,14 @@ a drive on an admin's request.
   for packs on a drive (§7); the catalog's download folder (B4/B13), peers
   (D8) and uploads (`stage_upload`, whose trust is open) add origins to the
   same listing when they exist.
-- **The capability record.** The fit checks (§4.1 step 4, §7.2 step 3)
-  read `/var/lib/deltos/capability.json` (contract §9), which Track E's
-  provisioning tool is to write at first boot. That tool is not built, so
-  on a box set up today nothing writes the record and every add-on and
-  pack install ends `not_enough_resources` ("the box has not measured
-  itself yet"), never guessed. Found by the emulated box run of
-  2026-11-24; its test writes a stand-in from the machine's own measured
-  RAM, storage and architecture. The profile in it is a provisioning
-  choice, not a measurement, which is why shelld does not write the record
-  itself.
+- **The capability record** (built 2026-11-24, `docs/box-capability.md`).
+  The fit checks (§4.1 step 4, §7.2 step 3) read
+  `/var/lib/deltos/capability.json` (contract §9). `deltos-capability`
+  writes it when the box is set up, with the profile the person chose, and
+  measures the hardware again at every boot before shelld starts. Without
+  it every add-on and pack install ends `not_enough_resources` ("the box
+  has not measured itself yet"), never guessed. Shelld does not write it:
+  the profile is a setup choice, not something a key holder measures.
 - **`mount_removable`**: rule 19 allows only "the filesystem types Track E
   names", and Track E names none. Until it does, shelld lists any mount point
   under `/run/deltos/drives/` as a drive (root at the console can mount one
@@ -450,8 +448,9 @@ for byte with its own signature, an unsigned pack is refused, removal needs
 the password again and then takes the pack and its storage, `deltd` stops
 serving it, and the older edition is then refused `failed_rollback`.
 **149 of 149 checks pass** (results in the project files,
-`vm-results-2026-11-24/`). The first run found that nothing writes the
-capability record yet (§6); the test now writes a stand-in. `install_pack`
+`vm-results-2026-11-24/`). The first run found that nothing wrote the
+capability record (§6); the test wrote a stand-in until `deltos-capability`
+was built (`docs/box-capability.md`), and now provisions the real one (158 of 158 with it, 2026-11-24). `install_pack`
 of a 29 kB pack took 10 s under emulation, the job's one-second polling
 included. Shelld's memory: 3.4 MiB idle, 3.4 MiB after every check.
 
