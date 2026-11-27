@@ -18,7 +18,7 @@ use std::sync::Arc;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
-use crate::register::{Ctx, Error, NewProfile, Register};
+use crate::register::{Ctx, Error, NewEvent, NewProfile, ProgressBy, Register};
 
 /// Largest request line accepted (a profile with a long name is ~1 KiB).
 pub const MAX_LINE: usize = 16 * 1024;
@@ -49,6 +49,7 @@ pub const DELTD_CALLS: &[&str] = &[
     "change_password",
     "set_password",
     "issue_ticket",
+    "record_progress",
 ];
 
 /// `deltos-shelld`'s second check (privilege boundary §5 step 6) and the
@@ -137,6 +138,7 @@ fn dispatch(r: &Register, call: &str, q: &Value) -> Result<Value, Error> {
         "issue_ticket" => {
             to(r.issue_ticket(&ctx(q)?, &s("token")?, &s("password")?, &s("action")?, &s("args_digest")?)?)
         }
+        "record_progress" => to(r.record_progress(&arg::<ProgressBy>(q, "by")?, &arg::<NewEvent>(q, "event")?)?),
         "redeem_ticket" => to(r.redeem_ticket(&s("token")?, &s("ticket")?, &s("action")?, &s("args_digest")?)?),
         _ => Err(Error::Invalid(format!("no call {call:?}"))),
     }

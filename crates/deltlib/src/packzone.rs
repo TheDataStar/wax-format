@@ -120,6 +120,7 @@ pub async fn serve(
     };
     if !head && !session.guest && crate::reading::is_page(entry.mime.as_deref()) {
         record_visit(cfg, &session.profile_id, &pack, &entry);
+        crate::progress::record_entry_viewed(&ident, &host.pack_partition, &pack, &entry.path);
     }
     serve_entry(lib, cfg, pack, entry, codec, headers, head).await
 }

@@ -81,7 +81,10 @@ struct Cache {
 impl IdentitydLink {
     pub const CACHE: std::time::Duration = std::time::Duration::from_secs(5);
     /// Calls that read only; anything else empties the cache.
-    const READS: &'static [&'static str] = &["session", "session_for_partition", "tap_list", "password_allowed", "list_devices", "list_members"];
+    /// `record_progress` writes, but changes no session, so it keeps the cache
+    /// too (it runs on every page read).
+    const READS: &'static [&'static str] =
+        &["session", "session_for_partition", "tap_list", "password_allowed", "list_devices", "list_members", "record_progress"];
 
     pub fn new(socket: impl Into<std::path::PathBuf>) -> Self {
         IdentitydLink { client: deltos_identity::Client::new(socket), cache: Default::default() }
@@ -180,6 +183,9 @@ impl Identity for IdentitydLink {
 pub struct StaticIdentity {
     by_token: HashMap<String, (Session, String)>,
     by_partition: HashMap<String, Session>,
+    /// Progress events recorded through `record_progress`, with the person
+    /// they were credited to, for tests.
+    progress: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
 }
 
 #[derive(Deserialize)]
@@ -228,6 +234,11 @@ impl StaticIdentity {
         }
     }
 
+    /// The progress events recorded so far: `(profile_id, event)`.
+    pub fn recorded_progress(&self) -> Vec<(String, serde_json::Value)> {
+        self.progress.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let f: StaticFile = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -263,5 +274,31 @@ impl Identity for StaticIdentity {
             .values()
             .find(|(s, _)| s.profile_id == session.profile_id && s.browser_id == session.browser_id)
             .map(|(_, p)| p.clone())
+    }
+    /// Only `record_progress`, with identityd's rules for whose it is: the
+    /// live session named, never Guest; repeats of an event id ignored.
+    fn call(&self, req: &serde_json::Value) -> Result<serde_json::Value, CallError> {
+        let refused = |code: &str| CallError::Refused { code: code.into(), detail: None };
+        if req.get("call").and_then(|c| c.as_str()) != Some("record_progress") {
+            return Err(CallError::Unavailable("sign-in needs deltos-identityd; this is the development table".into()));
+        }
+        let by = &req["by"];
+        let s = if let Some(t) = by.get("token").and_then(|t| t.as_str()) {
+            self.session_by_token(t)
+        } else {
+            by.get("partition").and_then(|p| p.as_str()).and_then(|p| self.session_for_partition(p))
+        }
+        .ok_or_else(|| refused("not_signed_in"))?;
+        if s.guest {
+            return Err(refused("guest_not_allowed"));
+        }
+        let ev = req["event"].clone();
+        let mut all = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+        let same = |e: &serde_json::Value| e["event_id"] == ev["event_id"] && e["event_source"] == ev["event_source"];
+        if let Some(k) = all.iter().position(|(_, e)| same(e)) {
+            return Ok(serde_json::json!({ "inserted": false, "seq": k + 1 }));
+        }
+        all.push((s.profile_id, ev));
+        Ok(serde_json::json!({ "inserted": true, "seq": all.len() }))
     }
 }

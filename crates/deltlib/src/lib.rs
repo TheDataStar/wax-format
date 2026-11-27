@@ -34,6 +34,7 @@ pub mod library;
 pub mod me;
 pub mod packzone;
 pub mod personal;
+pub mod progress;
 pub mod reading;
 pub mod search;
 pub mod server;
