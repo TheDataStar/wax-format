@@ -3,7 +3,7 @@
   "info": {
     "title": "deltd API",
     "version": "1.0.0",
-    "description": "docs/deltd-api-v1.md. Implemented subset: Session (§6.1, sign-in through deltos-identityd, docs/identityd.md), Library (§6.2) and Search (§6.3) groups, /status, the outline and reader reads of Reading (§6.4) and the Personal group (§6.5, private to the signed-in person, not Guest, Cache-Control: no-store). Every endpoint except sign-in needs identityd's session cookie (delt_session, or __Host-delt_session over HTTPS). Every POST, PUT, PATCH and DELETE needs Origin equal to the WebOS origin and, once signed in, X-Delt-CSRF equal to the session's csrf_token. Pack content is served on pack hostnames, not here (§4)."
+    "description": "docs/deltd-api-v1.md. Implemented subset: Session (§6.1, sign-in through deltos-identityd, docs/identityd.md), Library (§6.2) and Search (§6.3) groups, /status, progress events (§8), the outline and reader reads of Reading (§6.4) and the Personal group (§6.5, private to the signed-in person, not Guest, Cache-Control: no-store). Every endpoint except sign-in needs identityd's session cookie (delt_session, or __Host-delt_session over HTTPS). Every POST, PUT, PATCH and DELETE needs Origin equal to the WebOS origin and, once signed in, X-Delt-CSRF equal to the session's csrf_token. Pack content is served on pack hostnames, not here (§4)."
   },
   "paths": {
     "/api/v1/status": {
@@ -2064,6 +2064,80 @@
             "$ref": "#/components/responses/Problem"
           },
           "404": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/api/v1/progress-events": {
+      "post": {
+        "summary": "Report pack_opened or pack_closed, or relay unit_completed or quiz_scored from a pack frame (deltd API §8.2)",
+        "x-permission": "Signed in, not Guest; the named pack hostname's partition must be the same person's on the same browser",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "event_id",
+                  "event_type",
+                  "pack_hostname"
+                ],
+                "properties": {
+                  "event_id": {
+                    "type": "string",
+                    "maxLength": 256
+                  },
+                  "event_type": {
+                    "type": "string",
+                    "maxLength": 256
+                  },
+                  "pack_hostname": {
+                    "type": "string"
+                  },
+                  "payload": {
+                    "type": "object",
+                    "description": "At most 4 KiB as JSON"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Recorded, or already recorded (same event_id)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "recorded": {
+                      "type": "boolean"
+                    },
+                    "seq": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "403": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "405": {
             "$ref": "#/components/responses/Problem"
           }
         }

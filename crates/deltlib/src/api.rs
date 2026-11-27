@@ -287,6 +287,14 @@ impl Api {
             if let Some(r) = self.me(method, &segs, &q, headers, body, conn).await {
                 return r;
             }
+            if segs == ["progress-events"] {
+                if *method != Method::POST {
+                    let mut r = Problem::new(StatusCode::METHOD_NOT_ALLOWED, "invalid_request", "Method not allowed.").response();
+                    r.headers_mut().insert(header::ALLOW, HeaderValue::from_static("POST"));
+                    return r;
+                }
+                return self.progress_events(headers, body, conn).await.unwrap_or_else(Problem::response);
+            }
         }
         if method != Method::GET && method != Method::HEAD {
             let mut r = Problem::new(StatusCode::METHOD_NOT_ALLOWED, "invalid_request", "Method not allowed.").response();

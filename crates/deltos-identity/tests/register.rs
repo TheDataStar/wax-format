@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
-use deltos_identity::register::{Clock, Error, Grant, Kind, NewProfile, Register};
+use deltos_identity::register::{Clock, Error, Grant, Kind, NewEvent, NewProfile, ProgressBy, Recorded, Register, PAYLOAD_MAX_BYTES};
 use deltos_identity::{policy, Ctx};
 
 struct Fake(Arc<AtomicI64>);
@@ -405,4 +405,96 @@ fn files_are_owner_only_and_no_secret_is_stored_in_the_clear() {
     for secret in [&s.session_token, s.device_token.as_ref().unwrap(), &s.browser_token, &card.code.replace('-', ""), &b.admin_pw] {
         assert!(!hay.contains(secret.as_str()), "a secret is stored in the clear");
     }
+}
+
+// --- progress events (contract §5.2) --------------------------------------------
+
+fn event(id: &str, kind: &str) -> NewEvent {
+    NewEvent {
+        event_source: "wax_pack".into(),
+        event_id: id.into(),
+        pack_id: "10000000-0000-4000-8000-000000000001".into(),
+        event_type: kind.into(),
+        payload: serde_json::json!({ "path": "A.html" }),
+    }
+}
+
+#[test]
+fn progress_comes_from_a_live_session_and_is_idempotent() {
+    let b = Box_::new();
+    let t = b.teacher("Okafor", "5a");
+    let amara = b.student(&t, "Amara", "5a");
+    let s = b.reg.sign_in_tap(&kiosk(), &amara).unwrap();
+    let by_token = ProgressBy::Token(s.session_token.clone());
+    let r1 = b.reg.record_progress(&by_token, &event("e1", "pack_opened")).unwrap();
+    assert_eq!(r1, Recorded { inserted: true, seq: 1 });
+    // the same event again (a retried request): nothing changes
+    assert_eq!(b.reg.record_progress(&by_token, &event("e1", "pack_opened")).unwrap(), Recorded { inserted: false, seq: 1 });
+    // through the pack hostname's partition, for entry_viewed
+    let by_part = ProgressBy::Partition(s.session.partition.clone());
+    assert_eq!(b.reg.record_progress(&by_part, &event("e2", "entry_viewed")).unwrap().seq, 2);
+    // an unknown type is stored verbatim, not refused
+    assert_eq!(b.reg.record_progress(&by_token, &event("e3", "badge_earned")).unwrap().seq, 3);
+    // seq is per person and per source
+    let k = NewEvent { event_source: "kolibri".into(), pack_id: "kolibri:ab:cd".into(), ..event("k1", "unit_completed") };
+    assert_eq!(b.reg.record_progress(&by_token, &k).unwrap().seq, 1);
+
+    let rows = b.reg.progress_events(&amara, "wax_pack", 0, 10).unwrap();
+    assert_eq!(rows.iter().map(|e| e.seq).collect::<Vec<_>>(), [1, 2, 3]);
+    assert!(rows.iter().all(|e| e.profile_id == amara), "always the session's person");
+    assert_eq!(rows[0].timestamp, 1_800_000_000_000, "milliseconds from the box's clock");
+    assert_eq!(rows[2].event_type, "badge_earned");
+    assert_eq!(b.reg.progress_events(&amara, "wax_pack", 2, 10).unwrap().len(), 1);
+
+    // signed out: no live session, nothing recorded
+    b.reg.sign_out(&s.session_token, None).unwrap();
+    assert_eq!(b.reg.record_progress(&by_token, &event("e4", "pack_closed")).unwrap_err(), Error::NotSignedIn);
+    assert_eq!(b.reg.record_progress(&by_part, &event("e5", "entry_viewed")).unwrap_err(), Error::NotSignedIn);
+    assert_eq!(b.reg.progress_events(&amara, "wax_pack", 0, 10).unwrap().len(), 3);
+}
+
+#[test]
+fn progress_refuses_guest_and_malformed_events() {
+    let b = Box_::new();
+    let a = b.admin();
+    let guest = b
+        .reg
+        .create_profile(
+            &https(),
+            &a,
+            &NewProfile { display_name: "Guest".into(), kind: Kind::Guest, sign_in_name: None, password: None, class_or_group: None, roles: vec![] },
+        )
+        .unwrap();
+    let g = b.reg.sign_in_tap(&kiosk(), &guest).unwrap();
+    assert_eq!(b.reg.record_progress(&ProgressBy::Token(g.session_token), &event("g1", "pack_opened")).unwrap_err(), Error::GuestNotAllowed);
+
+    let by = ProgressBy::Token(a);
+    let bad_source = NewEvent { event_source: "web".into(), ..event("x1", "pack_opened") };
+    assert!(matches!(b.reg.record_progress(&by, &bad_source), Err(Error::Invalid(_))));
+    let not_object = NewEvent { payload: serde_json::json!([1, 2]), ..event("x2", "pack_opened") };
+    assert!(matches!(b.reg.record_progress(&by, &not_object), Err(Error::Invalid(_))));
+    let big = NewEvent { payload: serde_json::json!({ "x": "y".repeat(PAYLOAD_MAX_BYTES) }), ..event("x3", "quiz_scored") };
+    assert!(matches!(b.reg.record_progress(&by, &big), Err(Error::Invalid(_))));
+    let no_id = event("", "pack_opened");
+    assert!(matches!(b.reg.record_progress(&by, &no_id), Err(Error::Invalid(_))));
+}
+
+#[test]
+fn a_schema_1_register_gains_progress_events_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let reg = Register::open(dir.path(), "home.deltos.lan").unwrap();
+        reg.provision_first_admin("Admin", "admin").unwrap();
+    }
+    let c = rusqlite::Connection::open(dir.path().join("identity.sqlite")).unwrap();
+    c.execute_batch("DROP TABLE progress_events; UPDATE meta SET value = '1' WHERE key = 'schema_version';").unwrap();
+    drop(c);
+    let reg = Register::open(dir.path(), "home.deltos.lan").unwrap();
+    assert!(reg.progress_events("anyone", "wax_pack", 0, 1).unwrap().is_empty());
+    drop(reg);
+    let c = rusqlite::Connection::open(dir.path().join("identity.sqlite")).unwrap();
+    let v: String = c.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
+    assert_eq!(v, "2");
+    let admins: i64 = c.query_row("SELECT count(*) FROM profiles", [], |r| r.get(0)).unwrap();
+    assert_eq!(admins, 1, "people are kept");
 }

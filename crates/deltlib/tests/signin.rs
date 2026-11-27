@@ -46,6 +46,7 @@ struct Box_ {
     lib: Arc<Library>,
     admin_pw: String,
     sock: PathBuf,
+    reg: Arc<Register>,
 }
 
 /// A browser: keeps the cookies the box sets, sends them back, and sends
@@ -86,9 +87,10 @@ fn boot() -> Box_ {
     let sock = dir.path().join("identityd.sock");
     let l = UnixListener::bind(&sock).unwrap();
     let me = unsafe { libc::getuid() };
-    std::thread::spawn(move || protocol::serve(l, reg, Callers { deltd: vec![me], shelld: vec![] }));
+    let served = Arc::clone(&reg);
+    std::thread::spawn(move || protocol::serve(l, served, Callers { deltd: vec![me], shelld: vec![] }));
     let app = router(AppState::new(Arc::clone(&lib), Arc::new(IdentitydLink::new(&sock)), WEBOS).with_https(true));
-    Box_ { _dir: dir, app, lib, admin_pw, sock }
+    Box_ { _dir: dir, app, lib, admin_pw, sock, reg }
 }
 
 fn origin(conn: &ConnInfo) -> String {
@@ -505,4 +507,46 @@ async fn a_device_that_trusts_the_downloaded_box_ca_reaches_both_zones() {
         s.read_to_end(&mut out).await.ok();
         assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 "), "{host}");
     }
+}
+
+/// Progress through the real sign-in service (deltd API §8): the phone's
+/// page reads become `entry_viewed`, the WebOS's report is credited to the
+/// signed-in student, and nothing is recorded once they sign out.
+#[tokio::test]
+async fn progress_events_reach_the_register_for_the_signed_in_person() {
+    let b = boot();
+    let mut t = b.teacher().await;
+    let amara = b.student(&mut t, "Amara").await;
+    let code = b.card(&mut t, &amara).await;
+    let mut phone = Browser::default();
+    let (s, _, _) = b.req(&mut phone, PHONE, "POST", "/api/v1/session", Some(json!({ "sign_in_code": code })), &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, p, _) = b.req(&mut phone, PHONE, "GET", &format!("/api/v1/packs/{PACK_ID}"), None, &[]).await;
+    let host = p["pack_hostname"].as_str().unwrap().to_string();
+    assert_eq!(b.pack_page(&host).await, StatusCode::OK);
+    let mut seen = vec![];
+    for _ in 0..100 {
+        seen = b.reg.progress_events(&amara, "wax_pack", 0, 10).unwrap();
+        if !seen.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(seen.len(), 1);
+    assert_eq!((seen[0].event_type.as_str(), seen[0].pack_id.as_str(), seen[0].seq), ("entry_viewed", PACK_ID, 1));
+
+    let ev = json!({ "event_id": "webos-1", "event_type": "pack_opened", "pack_hostname": host });
+    let (s, v, _) = b.req(&mut phone, PHONE, "POST", "/api/v1/progress-events", Some(ev.clone()), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!((v["recorded"].as_bool(), v["seq"].as_i64()), (Some(true), Some(2)));
+    let rows = b.reg.progress_events(&amara, "wax_pack", 0, 10).unwrap();
+    assert_eq!(rows[1].profile_id, amara);
+    assert_eq!(rows[1].event_type, "pack_opened");
+
+    let (s, _, _) = b.req(&mut phone, PHONE, "DELETE", "/api/v1/session", None, &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    let ev = json!({ "event_id": "webos-2", "event_type": "pack_closed", "pack_hostname": host });
+    let (s, _, _) = b.req(&mut phone, PHONE, "POST", "/api/v1/progress-events", Some(ev), &[]).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_eq!(b.reg.progress_events(&amara, "wax_pack", 0, 10).unwrap().len(), 2);
 }

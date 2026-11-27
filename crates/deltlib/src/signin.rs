@@ -40,7 +40,7 @@ const DEVICE: (&str, &str) = ("delt_device", "__Host-delt_device");
 /// The browser id cookie lives 400 days, the longest browsers keep one.
 const BROWSER_MAX_AGE: i64 = 400 * 86400;
 
-fn problem_of(e: CallError) -> Problem {
+pub(crate) fn problem_of(e: CallError) -> Problem {
     match e {
         CallError::Unavailable(d) => {
             Problem::new(StatusCode::SERVICE_UNAVAILABLE, "sign_in_unavailable", "Signing in is not available right now.")

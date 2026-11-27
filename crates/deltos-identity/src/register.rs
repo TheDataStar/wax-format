@@ -1,5 +1,5 @@
 //! The register: people, roles, sessions, sign-in cards, remembered devices,
-//! pack partitions and re-confirmation tickets, in one SQLite database
+//! pack partitions, re-confirmation tickets and progress events, in one SQLite database
 //! (contract §10: `/var/lib/deltos/identity/`).
 //!
 //! Every rule here is one of `docs/privilege-boundary.md` §4, §6 and §10,
@@ -17,7 +17,9 @@ use crate::policy;
 use crate::secret;
 
 /// The database's schema version (contract §10: refuse a newer one).
-pub const SCHEMA_VERSION: i64 = 1;
+/// 2 (2026-11-27): `progress_events` (contract §5.2), added to a schema-1
+/// register in place when it is opened.
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// The built-in role bundles (contract §4.2's seed values). `admin` holds
 /// every permission, including ones apps add later, as a property of the
@@ -250,13 +252,22 @@ pub struct TapEntry {
 
 /// A clock, replaceable in tests.
 pub trait Clock: Send + Sync {
+    /// Unix seconds.
     fn now(&self) -> i64;
+    /// Unix milliseconds (contract §5.2's timestamps); a clock that keeps
+    /// only seconds gives whole seconds.
+    fn now_ms(&self) -> i64 {
+        self.now().saturating_mul(1000)
+    }
 }
 
 pub struct SystemClock;
 impl Clock for SystemClock {
     fn now(&self) -> i64 {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    }
+    fn now_ms(&self) -> i64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
     }
 }
 
@@ -366,6 +377,80 @@ CREATE TABLE tickets(
 );
 "#;
 
+/// Contract §5.2's progress events (schema 2).
+const PROGRESS_SCHEMA: &str = r#"
+CREATE TABLE progress_events(
+    event_source TEXT NOT NULL,
+    event_id     TEXT NOT NULL,
+    profile_id   TEXT NOT NULL REFERENCES profiles(profile_id) ON DELETE CASCADE,
+    pack_id      TEXT NOT NULL,
+    event_type   TEXT NOT NULL,
+    timestamp    INTEGER NOT NULL,
+    seq          INTEGER NOT NULL,
+    payload      TEXT NOT NULL,
+    PRIMARY KEY (event_source, event_id),
+    UNIQUE (profile_id, event_source, seq)
+);
+CREATE INDEX progress_by_pack ON progress_events(pack_id, profile_id);
+"#;
+
+/// Contract §5.2's closed `event_source` list.
+pub const EVENT_SOURCES: &[&str] = &["wax_pack", "kolibri"];
+/// Contract §5.2's `event_type` list. Others are stored verbatim and left
+/// out of rollups, never rejected.
+pub const EVENT_TYPES: &[&str] = &["pack_opened", "pack_closed", "entry_viewed", "unit_completed", "quiz_scored"];
+/// Contract §5.2: a payload is a JSON object of at most 4 KiB serialized.
+pub const PAYLOAD_MAX_BYTES: usize = 4096;
+/// Bounds on the other text fields. Not contract values: they keep a row
+/// small and a malformed caller from storing anything large.
+pub const EVENT_FIELD_MAX_BYTES: usize = 256;
+
+/// Whose event this is: the live session it was delivered through
+/// (contract §5.2). Never a profile id from the caller.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressBy {
+    /// The API request's session cookie value.
+    Token(String),
+    /// The pack hostname's partition, for `entry_viewed` (deltd API §8.2).
+    Partition(String),
+}
+
+/// An event as delivered, before the register fills in who and when.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewEvent {
+    pub event_source: String,
+    pub event_id: String,
+    pub pack_id: String,
+    pub event_type: String,
+    #[serde(default = "empty_object")]
+    pub payload: serde_json::Value,
+}
+
+fn empty_object() -> serde_json::Value {
+    serde_json::Value::Object(Default::default())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Recorded {
+    /// `false`: an event with this `(event_source, event_id)` was already
+    /// recorded, and nothing changed (contract §5.2: insert-or-ignore).
+    pub inserted: bool,
+    pub seq: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgressEvent {
+    pub event_id: String,
+    pub profile_id: String,
+    pub event_source: String,
+    pub pack_id: String,
+    pub event_type: String,
+    pub timestamp: i64,
+    pub seq: i64,
+    pub payload: String,
+}
+
 fn valid_text(s: &str, what: &str, max: usize) -> Result<()> {
     if s.trim().is_empty() || s.len() > max || s.chars().any(char::is_control) {
         return Err(Error::Invalid(format!("{what} must be 1–{max} bytes of text")));
@@ -423,6 +508,7 @@ impl Register {
             c.query_row("SELECT count(*) FROM sqlite_master WHERE name='meta'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_meta {
             c.execute_batch(SCHEMA)?;
+            c.execute_batch(PROGRESS_SCHEMA)?;
             c.execute("INSERT INTO meta VALUES ('schema_version', ?1)", [SCHEMA_VERSION.to_string()])?;
             for (name, all, perms) in SEED_ROLES {
                 c.execute("INSERT INTO roles VALUES (?1, 1, ?2)", params![name, *all as i64])?;
@@ -439,6 +525,12 @@ impl Register {
                 return Err(Error::Internal(format!(
                     "the identity register is schema {v}, newer than this program's {SCHEMA_VERSION}; refusing to open it (contract §10)"
                 )));
+            }
+            if v < 2 {
+                // 1 -> 2 adds a table and changes nothing else, in one step
+                c.execute_batch(&format!(
+                    "BEGIN; {PROGRESS_SCHEMA} UPDATE meta SET value = '2' WHERE key = 'schema_version'; COMMIT;"
+                ))?;
             }
         }
         Ok(Register {
@@ -1213,6 +1305,89 @@ fn effective(c: &Connection, pid: &str) -> Result<(bool, Vec<Held>)> {
 fn holds_secure_only(c: &Connection, pid: &str) -> Result<bool> {
     let (all, perms) = effective(c, pid)?;
     Ok(all || perms.iter().any(|h| policy::is_secure_only(&h.permission)))
+}
+
+impl Register {
+    /// Record one progress event (contract §5.2) for the person whose live
+    /// session `by` names. Guest is refused (contract §5.1), as is anyone
+    /// not signed in. `timestamp` is the box's clock and `seq` the next for
+    /// this person and source, both assigned here. A repeat of an
+    /// `(event_source, event_id)` already recorded changes nothing.
+    pub fn record_progress(&self, by: &ProgressBy, ev: &NewEvent) -> Result<Recorded> {
+        if !EVENT_SOURCES.contains(&ev.event_source.as_str()) {
+            return Err(Error::Invalid(format!("event_source must be one of {}", EVENT_SOURCES.join(", "))));
+        }
+        valid_text(&ev.event_id, "event_id", EVENT_FIELD_MAX_BYTES)?;
+        valid_text(&ev.pack_id, "pack_id", EVENT_FIELD_MAX_BYTES)?;
+        valid_text(&ev.event_type, "event_type", EVENT_FIELD_MAX_BYTES)?;
+        if !ev.payload.is_object() {
+            return Err(Error::Invalid("payload must be a JSON object".into()));
+        }
+        let payload = ev.payload.to_string();
+        if payload.len() > PAYLOAD_MAX_BYTES {
+            return Err(Error::Invalid(format!("payload is over {PAYLOAD_MAX_BYTES} bytes")));
+        }
+        let session = match by {
+            ProgressBy::Token(t) => self.session(t)?,
+            ProgressBy::Partition(p) => self.session_for_partition(p)?,
+        }
+        .ok_or(Error::NotSignedIn)?;
+        if session.guest {
+            return Err(Error::GuestNotAllowed);
+        }
+        let now = self.clock.now_ms();
+        let mut c = self.db();
+        let tx = c.transaction()?;
+        let seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM progress_events WHERE profile_id = ?1 AND event_source = ?2",
+            params![session.profile_id, ev.event_source],
+            |r| r.get(0),
+        )?;
+        let n = tx.execute(
+            "INSERT OR IGNORE INTO progress_events
+                 (event_source, event_id, profile_id, pack_id, event_type, timestamp, seq, payload)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![ev.event_source, ev.event_id, session.profile_id, ev.pack_id, ev.event_type, now, seq, payload],
+        )?;
+        let out = if n == 1 {
+            Recorded { inserted: true, seq }
+        } else {
+            let seq = tx.query_row(
+                "SELECT seq FROM progress_events WHERE event_source = ?1 AND event_id = ?2",
+                params![ev.event_source, ev.event_id],
+                |r| r.get(0),
+            )?;
+            Recorded { inserted: false, seq }
+        };
+        tx.commit()?;
+        Ok(out)
+    }
+
+    /// One person's events from one source after `after_seq`, in order, at
+    /// most `limit`. For the box's own readers (the class progress view,
+    /// rollups); not a socket call.
+    pub fn progress_events(&self, profile_id: &str, source: &str, after_seq: i64, limit: usize) -> Result<Vec<ProgressEvent>> {
+        let c = self.db();
+        let mut st = c.prepare(
+            "SELECT event_id, profile_id, event_source, pack_id, event_type, timestamp, seq, payload
+             FROM progress_events WHERE profile_id = ?1 AND event_source = ?2 AND seq > ?3 ORDER BY seq LIMIT ?4",
+        )?;
+        let rows = st
+            .query_map(params![profile_id, source, after_seq, limit.min(i64::MAX as usize) as i64], |r| {
+                Ok(ProgressEvent {
+                    event_id: r.get(0)?,
+                    profile_id: r.get(1)?,
+                    event_source: r.get(2)?,
+                    pack_id: r.get(3)?,
+                    event_type: r.get(4)?,
+                    timestamp: r.get(5)?,
+                    seq: r.get(6)?,
+                    payload: r.get(7)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
 }
 
 #[cfg(unix)]
