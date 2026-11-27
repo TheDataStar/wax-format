@@ -26,6 +26,7 @@
 //! (the packs on disk), [`search`] (query building, fusion, completion),
 //! [`packzone`], [`api`], [`server`].
 
+pub mod admin;
 pub mod api;
 pub mod catalog;
 pub mod hostname;

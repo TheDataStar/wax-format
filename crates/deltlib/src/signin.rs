@@ -173,7 +173,7 @@ pub(crate) fn private_json(status: StatusCode, v: &Value, conn: &ConnInfo, cooki
 }
 
 impl Api {
-    fn ctx(&self, headers: &HeaderMap, conn: &ConnInfo) -> Value {
+    pub(crate) fn ctx(&self, headers: &HeaderMap, conn: &ConnInfo) -> Value {
         json!({
             "https": conn.https,
             "kiosk": conn.kiosk(),

@@ -3,6 +3,8 @@
 # WebOS hostname home.deltos.lan (contract §8), once the box has people to
 # serve: its identity source is deltos-identityd's socket, and both wait for
 # the first admin (docs/identityd.md §6). There is no anonymous mode.
+# Admin endpoints hand their actions to deltos-shelld on its socket (deltd
+# API §6.8); if shelld is not running they answer admin_unavailable.
 #
 # HTTPS (port 443) runs with the box's two certificates from
 # /var/lib/deltos/tls/ (contract §8), made just before by deltos-tls.service
@@ -26,7 +28,7 @@ Environment="DELTD_IDENTITY_ARGS=--identity-socket /run/deltos/identity/identity
 Environment="DELTD_TLS_ARGS=--tls-listen 0.0.0.0:443 --tls-cert-dir /var/lib/deltos/tls"
 EnvironmentFile=-/run/deltos/network/deltd.env
 ExecCondition=/usr/lib/deltos/libexec/deltos-deltd-ready
-ExecStart=/usr/lib/deltos/bin/deltd --webos-host ${DELTOS_WEBOS_HOST} --packs /var/lib/deltos/packs --catalog-dir /var/lib/deltos/b4 --state-dir /var/lib/deltos/deltd $DELTD_IDENTITY_ARGS $DELTD_TLS_ARGS $DELTD_CONNECTIVITY_ARGS
+ExecStart=/usr/lib/deltos/bin/deltd --webos-host ${DELTOS_WEBOS_HOST} --packs /var/lib/deltos/packs --catalog-dir /var/lib/deltos/b4 --state-dir /var/lib/deltos/deltd --shelld-socket /run/deltos/shelld/shelld.sock $DELTD_IDENTITY_ARGS $DELTD_TLS_ARGS $DELTD_CONNECTIVITY_ARGS
 Restart=on-failure
 RestartSec=2s
 RestartSteps=5
