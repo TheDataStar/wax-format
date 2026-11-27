@@ -266,6 +266,7 @@ Every error has the same JSON shape and a code from one closed list, so the WebO
 | `sign_in_failed` | 401 | Wrong name, password or card code; all said the same way (added 2026-11-21) |
 | `sign_in_unavailable` | 503 | The sign-in service cannot be reached; nobody is signed in meanwhile (added 2026-11-21) |
 | `certificate_unavailable` | 503 | The box has not made its certificates yet (added 2026-11-21, `docs/box-certificates.md`) |
+| `item_not_found` | 404 | No bookmark, highlight or list of yours with that id; another person's id answers the same (added 2026-11-27, §6.5) |
 | `pack_damaged` | 500 | A hash check failed; a health event is raised |
 | `app_not_found` | 404 | No installed add-on with that id, or no bundle at that source id (added 2026-11-23, `docs/shelld.md`) |
 | `does_not_fit` | 409 | The fit check refused the add-on; `detail` lists each reason (added 2026-11-23, `docs/base-addons-admin.md` §6) |
@@ -308,7 +309,7 @@ Not answered here, and not to be filled in by whoever implements first. Items th
 | # | Question | Why it matters | Recommendation | Owner |
 |---|---|---|---|---|
 | 1 | ~~**The WebOS hostname**~~ | Needs a fixed name every client can reach; this API shares it | **Answered 2026-11-21: `home.deltos.lan`** (contract §8) | Contract §8 |
-| 2 | **Where personal data lives** | Notes and lists need a path, a schema version (contract §10) and a place in backups | A `deltd` directory under `/var/lib/deltos/`, added to contract §10 and declared in `deltd`'s backup set (§15) | Contract §10 |
+| 2 | ~~**Where personal data lives**~~ | **Answered 2026-11-27 on this recommendation:** `/var/lib/deltos/deltd/personal.sqlite`, `deltd`'s alone, schema in `PRAGMA user_version` (contract §10); carried by every backup, and a newer schema refused on restore (`docs/box-backup.md` §3) | — | Closed |
 | 3 | **Who gets `lists.assign` by default** | Teachers need it on a fresh box | The shipped `teacher` bundle | Contract §4 |
 | 4 | ~~Teacher and admin passwords over plain HTTP~~ | **Decided 2026-11-20: HTTPS only** (§6.1) | — | Closed |
 | 5 | ~~How students sign in on their own phones~~ | **Decided 2026-11-20: teacher-issued sign-in card** (§6.1) | — | Closed |
@@ -318,7 +319,7 @@ Not answered here, and not to be filled in by whoever implements first. Items th
 | 9 | **Rate-limit numbers** (§9) | Fairness at 40 phones on 2 GB | Measure on the minimum spec. Sign-in runs on starting values meanwhile: 10 failures per 10 minutes per device and per person (`docs/identityd.md` §5) | Track D, Track F |
 | 10 | **Snippet speed on an SD card** | Snippets are cut at query time | Measure before release; ship titles-only results if too slow | Track D |
 | 11 | **Which PDF engine runs on the box** | Size and memory at 2 GB | Measure candidates against the floor | Track C |
-| 12 | **Section ids for highlights** | `outline` and anchors need the chunks table | Waits on format ask F3 | Track A |
+| 12 | ~~**Section ids for highlights**~~ | **Closed by SPEC v0.13 §5.10:** a section is a passage, and its id is the page path plus the passage ordinal; `outline` and highlight anchors use it (built 2026-11-27) | — | Closed |
 
 The first draft's questions 1 and 2 (the 32-profile limit and progress tied to a pack address) are closed: both are fixed in the contract (§12).
 
@@ -328,7 +329,7 @@ The first draft's questions 1 and 2 (the 32-profile limit and progress tied to a
 
 1. **Pack serving.** Hostname routing and the §4.4 checks, every row of §4.1, ETags per encoding, ranges, and the zstd and dictionary paths. Tested against the conformance corpus, including tombstones and rolled-back editions.
 2. **Sessions, library and search.** §6.1 through §6.3 and `/status`, with snippets behind a switch until their speed is measured. Tested with packs in several languages and tokenizers, and with a pack whose tokenizer the box cannot run.
-3. **Personal data and reading.** Bookmarks, highlights, lists, history, export of one's own data, reader mode, read-aloud, and the three progress paths. Highlights are tested across a real edition update, including the flagged case.
+3. **Personal data and reading.** Bookmarks, highlights, lists, history, export of one's own data, reader mode, read-aloud, and the three progress paths. Highlights are tested across a real edition update, including the flagged case. *Built 2026-11-27 except read-aloud and the progress paths:* §6.5 in full and `outline` and `reader` from §6.4 (`crates/deltlib/src/me.rs`, `personal.rs`, `reading.rs`; `tests/personal.rs`). History is recorded by `deltd` as it serves a page on the person's pack hostname, the same path as `entry_viewed` (§8.2). Read-aloud waits on a measured text-to-speech engine; the progress paths wait on where `identityd` keeps progress events (contract §5.2, §10).
 4. **Admin, Classroom and export.** Every §6.8 endpoint through `deltos-shelld`, built to `docs/privilege-boundary.md`. Classroom lists, then HTML, EPUB and PDF export.
 
 **In CI on every change:**

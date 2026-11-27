@@ -234,10 +234,11 @@ fn sqlite_version(path: &Path, sql: &str) -> Result<Option<i64>> {
 
 /// Contract §10: refuse state newer than the programs on this box.
 fn check_versions(state: &Path) -> Result<()> {
-    let checks: [(&str, &str, i64, &str); 3] = [
+    let checks: [(&str, &str, i64, &str); 4] = [
         (set::IDENTITY_DB, "SELECT value FROM meta WHERE key='schema_version'", deltos_identity::register::SCHEMA_VERSION, "the register of people"),
         (set::NETWORK_DB, "PRAGMA user_version", deltos_net::registry::REGISTRY_SCHEMA_VERSION, "the network settings"),
         (set::CATALOG_DB, "PRAGMA user_version", deltlib::catalog::CATALOG_SCHEMA_VERSION, "the pack catalog"),
+        (set::PERSONAL_DB, "PRAGMA user_version", deltlib::personal::PERSONAL_SCHEMA_VERSION, "people's bookmarks, notes and history"),
     ];
     for (rel, sql, ours, what) in checks {
         if let Some(v) = sqlite_version(&state.join(rel), sql)? {

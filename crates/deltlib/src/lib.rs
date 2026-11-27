@@ -14,6 +14,13 @@
 //!   forwards the session group (§6.1) and checks every write ([`signin`]),
 //!   and serves HTTPS itself ([`tls`]); docs/identityd.md.
 //!
+//! * **Step 3, personal data and reading — built 2026-11-27 except
+//!   read-aloud and the progress events.** Each person's bookmarks,
+//!   highlights with notes (re-found after an update, flagged if not),
+//!   reading lists, history (recorded as pages are served) and their export
+//!   ([`personal`], [`me`]); page outlines and reader mode from the page's
+//!   passages ([`reading`]).
+//!
 //! Modules: [`hostname`] (pack hostnames), [`identity`] (what `deltd` asks
 //! `identityd`), [`catalog`] (`pack_index`/`pack_generation`), [`library`]
 //! (the packs on disk), [`search`] (query building, fusion, completion),
@@ -24,7 +31,10 @@ pub mod catalog;
 pub mod hostname;
 pub mod identity;
 pub mod library;
+pub mod me;
 pub mod packzone;
+pub mod personal;
+pub mod reading;
 pub mod search;
 pub mod server;
 pub mod signin;

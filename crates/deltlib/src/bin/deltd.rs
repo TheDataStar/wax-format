@@ -22,6 +22,11 @@ struct Args {
     /// (contract §10: /var/lib/deltos/b4/).
     #[arg(long, default_value = "/var/lib/deltos/b4")]
     catalog_dir: PathBuf,
+    /// deltd's own state directory, which holds each person's bookmarks,
+    /// highlights, lists and history in personal.sqlite (contract §10:
+    /// /var/lib/deltos/deltd/, answered 2026-11-27).
+    #[arg(long, default_value = "/var/lib/deltos/deltd")]
+    state_dir: PathBuf,
     /// The WebOS hostname under deltos.lan (contract §8: home.deltos.lan).
     #[arg(long)]
     webos_host: String,
@@ -68,6 +73,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&a.catalog_dir)?;
     let catalog = Catalog::open(&a.catalog_dir.join("deltd-pack-hostnames.sqlite"))?;
     let lib = Arc::new(Library::new(&a.packs, catalog, a.readers_per_pack));
+    std::fs::create_dir_all(&a.state_dir)?;
+    let personal = Arc::new(deltlib::personal::Store::open(&a.state_dir.join(deltlib::personal::PERSONAL_DB))?);
     let r = lib.refresh()?;
     eprintln!("deltd: {} packs, {} damaged", r.added.len(), r.damaged.len());
     let ident: Arc<dyn Identity> = match (&a.identity_socket, &a.dev_sessions) {
@@ -114,6 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         AppState::new(lib, ident, &a.webos_host)
             .with_connectivity_checks(a.answer_connectivity_checks)
             .with_https(tls.is_some())
+            .with_personal(Some(personal))
             .with_ca_cert(a.tls_cert_dir.as_ref().map(|d| d.join("ca.crt"))),
     );
     let listener = tokio::net::TcpListener::bind(a.listen).await?;

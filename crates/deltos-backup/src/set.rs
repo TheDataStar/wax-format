@@ -33,6 +33,9 @@ pub const IDENTITY_DB: &str = "identity/identity.sqlite";
 pub const NETWORK_DB: &str = "network/registry.sqlite";
 /// deltd's pack-hostname catalog (contract §10's B4 directory).
 pub const CATALOG_DB: &str = "b4/deltd-pack-hostnames.sqlite";
+/// Each person's bookmarks, highlights, lists and history (contract §10,
+/// deltd API §6.5): carried, never shown, by a backup.
+pub const PERSONAL_DB: &str = "deltd/personal.sqlite";
 /// The box's certificate authority (docs/box-certificates.md).
 pub const CA_DIR: &str = "ca";
 pub const CA_KEY: &str = "ca/ca.key";

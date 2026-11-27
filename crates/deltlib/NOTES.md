@@ -76,3 +76,28 @@ measurement shows CPU becoming the limit.
 ## Not decided here (still open in the contract)
 
 The WebOS hostname (`--webos-host` is required and has no default), session lengths, rate-limit numbers, translated error pages for the pack zone.
+
+## Step 3: personal data and reading (2026-11-27)
+
+Built against deltd API §6.4 and §6.5 and §11 step 3.
+
+| API doc | State |
+|---|---|
+| §6.5 `/me/bookmarks`, `/me/highlights`, `/me/lists` | Built: `GET` (newest first, cursor pages, `pack`/`path` filters for bookmarks and highlights), `POST`, `PATCH /{id}`, `DELETE /{id}`. Pages are checked when added (the pack is one the person may see, the path is a page, aliases followed to the page itself); titles come from the page. |
+| §6.5 `/me/history` | Built: `GET` and `DELETE`. Filled by `deltd` itself when it serves a page (HTML only, never media or style sheets) on a person's pack hostname whose partition is live, as `entry_viewed` will be (§8.2). Guest records nothing. 500 pages per person, the desktop app's number. |
+| §6.5 `/me/needs-attention` | Built. A highlight stores the pack's header hash when its anchor was checked; when the pack has changed, the next read of the person's highlights re-finds each quote on the page (visible text, whitespace-collapsed, the old section tried first). Found: the anchor follows it to its new section. Not found, or the page deleted: **flagged and left where it was**, never moved. A removed pack's highlights are left alone, so they come back if it is installed again. |
+| §6.5 `/me/export` | Built: one JSON file (`deltos-personal-export`, version 1) with everything above and the names of the packs it mentions, as an attachment. |
+| §6.4 `outline`, `reader` | Built from the page's passages (SPEC v0.13 §5.10): a section is a passage, its id the path plus ordinal, so it is the same id a highlight anchors to. `reader` gives each section's paragraphs (block boundaries become breaks; scripts, styles and comments are not text) and its images resolved to paths inside the pack; images on other sites and `data:` URLs are left out (contract §16). A page without passages (packs before v0.13) is one section. |
+| §6.4 `speech` | Not built: needs a text-to-speech engine measured on the minimum spec. |
+| §6.4 `progress-events`, §8 | Not built: where `identityd` keeps progress events (contract §5.2, §10 names `identity/`) and its calls for them come first. |
+
+**Where it lives.** `/var/lib/deltos/deltd/personal.sqlite` (`--state-dir`), answered 2026-11-27 in contract §10 on the API doc's own recommendation (§10 #2). `deltos-deltd.service` makes the directory (`StateDirectory=`). Schema 1 in `PRAGMA user_version`; a newer one is refused at start and on restore (`deltos-backup`).
+
+**Privacy.** No endpoint takes a person argument; every row is keyed by the session's `profile_id`. Ids are 64 random bits, so an id says nothing about how many rows anyone has, and another person's id answers `item_not_found` exactly like one that never existed. Every `/me` response is `no-store`.
+
+**Bounds** (implementation limits, not contract values, `personal.rs`): titles 300 characters, quotes 2,000, notes 10,000, 100 pages per list, all inside the API's 16 KiB request body; reader mode and highlight checks decode at most 8 MiB of one page.
+
+**Not done, and why.**
+* The Delt desktop app still keeps its own store (`delt-desktop/src/store.rs`, one person, notes without passages). Moving it onto `deltlib::personal` changes what is on people's disks, so it is its own step.
+* A highlight check decodes the page twice (once for the text, once inside `passages()`); pages are small and this runs only after an update. A `wax-core` call that returns both would remove it.
+* History is one SQLite write per page read. Not yet measured on an SD card; if it shows, writes can be batched.
