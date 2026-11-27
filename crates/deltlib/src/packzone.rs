@@ -37,6 +37,10 @@ pub struct ZoneConfig {
     /// The WebOS hostname (contract §8; the name is still open, §13.2), for
     /// `frame-ancestors`.
     pub webos_host: String,
+    /// Where each person's reading history is kept (deltd API §6.5): a page
+    /// served on a person's pack hostname is a page they read. `None`
+    /// records nothing.
+    pub personal: Option<Arc<crate::personal::Store>>,
 }
 
 /// Serve one pack-zone request. `host` is the parsed pack hostname, `path`
@@ -114,7 +118,24 @@ pub async fn serve(
             return page(cfg, StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
+    if !head && !session.guest && crate::reading::is_page(entry.mime.as_deref()) {
+        record_visit(cfg, &session.profile_id, &pack, &entry);
+    }
     serve_entry(lib, cfg, pack, entry, codec, headers, head).await
+}
+
+/// History (deltd API §6.5) from pages served, the same path as
+/// `entry_viewed` (§8.2): the hostname's partition only points at a live
+/// session, so this is the person's own record of what they opened, never
+/// proof of it. Written off the request's path; a failed write loses one
+/// history row and nothing else.
+fn record_visit(cfg: &ZoneConfig, profile: &str, pack: &Pack, entry: &Entry) {
+    let Some(store) = cfg.personal.clone() else { return };
+    let (profile, uuid, path) = (profile.to_string(), pack.archive_uuid.clone(), entry.path.clone());
+    let title = entry.title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| path.clone());
+    tokio::task::spawn_blocking(move || {
+        let _ = store.record_visit(&profile, &uuid, &path, &title);
+    });
 }
 
 async fn serve_entry(

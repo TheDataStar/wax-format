@@ -26,12 +26,14 @@ Environment="DELTD_IDENTITY_ARGS=--identity-socket /run/deltos/identity/identity
 Environment="DELTD_TLS_ARGS=--tls-listen 0.0.0.0:443 --tls-cert-dir /var/lib/deltos/tls"
 EnvironmentFile=-/run/deltos/network/deltd.env
 ExecCondition=/usr/lib/deltos/libexec/deltos-deltd-ready
-ExecStart=/usr/lib/deltos/bin/deltd --webos-host ${DELTOS_WEBOS_HOST} --packs /var/lib/deltos/packs --catalog-dir /var/lib/deltos/b4 $DELTD_IDENTITY_ARGS $DELTD_TLS_ARGS $DELTD_CONNECTIVITY_ARGS
+ExecStart=/usr/lib/deltos/bin/deltd --webos-host ${DELTOS_WEBOS_HOST} --packs /var/lib/deltos/packs --catalog-dir /var/lib/deltos/b4 --state-dir /var/lib/deltos/deltd $DELTD_IDENTITY_ARGS $DELTD_TLS_ARGS $DELTD_CONNECTIVITY_ARGS
 Restart=on-failure
 RestartSec=2s
 RestartSteps=5
 RestartMaxDelaySec=60s
-StateDirectory=deltos/b4
+# b4: the pack-hostname catalog; deltd: each person's bookmarks, highlights,
+# lists and history (contract §10), deltd's alone.
+StateDirectory=deltos/b4 deltos/deltd
 StateDirectoryMode=0750
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE

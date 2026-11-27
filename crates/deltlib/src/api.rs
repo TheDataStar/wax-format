@@ -1,9 +1,9 @@
 //! The box API on the WebOS hostname: `/api/v1/...` (deltd API §3, §6).
 //!
 //! Built here: the Library (§6.2) and Search (§6.3) groups, `/status` and
-//! `/openapi.json`. Every endpoint learns the person from `identityd`'s
-//! session cookie and nothing else. All of these are `GET`; the write rules
-//! (§3 rule 6) arrive with the first write endpoint.
+//! `/openapi.json`; the session group is [`crate::signin`]'s, the Personal
+//! group and the outline and reader reads [`crate::me`]'s. Every endpoint
+//! learns the person from `identityd`'s session cookie and nothing else.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -37,6 +37,9 @@ pub struct Api {
     /// The box CA's public certificate (PEM), offered to devices that are
     /// to trust the box (docs/box-certificates.md §5). `None`: not offered.
     pub ca_cert: Option<std::path::PathBuf>,
+    /// Each person's bookmarks, highlights, lists and history (deltd API
+    /// §6.5). `None`: this server keeps none (the desktop app keeps its own).
+    pub personal: Option<Arc<crate::personal::Store>>,
 }
 
 /// An error in the RFC 9457 shape with a code from API §7's closed list.
@@ -55,6 +58,9 @@ impl Problem {
         self.detail = Some(d.into());
         self
     }
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
     pub fn response(self) -> Response<Body> {
         let mut v = json!({ "status": self.status.as_u16(), "code": self.code, "title": self.title });
         if let Some(d) = self.detail {
@@ -70,13 +76,13 @@ impl Problem {
     }
 }
 
-fn not_signed_in() -> Problem {
+pub(crate) fn not_signed_in() -> Problem {
     Problem::new(StatusCode::UNAUTHORIZED, "not_signed_in", "Please sign in.")
 }
-fn invalid(d: impl Into<String>) -> Problem {
+pub(crate) fn invalid(d: impl Into<String>) -> Problem {
     Problem::new(StatusCode::BAD_REQUEST, "invalid_request", "The request is not valid.").detail(d)
 }
-fn pack_not_found() -> Problem {
+pub(crate) fn pack_not_found() -> Problem {
     Problem::new(StatusCode::NOT_FOUND, "pack_not_found", "No such pack.")
 }
 fn not_found() -> Problem {
@@ -132,7 +138,7 @@ pub fn session_token(headers: &HeaderMap) -> Option<String> {
     plain
 }
 
-fn query_map(q: Option<&str>) -> BTreeMap<String, String> {
+pub(crate) fn query_map(q: Option<&str>) -> BTreeMap<String, String> {
     let mut m = BTreeMap::new();
     for kv in q.unwrap_or("").split('&').filter(|s| !s.is_empty()) {
         let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
@@ -146,7 +152,7 @@ fn query_map(q: Option<&str>) -> BTreeMap<String, String> {
     m
 }
 
-fn limit_of(q: &BTreeMap<String, String>) -> Result<usize, Problem> {
+pub(crate) fn limit_of(q: &BTreeMap<String, String>) -> Result<usize, Problem> {
     match q.get("limit") {
         None => Ok(DEFAULT_LIMIT),
         Some(s) => match s.parse::<usize>() {
@@ -167,7 +173,7 @@ fn offset_of(q: &BTreeMap<String, String>) -> Result<usize, Problem> {
     }
 }
 
-fn visible(p: &Pack, s: &Session) -> bool {
+pub(crate) fn visible(p: &Pack, s: &Session) -> bool {
     !s.guest || p.guest_accessible()
 }
 
@@ -278,6 +284,9 @@ impl Api {
             if let Some(r) = self.people(method, &segs, &q, headers, body, conn).await {
                 return r;
             }
+            if let Some(r) = self.me(method, &segs, &q, headers, body, conn).await {
+                return r;
+            }
         }
         if method != Method::GET && method != Method::HEAD {
             let mut r = Problem::new(StatusCode::METHOD_NOT_ALLOWED, "invalid_request", "Method not allowed.").response();
@@ -295,6 +304,8 @@ impl Api {
             ["packs"] => self.packs(&snap, &session, &q),
             ["packs", id] => self.pack(&snap, &session, id),
             ["packs", id, "pages"] => self.pages(&snap, &session, id, &q).await,
+            ["packs", id, "outline"] => self.outline(&snap, &session, id, &q).await,
+            ["packs", id, "reader"] => self.reader(&snap, &session, id, &q).await,
             ["search"] => self.search(&snap, &session, &q, None).await,
             ["search", "packs", id] => self.search(&snap, &session, &q, Some(id)).await,
             ["suggest"] => self.suggest(&snap, &session, &q).await,
@@ -424,7 +435,7 @@ impl Api {
         Ok(page_of(items, limit, |v| v["archive_uuid"].as_str().unwrap().to_string()))
     }
 
-    fn find<'a>(&self, snap: &'a Snapshot, s: &Session, id: &str) -> Result<&'a Arc<Pack>, Problem> {
+    pub(crate) fn find<'a>(&self, snap: &'a Snapshot, s: &Session, id: &str) -> Result<&'a Arc<Pack>, Problem> {
         match snap.by_uuid.get(id) {
             Some(p) if visible(p, s) => Ok(p),
             Some(_) if s.guest => Err(Problem::new(StatusCode::FORBIDDEN, "guest_not_allowed", "Not available to Guest.")),
@@ -578,13 +589,13 @@ fn page_row(e: &wax_core::Entry) -> Value {
 }
 
 /// `items` + `next` from up to `limit + 1` rows (the extra row says there is more).
-fn page_of(mut items: Vec<Value>, limit: usize, key: impl Fn(&Value) -> String) -> Value {
+pub(crate) fn page_of(mut items: Vec<Value>, limit: usize, key: impl Fn(&Value) -> String) -> Value {
     let more = items.len() > limit;
     items.truncate(limit);
     let next = if more { items.last().map(|v| Value::String(key(v))).unwrap_or(Value::Null) } else { Value::Null };
     json!({ "items": items, "next": next })
 }
 
-fn json_bytes(b: Vec<u8>) -> Vec<u8> {
+pub(crate) fn json_bytes(b: Vec<u8>) -> Vec<u8> {
     b
 }

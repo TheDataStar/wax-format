@@ -124,7 +124,7 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// The JSON body, if any. A body must be `application/json` (rule 3).
-fn body_json(headers: &HeaderMap, body: &[u8]) -> Result<Value, Problem> {
+pub(crate) fn body_json(headers: &HeaderMap, body: &[u8]) -> Result<Value, Problem> {
     if body.is_empty() {
         return Ok(json!({}));
     }
@@ -155,7 +155,7 @@ fn session_json(v: &Value) -> Value {
     })
 }
 
-fn private_json(status: StatusCode, v: &Value, conn: &ConnInfo, cookies: Vec<String>) -> Response<Body> {
+pub(crate) fn private_json(status: StatusCode, v: &Value, conn: &ConnInfo, cookies: Vec<String>) -> Response<Body> {
     let mut r = Response::builder().status(status);
     let h = r.headers_mut().unwrap();
     api_headers(h);

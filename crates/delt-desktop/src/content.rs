@@ -98,7 +98,7 @@ pub async fn serve(
     path: &str,
     headers: &HeaderMap,
 ) -> Served {
-    let cfg = ZoneConfig { webos_host: "tauri.localhost".into() };
+    let cfg = ZoneConfig { webos_host: "tauri.localhost".into(), personal: None };
     let ph = parse_host(host, partition);
     let pack = ph.as_ref().and_then(|h| lib.snapshot().by_index(h.pack_index).cloned());
     let resp = packzone::serve(Arc::clone(&lib), ident, &cfg, ph, method, path, headers).await;

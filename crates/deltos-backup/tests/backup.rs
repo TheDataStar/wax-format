@@ -211,6 +211,33 @@ fn newer_state_than_the_box_understands_is_refused() {
     assert!(matches!(e, Error::TooNew(_)), "{e}");
 }
 
+/// People's bookmarks, notes and history (deltd API §6.5) come back with a
+/// restore, and a newer schema of them is refused like any other state.
+#[test]
+fn personal_reading_data_round_trips_and_newer_is_refused() {
+    let b = make_box();
+    let db = b.root.join("deltd/personal.sqlite");
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let store = deltlib::personal::Store::open(&db).unwrap();
+    store.add_bookmark("p-ada", "pack", "A.html", "Alpha").unwrap();
+    drop(store);
+    let c = backup(&b);
+    fs::remove_dir_all(b.root.join("deltd")).unwrap();
+    let layout = Layout::at(&b.root);
+    let r = restore::review(&layout, &b.drive.join(&c.backup_id), &c.backup_id, &pass()).unwrap();
+    assert!(r.replaces.iter().any(|d| d == "deltd"), "{:?}", r.replaces);
+    restore::apply(&layout, &r.review_id, &r.review_digest, &mut NoServices).unwrap();
+    let back = deltlib::personal::Store::open(&db).unwrap();
+    let f = deltlib::personal::Filter::default();
+    assert_eq!(back.bookmarks("p-ada", &f, None, 10).unwrap()[0].title, "Alpha");
+    drop(back);
+
+    rusqlite::Connection::open(&db).unwrap().execute_batch("PRAGMA user_version = 99").unwrap();
+    let c = backup(&b);
+    let e = restore::review(&layout, &b.drive.join(&c.backup_id), &c.backup_id, &pass()).unwrap_err();
+    assert!(matches!(e, Error::TooNew(_)), "{e}");
+}
+
 #[test]
 fn half_a_ca_is_refused() {
     let b = make_box();

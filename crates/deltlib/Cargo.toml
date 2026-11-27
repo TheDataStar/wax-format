@@ -25,6 +25,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time",
 tokio-stream = "0.1"
 percent-encoding = "2"
 thiserror = "1.0"
+getrandom = "0.2"
 clap = { version = "4.4", features = ["derive"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }

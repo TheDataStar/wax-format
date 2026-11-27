@@ -47,7 +47,7 @@ impl AppState {
         AppState {
             lib,
             ident,
-            zone: ZoneConfig { webos_host: webos_host.to_ascii_lowercase() },
+            zone: ZoneConfig { webos_host: webos_host.to_ascii_lowercase(), personal: None },
             answer_connectivity_checks: false,
             https_available: false,
             ca_cert: None,
@@ -56,6 +56,13 @@ impl AppState {
 
     pub fn with_ca_cert(mut self, path: Option<std::path::PathBuf>) -> Self {
         self.ca_cert = path;
+        self
+    }
+
+    /// Keep each person's bookmarks, highlights, lists and history here
+    /// (deltd API §6.5).
+    pub fn with_personal(mut self, store: Option<Arc<crate::personal::Store>>) -> Self {
+        self.zone.personal = store;
         self
     }
 
@@ -99,6 +106,7 @@ async fn dispatch(State(st): State<AppState>, req: Request) -> Response<Body> {
             webos_host: st.zone.webos_host.clone(),
             https_available: st.https_available,
             ca_cert: st.ca_cert.clone(),
+            personal: st.zone.personal.clone(),
         };
         return api.handle(&parts.method, &path, parts.uri.query(), &parts.headers, &body, &conn).await;
     }
