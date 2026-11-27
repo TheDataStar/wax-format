@@ -65,9 +65,9 @@ Pin with `--archive-uuid` and `--created-at` (or `$SOURCE_DATE_EPOCH`).
 
 * Rust stable **plus a C toolchain** — the bundled SQLite and zstd need it.
 * Nightly Rust plus `cargo-fuzz`, for the three fuzz targets.
-* The **`minisign`** binary with a **password-less** key; unattended builds
-  cannot answer a passphrase prompt. The test suite mints its own via
-  `minisign -G -W -f`.
+* A **password-less** minisign key for unattended signed builds; signing is
+  done in Rust (since 2026-11-27), so the `minisign` program is needed only
+  for the one interoperability test. The test suite mints its own keys in Rust.
 * **CI rule:** set `WAX_REQUIRE_MINISIGN=1`, which turns a missing `minisign`
   into a hard failure. The signing tests once reported green while silently
   skipping.

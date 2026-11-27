@@ -18,8 +18,13 @@ uuid = { version = "1", features = ["v4"] }
 language-tags = "0.3"
 sha2 = "0.10"
 tempfile = "3.8"
+# Signs and checks pack signatures in Rust (SPEC §8), so no outside program
+# is needed; the same crate the box's tests sign with.
+minisign = "0.7"
+ct-codecs = "1"
 
 [dev-dependencies]
+minisign = "0.7"
 serde_json = "1"
 tempfile = "3.8"
 wax-core = { path = "../wax-core" }

@@ -3408,8 +3408,10 @@ version = "1.2.0"
 dependencies = [
  "anyhow",
  "clap",
+ "ct-codecs",
  "language-tags",
  "mime_guess",
+ "minisign",
  "serde",
  "serde_json",
  "sha2 0.10.9",

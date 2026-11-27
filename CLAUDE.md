@@ -26,7 +26,7 @@ _Last updated: 2026-11-27 (personal data and reading; dark default corrected). E
 | Component | State | Evidence |
 |---|---|---|
 | `wax-core` | Streaming reader (A1b) + streaming writer (A2e), both memory-bounded. Segment-chain merge, one-hop redirects, checksum verification. | 60 tests |
-| `wax-builder` | `build` / `append` / `inspect` / `verify` / `ls` / `read`; manifest, aliases, compression policy, UUIDv4 identity, minisign hook (A7). | 95 tests |
+| `wax-builder` | `build` / `append` / `inspect` / `verify` / `ls` / `read`; manifest, aliases, compression policy, UUIDv4 identity, minisign signing (A7) **in Rust** (the `minisign` crate, since 2026-11-27; no outside program, sidecars interoperate with the `minisign` program both ways). | 97 tests |
 | `zim2wax` | Track B v0, text + image; **builds the embedded search index by default** (titles + visible text, `wax-bigram-16` for every language including CJK, SPEC v0.13 §5.7.2) and **cuts every article into passages at its headings** (§5.10). §20 canonical paths, href rewriting, redirect flattening, manifest derivation, §11 licensing + build report. | 61 tests |
 | `deltlib` / `deltd` | **The pack server (A5) and cross-pack search, first build (2026-11-20).** One `deltd` serves every pack by hostname (contract §8): issued, live pack hostnames only; `410` for removed pages; ETag per encoding; ranges; zstd passthrough; dictionary entries decoded on the box. API v1 Library and Search groups: one query across all packs, fused by position (RRF), accent-insensitive, new editions searchable on refresh. People and sign-in come from `deltos-identityd` (below); the fixed table is dev-only. **Personal data and reading (2026-11-27, API step 3):** each person's bookmarks, highlights with notes (re-found after an update, flagged and never moved if not), reading lists, history (recorded as pages are served) and export of it all, private to the person, in `/var/lib/deltos/deltd/personal.sqlite`; page outlines and reader mode from the page's passages. Not yet: read-aloud, progress events. Notes and findings: `crates/deltlib/NOTES.md`. | 28 + 7 + 10 unit tests |
 | `deltos-net` | **E10, the box's own network (2026-11-20).** Name and address registry; generated `dnsmasq` (wildcard `deltos.lan`/`deltos-packs.lan`, hotspot DHCP, names and reservations live without restart, no query log) and `nftables` (uplink sharing); the network actions behind shelld's checks (secure session, `network.configure`, re-confirm ticket). `docs/box-network-plan.md`. | 11 tests, 1 against real dnsmasq (root; `DELTOS_REQUIRE_NET_E2E=1`) |
@@ -42,7 +42,7 @@ _Last updated: 2026-11-27 (personal data and reading; dark default corrected). E
 | `fuzz/` | 3 `cargo-fuzz` targets: `header-parse`, `index-loader`, `segment-merge`. | seed corpora committed |
 | WAX format | **v0.13** (2026-11-20, proposed in its own PR, stacked on PR #4): crash-safe header (check + mirror at end of file), `wax-bigram-16` CJK-capable search, passages, `wax-builder gc`, and appended editions that replace the manifest (so `version` can change on an update). v0.12 (merged 2026-11-15, PR #1) added tombstones, search on appended segments, declared title fold, verifiable append deltas. `SPEC.md` is normative and byte-exact; §13 is the version history. | `crates/wax-core/tests/v0_12.rs`, `v0_13.rs` |
 
-**Test suite: 407 tests** (2026-11-21, Linux x86_64, minisign 0.12 installed so the signing tests ran; 460 pass without minisign after the box certificates, 2026-11-21; 527 without minisign after pack installs, 2026-11-23; 535 after the capability record, 2026-11-24; 553 after personal data and reading, 2026-11-27; end-to-end check with real inputs in `docs/e2e-check-2026-11-21.md`; `real_wikipedia_zim` fails on the climate-change *mini* ZIM, which has no audio/video — pre-existing, not a regression). Platform results and all measured figures live in
+**Test suite: 407 tests** (2026-11-21, Linux x86_64, minisign 0.12 installed so the signing tests ran; 460 pass without minisign after the box certificates, 2026-11-21; 527 without minisign after pack installs, 2026-11-23; 535 after the capability record, 2026-11-24; 553 after personal data and reading, 2026-11-27; 556 with signing in Rust, 2026-11-27, every signing test now running without the program; end-to-end check with real inputs in `docs/e2e-check-2026-11-21.md`; `real_wikipedia_zim` fails on the climate-change *mini* ZIM, which has no audio/video — pre-existing, not a regression). Platform results and all measured figures live in
 `docs/baseline.md` and the Directive 01 report. Read `docs/baseline.md` before
 quoting any performance number.
 
@@ -57,7 +57,7 @@ is a hard failure. **CI sets both.**
 
 | Needs | Provide with | Require flag |
 |---|---|---|
-| the `minisign` binary (8 signing tests) | on `PATH`, or `$WAX_MINISIGN` | `WAX_REQUIRE_MINISIGN=1` |
+| the `minisign` program (1 interoperability test; signing itself is Rust and always runs, since 2026-11-27) | on `PATH`, or `$WAX_MINISIGN` | `WAX_REQUIRE_MINISIGN=1` |
 | a real Wikipedia ZIM (`real_wikipedia_zim`) | `$ZIM2WAX_REAL_ZIM` | `ZIM2WAX_REQUIRE_REAL_ZIM=1` |
 
 `$ZIM2WAX_REAL_ZIM` pointing at a path that is not a readable file is **always**
@@ -159,7 +159,8 @@ git fetch origin refs/notes/commits:refs/notes/commits
 ## Build & test
 
 Needs Rust stable **plus a C toolchain** (bundled SQLite + zstd), the
-`minisign` binary, and for fuzzing nightly + `cargo-fuzz`.
+`minisign` program for the one interoperability test only, and for fuzzing
+nightly + `cargo-fuzz`.
 
 ```bash
 # CI: both require-flags set, so no test can pass by not running

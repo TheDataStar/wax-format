@@ -56,9 +56,11 @@ fn out(dir: &TempDir, name: &str) -> PathBuf {
     dir.path().join(name)
 }
 
-/// Locate minisign. Tests that need it skip when it is absent — but set
-/// `WAX_REQUIRE_MINISIGN=1` (CI does) and a missing binary becomes a hard
-/// failure, so the signing suite can never silently pass by not running.
+/// The `minisign` program, for the interoperability tests only: signing
+/// and checking are done in Rust and need no program. Without it those
+/// tests skip loudly — but set `WAX_REQUIRE_MINISIGN=1` (CI does) and a
+/// missing program becomes a hard failure, so interoperability can never
+/// silently pass by not running.
 fn minisign_available() -> bool {
     let ok = std::process::Command::new(sign::minisign_bin())
         .arg("-v")
@@ -67,38 +69,23 @@ fn minisign_available() -> bool {
         .unwrap_or(false);
     if !ok && std::env::var("WAX_REQUIRE_MINISIGN").as_deref() == Ok("1") {
         panic!(
-            "WAX_REQUIRE_MINISIGN=1 but `{}` could not be run. Install minisign or              point $WAX_MINISIGN at it.",
+            "WAX_REQUIRE_MINISIGN=1 but `{}` could not be run. Install minisign or point $WAX_MINISIGN at it.",
             sign::minisign_bin()
         );
     }
     if !ok {
         eprintln!(
-            "SKIPPED (minisign not found via `{}`; set $WAX_MINISIGN, or              WAX_REQUIRE_MINISIGN=1 to make this a failure)",
+            "SKIPPED (minisign not found via `{}`; set $WAX_MINISIGN, or WAX_REQUIRE_MINISIGN=1 to make this a failure)",
             sign::minisign_bin()
         );
     }
     ok
 }
 
-/// Generate a throwaway password-less keypair. Returns `(seckey, pubkey)`.
+/// A throwaway password-less keypair, made in Rust. Returns `(seckey, pubkey)`.
 fn keypair(dir: &Path) -> (PathBuf, PathBuf) {
-    let sec = dir.join("test.key");
-    let pubk = dir.join("test.pub");
-    let out = std::process::Command::new(sign::minisign_bin())
-        .arg("-G")
-        .arg("-W")
-        .arg("-f")
-        .arg("-s")
-        .arg(&sec)
-        .arg("-p")
-        .arg(&pubk)
-        .output()
-        .expect("minisign -G");
-    assert!(
-        out.status.success(),
-        "keygen failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let (sec, pubk) = (dir.join("test.key"), dir.join("test.pub"));
+    sign::write_unencrypted_keypair(&sec, &pubk).unwrap();
     (sec, pubk)
 }
 
@@ -481,14 +468,11 @@ fn verify_passes_on_a_clean_archive_and_fails_on_a_corrupted_blob() {
 }
 
 // ---------------------------------------------------------------------------
-// signing (A7) — skipped when minisign is unavailable
+// signing (A7) — in Rust, always run
 // ---------------------------------------------------------------------------
 
 #[test]
 fn sign_then_verify_roundtrip() {
-    if !minisign_available() {
-        return;
-    }
     let keys = tempfile::tempdir().unwrap();
     let (sec, pubk) = keypair(keys.path());
 
@@ -535,9 +519,6 @@ fn sign_then_verify_roundtrip() {
 
 #[test]
 fn tampering_invalidates_the_signature() {
-    if !minisign_available() {
-        return;
-    }
     let keys = tempfile::tempdir().unwrap();
     let (sec, pubk) = keypair(keys.path());
 
@@ -572,9 +553,6 @@ fn tampering_invalidates_the_signature() {
 
 #[test]
 fn append_re_signs_and_the_old_signature_stops_verifying() {
-    if !minisign_available() {
-        return;
-    }
     let keys = tempfile::tempdir().unwrap();
     let (sec, pubk) = keypair(keys.path());
     let pk = sign::PubKey::File(pubk);
@@ -617,9 +595,6 @@ fn append_re_signs_and_the_old_signature_stops_verifying() {
 
 #[test]
 fn append_re_signs_when_given_a_key() {
-    if !minisign_available() {
-        return;
-    }
     let keys = tempfile::tempdir().unwrap();
     let (sec, pubk) = keypair(keys.path());
     let pk = sign::PubKey::File(pubk);
@@ -650,9 +625,6 @@ fn append_re_signs_when_given_a_key() {
 
 #[test]
 fn a_sidecar_from_a_different_archive_is_rejected() {
-    if !minisign_available() {
-        return;
-    }
     let keys = tempfile::tempdir().unwrap();
     let (sec, pubk) = keypair(keys.path());
     let pk = sign::PubKey::File(pubk);
@@ -675,6 +647,123 @@ fn a_sidecar_from_a_different_archive_is_rejected() {
         msg.contains("different archive") || msg.contains("does not verify"),
         "expected an archive-mismatch rejection, got: {msg}"
     );
+}
+
+/// The sidecar is the `minisign` program's own format, both ways: the
+/// program verifies (requiring prehashed, `-V -H`) what we sign, and we
+/// verify what the program signs with a key it made.
+#[test]
+fn signatures_interoperate_with_the_minisign_program() {
+    if !minisign_available() {
+        return;
+    }
+    let keys = tempfile::tempdir().unwrap();
+    let (sec, pubk) = keypair(keys.path());
+    let src = tree(&[("a.txt", b"a")]);
+    let dst = tempfile::tempdir().unwrap();
+    let archive = out(&dst, "p.wax");
+    build_pack(src.path(), &archive, &PackConfig::default(), &WriteOptions { created_at: Some(PINNED), sign_key: Some(sec), archive_uuid: None })
+        .unwrap();
+    let (digest, _, _) = sign::signable_digest(&archive).unwrap();
+    let msg = dst.path().join("digest");
+    std::fs::write(&msg, digest).unwrap();
+    let o = std::process::Command::new(sign::minisign_bin())
+        .args(["-V", "-H", "-p"])
+        .arg(&pubk)
+        .arg("-m")
+        .arg(&msg)
+        .arg("-x")
+        .arg(sign::sidecar_path(&archive))
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "minisign -V -H: {}", String::from_utf8_lossy(&o.stderr));
+
+    // and the other way: the program's key and signature, our check
+    let (psec, ppub) = (keys.path().join("prog.key"), keys.path().join("prog.pub"));
+    let g = std::process::Command::new(sign::minisign_bin()).args(["-G", "-W", "-f", "-s"]).arg(&psec).arg("-p").arg(&ppub).output().unwrap();
+    assert!(g.status.success(), "keygen: {}", String::from_utf8_lossy(&g.stderr));
+    let comment = sign::trusted_comment(&WaxReader::open(&archive).unwrap().header().archive_uuid, PINNED);
+    let s = std::process::Command::new(sign::minisign_bin())
+        .args(["-S", "-s"])
+        .arg(&psec)
+        .arg("-m")
+        .arg(&msg)
+        .arg("-x")
+        .arg(sign::sidecar_path(&archive))
+        .arg("-t")
+        .arg(&comment)
+        .output()
+        .unwrap();
+    assert!(s.status.success(), "minisign -S: {}", String::from_utf8_lossy(&s.stderr));
+    assert!(verify_pack(&archive, Some(&sign::PubKey::File(ppub)), true).unwrap().ok());
+}
+
+/// A key with a password cannot be unlocked without a terminal: refused,
+/// never hung waiting for input (tests run with no terminal on stdin).
+#[test]
+fn a_password_key_without_a_terminal_is_refused() {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        eprintln!("SKIPPED (stdin is a terminal; this checks the no-terminal path)");
+        return;
+    }
+    let keys = tempfile::tempdir().unwrap();
+    let kp = minisign::KeyPair::generate_encrypted_keypair(Some("a password".into())).unwrap();
+    let sec = keys.path().join("pw.key");
+    std::fs::write(&sec, kp.sk.to_box(None).unwrap().into_string()).unwrap();
+    let src = tree(&[("a.txt", b"a")]);
+    let dst = tempfile::tempdir().unwrap();
+    let archive = out(&dst, "p.wax");
+    build_pack(src.path(), &archive, &PackConfig::default(), &WriteOptions { created_at: Some(PINNED), sign_key: None, archive_uuid: None }).unwrap();
+    let e = sign::sign(&archive, &sec).unwrap_err();
+    assert!(format!("{e:#}").contains("password"), "{e:#}");
+}
+
+#[test]
+fn a_legacy_signature_is_refused() {
+    let keys = tempfile::tempdir().unwrap();
+    let (_, pubk) = keypair(keys.path());
+    let src = tree(&[("a.txt", b"a")]);
+    let dst = tempfile::tempdir().unwrap();
+    let archive = out(&dst, "p.wax");
+    build_pack(src.path(), &archive, &PackConfig::default(), &WriteOptions { created_at: Some(PINNED), sign_key: None, archive_uuid: None }).unwrap();
+    // a well-formed sidecar whose algorithm is the legacy "Ed" (not prehashed "ED")
+    let pk = std::fs::read_to_string(&pubk).unwrap();
+    let keyid_b64 = pk.lines().nth(1).unwrap();
+    let mut raw = vec![b'E', b'd'];
+    raw.extend_from_slice(&base64_decode(keyid_b64)[2..10]);
+    raw.extend_from_slice(&[0u8; 64]);
+    let side = format!(
+        "untrusted comment: x\n{}\ntrusted comment: t\n{}\n",
+        base64_encode(&raw),
+        base64_encode(&[0u8; 64])
+    );
+    std::fs::write(sign::sidecar_path(&archive), side).unwrap();
+    let e = sign::verify(&archive, &sign::PubKey::File(pubk)).unwrap_err();
+    assert!(format!("{e:#}").contains("does not verify"), "{e:#}");
+}
+
+const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+fn base64_encode(b: &[u8]) -> String {
+    let mut s = String::new();
+    for c in b.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for k in 0..4 {
+            s.push(if k <= c.len() { B64[(n >> (18 - 6 * k) & 63) as usize] as char } else { '=' });
+        }
+    }
+    s
+}
+fn base64_decode(s: &str) -> Vec<u8> {
+    let v: Vec<u32> = s.bytes().filter(|&c| c != b'=').map(|c| B64.iter().position(|&x| x == c).unwrap() as u32).collect();
+    let mut out = Vec::new();
+    for c in v.chunks(4) {
+        let n = c.iter().enumerate().fold(0u32, |a, (k, &x)| a | x << (18 - 6 * k));
+        for k in 0..c.len().saturating_sub(1) {
+            out.push((n >> (16 - 8 * k)) as u8);
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

@@ -1,39 +1,53 @@
 //! A7 signing hook — detached minisign sidecar (SPEC §8).
 //!
-//! `wax-builder` shells out to the `minisign` binary rather than linking an
-//! Ed25519 implementation, so the signature is produced by the same tool
-//! operators verify with. Key *generation* is out of scope: a keypair is
-//! supplied by flag or environment.
+//! Signing and checking are done **in Rust**, with the `minisign` crate (the
+//! same format and algorithm as the `minisign` program, by the same author),
+//! so building a signed pack needs no outside program. The box's key holder
+//! already checks signatures this way (`deltos-shelld`, `minisign-verify`).
+//! The sidecar is byte-compatible with the program's: `minisign -V -H`
+//! verifies what this writes, and this verifies what `minisign -S` writes
+//! (the interoperability tests run both ways whenever the program is
+//! installed).
 //!
 //! What gets signed (SPEC §8.1) is **not** the archive file but the 32-byte
 //! digest `SHA-256(header || segment[0] || ... || segment[N])`, which
-//! `wax-core` computes via [`wax_core::WaxReader::signable_digest`]. That digest
-//! is written to a temporary file and handed to `minisign -S`.
+//! `wax-core` computes via [`wax_core::WaxReader::signable_digest`].
 //!
-//! ## Prehashing — deviation from SPEC §8.2's wording
+//! ## Prehashing — SPEC §8.2's wording
 //!
-//! SPEC §8.2 says to sign "in prehashed mode (minisign `-H`)". In minisign 0.12
-//! `-H` is a **verify-side** flag (`minisign -V [-H] ...`) meaning *require* the
-//! signature to be prehashed; `minisign -S` has no `-H` option and produces
-//! prehashed (`ED`) signatures by default, with `-l` selecting the legacy
-//! non-prehashed form. The spec's *intent* — prehashed signatures — is met by
-//! signing with plain `-S` (never `-l`) and verifying with `-V -H`, which is
-//! what this module does.
+//! SPEC §8.2 says to sign "in prehashed mode (minisign `-H`)". In minisign
+//! `-H` is a **verify-side** flag meaning *require* a prehashed signature;
+//! signing produces prehashed (`ED`) signatures by default. So: every
+//! signature written here is prehashed, and [`verify`] refuses a legacy,
+//! non-prehashed one, exactly as `minisign -V -H` does.
+//!
+//! ## Keys
+//!
+//! A secret key is a minisign key file. One made without a password
+//! (`minisign -G -W`, or [`write_unencrypted_keypair`]) is read as is, for
+//! unattended builds. One with a password is unlocked by asking on the
+//! terminal, as the `minisign` program does; with no terminal it is refused.
 
 use anyhow::{anyhow, bail, Context, Result};
-use std::io::Write;
+use ct_codecs::{Base64, Decoder, Encoder};
+use std::io::{Cursor, IsTerminal};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Environment overrides.
-pub const ENV_MINISIGN: &str = "WAX_MINISIGN";
 pub const ENV_SECKEY: &str = "WAX_MINISIGN_KEY";
 pub const ENV_PUBKEY: &str = "WAX_MINISIGN_PUBKEY";
+/// Where the interoperability tests look for the `minisign` program. Not
+/// used to sign or verify.
+pub const ENV_MINISIGN: &str = "WAX_MINISIGN";
 
-/// Locate the `minisign` executable: `$WAX_MINISIGN`, else `minisign` on PATH.
+/// The `minisign` program, for the interoperability tests only:
+/// `$WAX_MINISIGN`, else `minisign` on PATH.
 pub fn minisign_bin() -> String {
     std::env::var(ENV_MINISIGN).unwrap_or_else(|_| "minisign".to_string())
 }
+
+/// The untrusted comment written into every sidecar.
+pub const UNTRUSTED_COMMENT: &str = "WAX archive signature (see SPEC.md section 8)";
 
 /// The sidecar path for an archive: `<archive>.minisig` (SPEC §8.2).
 pub fn sidecar_path(archive: &Path) -> PathBuf {
@@ -58,52 +72,81 @@ pub fn signable_digest(archive: &Path) -> Result<([u8; 32], [u8; 16], u64)> {
 
 /// Sign `archive`, writing `<archive>.minisig`.
 ///
-/// `seckey` is a path to a minisign secret key. A password-protected key makes
-/// `minisign` prompt on the terminal; for unattended builds use a key created
-/// with `minisign -G -W` (no password).
+/// `seckey` is a path to a minisign secret key (see the module docs on
+/// passwords).
 pub fn sign(archive: &Path, seckey: &Path) -> Result<PathBuf> {
     if !seckey.is_file() {
         bail!("secret key {} does not exist", seckey.display());
     }
+    let sk = load_secret_key(seckey)?;
     let (digest, uuid, created_at) = signable_digest(archive)?;
     let sidecar = sidecar_path(archive);
-
-    let dir = tempfile::tempdir().context("creating temp dir for the digest")?;
-    let msg = dir.path().join("wax.digest");
-    std::fs::File::create(&msg)?.write_all(&digest)?;
-
-    // NOTE: plain `-S` (no `-l`) is minisign's prehashed `ED` form — see the
-    // module docs for why this differs from SPEC 8.2's literal `-H` wording.
-    let out = Command::new(minisign_bin())
-        .arg("-S")
-        .arg("-s")
-        .arg(seckey)
-        .arg("-m")
-        .arg(&msg)
-        .arg("-x")
-        .arg(&sidecar)
-        .arg("-t")
-        .arg(trusted_comment(&uuid, created_at))
-        .arg("-c")
-        .arg("WAX archive signature (see SPEC.md section 8)")
-        .output()
-        .map_err(|e| launch_error(e, "sign"))?;
-
-    if !out.status.success() {
-        bail!(
-            "minisign -S failed ({}): {}{}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim(),
-            String::from_utf8_lossy(&out.stdout).trim()
-        );
-    }
-    if !sidecar.is_file() {
-        bail!(
-            "minisign reported success but {} was not created",
-            sidecar.display()
-        );
-    }
+    let sig = minisign::sign(
+        None,
+        &sk,
+        Cursor::new(digest.to_vec()),
+        Some(&trusted_comment(&uuid, created_at)),
+        Some(UNTRUSTED_COMMENT),
+    )
+    .map_err(|e| anyhow!("signing failed: {e}"))?;
+    // written beside the archive, then renamed, so a reader never sees half
+    let tmp = sidecar.with_extension("minisig.tmp");
+    std::fs::write(&tmp, sig.into_string()).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, &sidecar).with_context(|| format!("writing {}", sidecar.display()))?;
     Ok(sidecar)
+}
+
+/// Read a minisign secret key: as is when it has no password, else by
+/// asking on the terminal.
+fn load_secret_key(path: &Path) -> Result<minisign::SecretKey> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading secret key {}", path.display()))?;
+    match minisign::SecretKey::from_box(text.clone().into(), Some(String::new())) {
+        Ok(k) => Ok(k),
+        // the crate's only signal that the empty password was wrong
+        Err(e) if e.to_string().contains("Wrong password") => {
+            if !std::io::stdin().is_terminal() {
+                bail!(
+                    "secret key {} has a password and there is no terminal to ask for it; \
+                     use a key made without one (minisign -G -W) for unattended builds",
+                    path.display()
+                );
+            }
+            minisign::SecretKey::from_box(text.into(), None).map_err(|e| anyhow!("secret key {}: {e}", path.display()))
+        }
+        Err(e) => Err(anyhow!("secret key {}: {e}", path.display())),
+    }
+}
+
+/// Make a minisign keypair with no password at `seckey` and `pubkey`, in
+/// the program's own file format (as `minisign -G -W`). For unattended
+/// builds and tests; an existing file is never overwritten.
+pub fn write_unencrypted_keypair(seckey: &Path, pubkey: &Path) -> Result<()> {
+    for p in [seckey, pubkey] {
+        if p.exists() {
+            bail!("{} already exists", p.display());
+        }
+    }
+    // An empty password gives a key with its checksum and no encryption;
+    // marking its key-derivation algorithm "none" (two zero bytes, SPEC of
+    // the minisign key format) is what `minisign -G -W` writes, so the
+    // program reads it without asking for a password too.
+    let kp = minisign::KeyPair::generate_encrypted_keypair(Some(String::new())).map_err(|e| anyhow!("making a key: {e}"))?;
+    let boxed = kp.sk.to_box(None).map_err(|e| anyhow!("{e}"))?.into_string();
+    let mut lines: Vec<String> = boxed.lines().map(str::to_string).collect();
+    let mut raw = Base64::decode_to_vec(lines[1].trim(), None).map_err(|e| anyhow!("{e}"))?;
+    raw[2] = 0;
+    raw[3] = 0;
+    lines[1] = Base64::encode_to_string(&raw).map_err(|e| anyhow!("{e}"))?;
+    let sk = lines.join("\n") + "\n";
+    let pk = kp.pk.to_box().map_err(|e| anyhow!("{e}"))?.into_string();
+    std::fs::write(seckey, sk).with_context(|| format!("writing {}", seckey.display()))?;
+    std::fs::write(pubkey, pk).with_context(|| format!("writing {}", pubkey.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(seckey, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }
 
 /// Outcome of a sidecar check.
@@ -150,42 +193,29 @@ impl PubKey {
 
 /// Verify `<archive>.minisig` against `archive` using `pubkey`.
 ///
-/// Verification is `minisign -V -H` — `-H` *requires* the signature to be
-/// prehashed, rejecting a legacy-format signature (SPEC §8.2).
+/// A legacy, non-prehashed signature is refused, as `minisign -V -H` does
+/// (SPEC §8.2).
 pub fn verify(archive: &Path, pubkey: &PubKey) -> Result<SignatureReport> {
     let sidecar = sidecar_path(archive);
     if !sidecar.is_file() {
         bail!("no signature sidecar at {}", sidecar.display());
     }
     let (digest, uuid, _created_at) = signable_digest(archive)?;
-
-    let dir = tempfile::tempdir().context("creating temp dir for the digest")?;
-    let msg = dir.path().join("wax.digest");
-    std::fs::File::create(&msg)?.write_all(&digest)?;
-
-    let mut cmd = Command::new(minisign_bin());
-    cmd.arg("-V").arg("-H");
-    match pubkey {
+    let pk = match pubkey {
         PubKey::File(p) => {
             if !p.is_file() {
                 bail!("public key {} does not exist", p.display());
             }
-            cmd.arg("-p").arg(p);
+            minisign::PublicKey::from_file(p).map_err(|e| anyhow!("public key {}: {e}", p.display()))?
         }
-        PubKey::Inline(s) => {
-            cmd.arg("-P").arg(s);
-        }
+        PubKey::Inline(s) => minisign::PublicKey::from_base64(s.trim()).map_err(|e| anyhow!("public key: {e}"))?,
+    };
+    let sig = minisign::SignatureBox::from_file(&sidecar).map_err(|e| anyhow!("signature does not verify: {e}"))?;
+    if !sig.is_prehashed() {
+        bail!("signature does not verify: a legacy (not prehashed) signature is refused (SPEC 8.2)");
     }
-    cmd.arg("-m").arg(&msg).arg("-x").arg(&sidecar);
-
-    let out = cmd.output().map_err(|e| launch_error(e, "verify"))?;
-    if !out.status.success() {
-        bail!(
-            "signature does not verify: {}{}",
-            String::from_utf8_lossy(&out.stderr).trim(),
-            String::from_utf8_lossy(&out.stdout).trim()
-        );
-    }
+    minisign::verify(&pk, &sig, Cursor::new(digest.to_vec()), true, false, false)
+        .map_err(|e| anyhow!("signature does not verify: {e}"))?;
 
     let comment = read_trusted_comment(&sidecar)?;
     let header_uuid = crate::uuid_text(&uuid);
@@ -234,16 +264,4 @@ fn read_trusted_comment(sidecar: &Path) -> Result<String> {
     text.lines()
         .find_map(|l| l.strip_prefix("trusted comment:").map(|c| c.trim().to_string()))
         .ok_or_else(|| anyhow!("{} has no trusted comment line", sidecar.display()))
-}
-
-fn launch_error(e: std::io::Error, what: &str) -> anyhow::Error {
-    if e.kind() == std::io::ErrorKind::NotFound {
-        anyhow!(
-            "could not run `{}` to {what} — install minisign or set ${} to its full path",
-            minisign_bin(),
-            ENV_MINISIGN
-        )
-    } else {
-        anyhow!("could not run `{}` to {what}: {e}", minisign_bin())
-    }
 }

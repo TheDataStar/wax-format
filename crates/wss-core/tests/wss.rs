@@ -599,28 +599,14 @@ fn the_cli_converts_inspects_and_diffs_with_json() {
 }
 
 // ===========================================================================
-// signing (needs the minisign binary; skips loudly without it)
+// signing (in Rust; no outside program)
 // ===========================================================================
-
-fn minisign() -> Option<String> {
-    let bin = wax_builder::sign::minisign_bin();
-    if std::process::Command::new(&bin).arg("-v").output().is_ok() {
-        return Some(bin);
-    }
-    if std::env::var("WAX_REQUIRE_MINISIGN").as_deref() == Ok("1") {
-        panic!("WAX_REQUIRE_MINISIGN=1 but minisign ({bin}) is not runnable");
-    }
-    eprintln!("SKIPPED (minisign not found): signing tests");
-    None
-}
 
 #[test]
 fn signed_builds_and_updates_verify() {
-    let Some(bin) = minisign() else { return };
     let d = tempfile::tempdir().unwrap();
     let (sk, pk) = (d.path().join("k.key"), d.path().join("k.pub"));
-    let st = std::process::Command::new(&bin).args(["-G", "-W", "-s"]).arg(&sk).arg("-p").arg(&pk).status().unwrap();
-    assert!(st.success());
+    wax_builder::sign::write_unencrypted_keypair(&sk, &pk).unwrap();
     let src = d.path().join("site");
     site(&src);
     let pack = d.path().join("s.wax");
