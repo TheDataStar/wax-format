@@ -40,6 +40,8 @@ pub struct AppState {
     pub https_available: bool,
     /// The box CA's public certificate, offered at `/api/v1/certificate`.
     pub ca_cert: Option<std::path::PathBuf>,
+    /// The key holder, for the admin endpoints (deltd API §6.8).
+    pub shell: Option<Arc<dyn crate::admin::Shell>>,
 }
 
 impl AppState {
@@ -51,7 +53,14 @@ impl AppState {
             answer_connectivity_checks: false,
             https_available: false,
             ca_cert: None,
+            shell: None,
         }
+    }
+
+    /// Hand admin actions to this key holder (deltd API §6.8).
+    pub fn with_shell(mut self, shell: Option<Arc<dyn crate::admin::Shell>>) -> Self {
+        self.shell = shell;
+        self
     }
 
     pub fn with_ca_cert(mut self, path: Option<std::path::PathBuf>) -> Self {
@@ -107,6 +116,7 @@ async fn dispatch(State(st): State<AppState>, req: Request) -> Response<Body> {
             https_available: st.https_available,
             ca_cert: st.ca_cert.clone(),
             personal: st.zone.personal.clone(),
+            shell: st.shell.clone(),
         };
         return api.handle(&parts.method, &path, parts.uri.query(), &parts.headers, &body, &conn).await;
     }

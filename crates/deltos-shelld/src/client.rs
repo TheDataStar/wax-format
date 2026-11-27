@@ -1,5 +1,6 @@
 //! The box API's side of the socket: one kept connection, reopened if
-//! shelld restarted. `deltd` will hold one of these (deltd API §6).
+//! shelld restarted. For tests and tools; `deltd` itself uses
+//! `deltlib::admin::ShelldLink` (deltd API §6.8), the same wire format.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;

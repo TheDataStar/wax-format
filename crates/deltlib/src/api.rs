@@ -40,6 +40,9 @@ pub struct Api {
     /// Each person's bookmarks, highlights, lists and history (deltd API
     /// §6.5). `None`: this server keeps none (the desktop app keeps its own).
     pub personal: Option<Arc<crate::personal::Store>>,
+    /// The key holder, for the admin endpoints (deltd API §6.8). `None`:
+    /// this server changes nothing about the box.
+    pub shell: Option<Arc<dyn crate::admin::Shell>>,
 }
 
 /// An error in the RFC 9457 shape with a code from API §7's closed list.
@@ -294,6 +297,9 @@ impl Api {
                     return r;
                 }
                 return self.progress_events(headers, body, conn).await.unwrap_or_else(Problem::response);
+            }
+            if let Some(r) = self.admin(method, &segs, headers, body, conn).await {
+                return r;
             }
         }
         if method != Method::GET && method != Method::HEAD {

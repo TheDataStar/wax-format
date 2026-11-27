@@ -233,6 +233,16 @@ These endpoints never act themselves. They check, then hand the job to `deltos-s
 | `GET /system-updates` | listing | `system.update` |
 | `POST /system-updates/{id}/apply` and `POST /system-updates/rollback` | `apply_update` / `roll_back_update` | `system.update` · re-confirm |
 | `GET /audit` | Read the action log | `admin.console` |
+| `GET /installs` and `GET /installs/sources` | listings: the packs shelld installed (with whether each can roll back), and the pack files on drives and staging folders that `POST /installs` takes (added 2026-11-27) | `content.install` |
+| `GET /network/leases` | listing (`docs/box-network-plan.md` §7) | `network.configure` |
+| `POST /network/names` and `DELETE /network/names/{name}` | `approve_name` / `remove_name` (added 2026-11-27) | `network.configure` |
+| `PUT /network/reservations/{mac}` and `DELETE /network/reservations/{mac}` | `set_address_reservation` / `remove_address_reservation` (added 2026-11-27) | `network.configure` |
+| `PUT /network/uplink-sharing` | `set_uplink_sharing` (added 2026-11-27) | `network.configure` · re-confirm |
+| `GET /apps` and `GET /apps/sources` | listings: installed add-ons, and bundles offered (`docs/base-addons-admin.md` §6, added 2026-11-27) | `apps.manage` |
+| `POST /apps`, `POST /apps/{id}/update`, `POST /apps/{id}/rollback`, `DELETE /apps/{id}`, `PUT /apps/{id}/running` | `install_addon`, `update_addon`, `roll_back_addon`, `remove_addon`, `set_addon_running` (`docs/shelld.md` §4, added 2026-11-27) | `apps.manage`; re-confirm where shelld's action says so |
+
+**As built (2026-11-27, `crates/deltlib/src/admin.rs`).** Each action's arguments are the request body's JSON fields, named as the action's own (`docs/shelld.md` §3, the `parse` shapes in `crates/deltos-shelld/src/action.rs`), plus the value the path names (`archive_uuid`, `backup_id`, `id`, `name`, `mac`), which the body may not repeat. shelld refuses any field outside the shape. `deltd` asks shelld which permission an action needs and whether it asks again (`describe`) before checking it, so the two can never disagree; for a re-confirm action it turns `confirm_password` into a one-use ticket with `identityd` (privilege boundary §6) and sends shelld only the ticket. A long action answers `202` with `{"job"}` and a `Location` header; anything else, `200` with shelld's result. Rows whose shelld action is not built yet (`stage_upload`, drives' `mount`/`eject` and `files`, conversions, `join_network`, `restart_service`, `pair_box`, the backup listing on a drive, system updates) are not routed and answer `404`. `GET /drives` lists drives with `backup.manage`, as shelld does; whether a content-only admin should see them waits on the drive mount actions.
+
 
 Two more endpoints serve everyone:
 
@@ -271,6 +281,13 @@ Every error has the same JSON shape and a code from one closed list, so the WebO
 | `app_not_found` | 404 | No installed add-on with that id, or no bundle at that source id (added 2026-11-23, `docs/shelld.md`) |
 | `does_not_fit` | 409 | The fit check refused the add-on; `detail` lists each reason (added 2026-11-23, `docs/base-addons-admin.md` §6) |
 | `edition_older` | 409 | An older edition of a pack than this box has already had; refused as a rollback, the job ends `failed_rollback` (added 2026-11-23, Track A §6, `docs/shelld.md` §7.4) |
+| `admin_unavailable` | 503 | `deltos-shelld` cannot be reached, so nothing about the box can be changed right now (added 2026-11-27, §6.8) |
+| `job_not_found` | 404 | No job of yours with that id; another person's job answers the same (added 2026-11-27, §6.8) |
+| `backup_unreadable` | 422 | The passphrase is wrong, or the file is not a DeltOS backup; the two cannot be told apart (added 2026-11-27, `docs/box-backup.md`) |
+| `backup_damaged` | 422 | The backup opened, but its contents do not match its own list (added 2026-11-27) |
+| `backup_too_new` | 409 | The backup holds state newer than this box's programs understand (contract §10, added 2026-11-27) |
+| `backup_not_found` | 404 | No backup or review with that id (added 2026-11-27) |
+| `restore_failed` | 500 | A restore step failed and the box was put back as it was (added 2026-11-27, `docs/box-backup.md`) |
 | `internal` | 500 | Anything else; logged on the box |
 
 Adding a code is allowed within v1, since callers must treat an unknown code as `internal`. Changing what an existing code means is not.
@@ -330,7 +347,7 @@ The first draft's questions 1 and 2 (the 32-profile limit and progress tied to a
 1. **Pack serving.** Hostname routing and the §4.4 checks, every row of §4.1, ETags per encoding, ranges, and the zstd and dictionary paths. Tested against the conformance corpus, including tombstones and rolled-back editions.
 2. **Sessions, library and search.** §6.1 through §6.3 and `/status`, with snippets behind a switch until their speed is measured. Tested with packs in several languages and tokenizers, and with a pack whose tokenizer the box cannot run.
 3. **Personal data and reading.** Bookmarks, highlights, lists, history, export of one's own data, reader mode, read-aloud, and the three progress paths. Highlights are tested across a real edition update, including the flagged case. *Built 2026-11-27 except read-aloud and the progress paths:* §6.5 in full and `outline` and `reader` from §6.4 (`crates/deltlib/src/me.rs`, `personal.rs`, `reading.rs`; `tests/personal.rs`). History is recorded by `deltd` as it serves a page on the person's pack hostname, the same path as `entry_viewed` (§8.2). Read-aloud waits on a measured text-to-speech engine. *The three progress paths, built 2026-11-27:* `POST /progress-events` (`crates/deltlib/src/progress.rs`) and `entry_viewed` as `deltd` serves a page, both stored by `identityd` in its register (`docs/identityd.md` §2; `tests/progress.rs`, and `tests/signin.rs` against the real service).
-4. **Admin, Classroom and export.** Every §6.8 endpoint through `deltos-shelld`, built to `docs/privilege-boundary.md`. Classroom lists, then HTML, EPUB and PDF export.
+4. **Admin, Classroom and export.** Every §6.8 endpoint through `deltos-shelld`, built to `docs/privilege-boundary.md`. Classroom lists, then HTML, EPUB and PDF export. *Admin endpoints built 2026-11-27 for every action shelld has* (packs, backups, the network, add-ons, the action log, jobs): `crates/deltlib/src/admin.rs`, tested end to end against the real `identityd` and `deltos-shelld` in `crates/deltlib/tests/admin.rs`. The rest of §6.8 follows its shelld actions; Classroom and export are not started.
 
 **In CI on every change:**
 

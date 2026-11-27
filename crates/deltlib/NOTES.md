@@ -14,7 +14,8 @@ First build of `deltd` against `docs/deltd-api-v1.md` §11 steps 1 and 2.
 | §6.2 Library | `GET /packs`, `/packs/{uuid}` (with this person's pack hostname), `/packs/{uuid}/pages`. Not yet: `/random` (waits on format ask F6), `/catalog`, `/updates`, the `outdated` filter. |
 | §6.3 Search | `GET /search`, `/search/packs/{uuid}`, `/suggest`. Snippets are off (`snippet: null`), as §11 asks until their speed is measured. |
 | `/status`, `/openapi.json` | Built. |
-| §6.1 sessions, §6.4–§6.8, §8 progress | Not built. `identityd` is the `Identity` trait; `StaticIdentity` is a dev-only fixed table. |
+| §6.1 sessions, §6.4–§6.8, §8 progress | Built since this first table was written; see the rows below. `identityd` is the `Identity` trait; `StaticIdentity` is a dev-only fixed table. |
+| §6.8 Admin | Built 2026-11-27 for every action `deltos-shelld` has: packs, backups, the network, add-ons, the action log and jobs (`src/admin.rs`). deltd checks session, origin and token, Secure, and the permission shelld's `describe` names, then hands the action to shelld, which checks it all again; a re-confirm action's `confirm_password` becomes an `identityd` ticket and the password never reaches shelld. Arguments are shelld's own shapes, passed through. `--shelld-socket`; without it, `admin_unavailable`. Tested against the real `identityd` and shelld (`tests/admin.rs`). |
 | HTTPS | Not built. `deltd` listens on plain HTTP; Secure endpoints arrive with TLS. |
 | §9 rate limits | Not built: the numbers are to be measured (API §10 #9). |
 

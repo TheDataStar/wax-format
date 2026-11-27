@@ -34,6 +34,9 @@ hyper-util = { version = "0.1", features = ["server", "http1", "tokio", "service
 tower = { version = "0.4", features = ["util"] }
 
 [dev-dependencies]
+# The real key holder, for the admin endpoints' end-to-end tests only.
+deltos-shelld = { path = "../deltos-shelld" }
+deltos-backup = { path = "../deltos-backup" }
 rcgen = "0.13"
 deltos-tls = { path = "../deltos-tls" }
 libc = "0.2"

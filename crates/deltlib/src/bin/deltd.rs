@@ -36,6 +36,10 @@ struct Args {
     /// deltos-identityd's socket: the live register of people and sign-ins.
     #[arg(long, conflicts_with = "dev_sessions", required_unless_present = "dev_sessions")]
     identity_socket: Option<PathBuf>,
+    /// deltos-shelld's socket, for the admin endpoints (deltd API §6.8).
+    /// Without it every admin endpoint answers admin_unavailable.
+    #[arg(long)]
+    shelld_socket: Option<PathBuf>,
     /// DEVELOPMENT ONLY: a fixed table of sessions and pack partitions, with
     /// no sign-in at all.
     #[arg(long)]
@@ -122,6 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_connectivity_checks(a.answer_connectivity_checks)
             .with_https(tls.is_some())
             .with_personal(Some(personal))
+            .with_shell(a.shelld_socket.as_ref().map(|s| Arc::new(deltlib::admin::ShelldLink::new(s)) as Arc<dyn deltlib::admin::Shell>))
             .with_ca_cert(a.tls_cert_dir.as_ref().map(|d| d.join("ca.crt"))),
     );
     let listener = tokio::net::TcpListener::bind(a.listen).await?;

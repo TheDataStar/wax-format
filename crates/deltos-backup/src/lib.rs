@@ -134,7 +134,7 @@ pub enum Error {
     /// State newer than this box's programs understand (contract §10).
     #[error("backup_too_new: {0}")]
     TooNew(String),
-    #[error("not_found: {0}")]
+    #[error("backup_not_found: {0}")]
     NotFound(String),
     #[error("restore_failed: {0}")]
     RestoreFailed(String),
@@ -152,7 +152,7 @@ impl Error {
             Error::Unreadable => "backup_unreadable",
             Error::Damaged(_) => "backup_damaged",
             Error::TooNew(_) => "backup_too_new",
-            Error::NotFound(_) => "not_found",
+            Error::NotFound(_) => "backup_not_found",
             Error::RestoreFailed(_) => "restore_failed",
             Error::Io(_) | Error::Sql(_) => "internal",
         }
