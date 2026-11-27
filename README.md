@@ -43,9 +43,10 @@ cargo build --workspace
 cargo test  --workspace      # conformance corpus + round-trip + fuzz smoke
 ```
 
-The `wax-builder` signing tests need the `minisign` binary. They skip (loudly)
-when it is missing; set `WAX_REQUIRE_MINISIGN=1` — as CI should — to turn a
-missing binary into a failure instead of a silent skip.
+Signing is done in Rust and its tests always run. One interoperability test
+also checks against the `minisign` program, both ways; it skips (loudly) when
+the program is missing; set `WAX_REQUIRE_MINISIGN=1` — as CI should — to turn
+a missing program into a failure instead of a skip.
 
 Fuzzing (nightly + `cargo install cargo-fuzz`):
 
@@ -178,12 +179,14 @@ sidecar's trusted comment, `depends_on` as written) emits only the canonical for
 
 ### Signing
 
-`wax-builder` shells out to [`minisign`](https://jedisct1.github.io/minisign/);
-key generation is out of scope. Point at a keypair with `--sign-key` /
-`--pubkey`, or `$WAX_MINISIGN_KEY` / `$WAX_MINISIGN_PUBKEY`; `$WAX_MINISIGN`
-overrides the binary path. Use a password-less key
-(`minisign -G -W`) for unattended builds — an encrypted key makes minisign
-prompt on the terminal.
+`wax-builder` signs and checks in Rust with the `minisign` crate, writing
+sidecars in [`minisign`](https://jedisct1.github.io/minisign/)'s own format
+(the program verifies them with `-V -H`, and keys it makes work here). No
+outside program is needed. Point at a keypair with `--sign-key` /
+`--pubkey`, or `$WAX_MINISIGN_KEY` / `$WAX_MINISIGN_PUBKEY`. Use a
+password-less key (`minisign -G -W`, or `wax_builder::sign::write_unencrypted_keypair`)
+for unattended builds; a key with a password is asked for on the terminal,
+and refused when there is none.
 
 An append changes the header and the segment chain, so it invalidates the
 existing sidecar (SPEC §8.1). Pass `--sign-key` to `append` to re-sign;
